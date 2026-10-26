@@ -68,7 +68,7 @@
 **关于**：
 
 - 插件说明和功能特性（单聊自动创建、群聊分组与拖拽排序、展开/收起、BOT.md 人格、任务与评审）。
-- **版本号 / 包名 / 开发者** 来自插件 `package.json`，由 Host bootstrap 的 `plugin` 字段下发；当前为 `0.1.0` / `dsh-bot-team` / `shper`。
+- **版本号 / 包名 / 开发者** 来自插件 `package.json`，由 Host bootstrap 的 `plugin` 字段下发；当前为 `1.0.0` / `dsh-bot-team` / `shper`。
 - 数据与人格文件位置：`$DSH_HOME/storages/bot_team`、`$DSH_HOME/dsh-bot-team/bots/<botId>/BOT.md`；单聊 / 群聊工作目录在 `$DSH_HOME/dsh-bot-team/<botId>/` 与 `$DSH_HOME/dsh-bot-team/groups/<groupId>/`。
 
 ![设置 · 消息设置](<../docs/assets/v1.7-settings-light.png>)
@@ -106,11 +106,45 @@ HTTP 通道（全部在 `/api` 登录态栅栏内）：
 - `POST /api/bot-team.action`（`group.create` / `group.reorder` / `folder.create` / `folder.update` / `folder.delete` / `folder.reorder` / `direct.open` / `bot.create` / `member.add` / `message.post` / `message.stop` / `persona.write` / `settings.chatDisplay.update` …）
 - `GET|PUT /api/bot-team.file`（`kind=bot`；兼容 `soul` / `agent`）
 
+## 安装
+
+这是一个标准 DSH bundle：`package.json` 的 `dsh.bundle.patch` 指向 `cordis.patch.yml`，`dsh.client` + `exports["./client"]` 提供 Web 端界面，`exports["./locale/*.json"]` / `exports["./icon"]` 提供插件管理页的标题、描述与图标。npm 包名：`dsh-bot-team`。
+
+**桌面版（当前 GUI）**：左侧栏 **插件 / Plugins** 页 → 添加插件，填 `dsh-bot-team@<版本>`（或本地绝对路径、Git 地址）；装好后对 `bot-team` 行 disable → enable，或完整重启 DSH；浏览器刷新页面。
+
+**CLI / 其他 profile**：
+
+```sh
+dsh plugin --profile <profile> add dsh-bot-team@1.0.0
+```
+
+该命令安装包，并把新 bundle 追加到 profile 的 `dsh.profile.bundles`。升级用 remove → add；桌面版插件页在提供 **Update** 时可直接更新，否则也是移除后重装。装完必须重新加载 Host 模块：只刷新页面不会加载新的 Host 代码。
+
+**Git 直装**（不经过 npm）：
+
+```sh
+git+https://github.com/shper/dsh-bot-team.git#<40 位 commit>&path:/bot-team
+```
+
+**兼容性**：`engines.dsh` 为 `^0.2.1-rc.3`，安装前按运行中的 DSH 版本校验（含预发布版本）；DSH 升级到 0.3 后需先回归、再放宽 range 并发新版本。被拦时可用 exact-version exemption，但会提示风险。
+
+发布流程（npm / Git / 插件市场索引、检查清单与已知风险）见 [docs/发布指南.md](https://github.com/shper/dsh-bot-team/blob/main/docs/%E5%8F%91%E5%B8%83%E6%8C%87%E5%8D%97.md)。
+
 ## 开发
 
 宿主侧是普通 ESM（`index.js` + `host/*.js`，不 import 任何 `@deepseek-ai/*` 包）；客户端是单文件 `client.js`（`window.__ModuleLoader__.load` 工厂，React 来自平台模块表）。
 
 安装/更新：`plugin_manager install_bundle` 之后，改代码需对 `bot-team` 行 `disable → enable`（或重启 DSH）才会加载新的 Host 模块；v1.8 改名后旧行名失效，必须完整重启 DSH。
+
+发布前自检（在 `bot-team/` 目录）：
+
+```sh
+npm run check          # node --check：index.js / client.js / host/*.js
+npm test               # 111 条隔离回归测试
+npm pack --dry-run     # 查看真正会被发布的文件
+```
+
+`npm publish` 会通过 `prepublishOnly` 自动跑 `check` + `test`。
 
 ### 隔离回归测试
 

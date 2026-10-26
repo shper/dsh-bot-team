@@ -12,7 +12,7 @@
         # Empty ⇒ <dataDir>/bots (BOT.md persona files).
         botsDir: ''
         # Legacy fallback only: new groups default to <dataDir>/groups/<groupId>,
-        # direct chats to <dataDir>/<botId>. Empty ⇒ the Host process cwd.
+        # direct chats to <dataDir>/direct/<botId>. Empty ⇒ the Host process cwd.
         defaultCwd: ''
         maxParallelTurns: 3
         maxContextMessages: 40
@@ -27,7 +27,8 @@
         botApprovalPolicy: ask
         maxTurnsPerHour: 120
         dailyTokenBudget: 5000000
-        smokeResultsDir: /Users/shper/Documents/11_dsh_plugin/bot_team/.bot-team
+        # smokeResultsDir is intentionally unset: it defaults to <cwd>/.bot-team.
+        # Set it per profile only when re-running the smoke checks.
 
     - id: preset-bot-team-tools
       name: '@deepseek-ai/dsh-agent-preset'

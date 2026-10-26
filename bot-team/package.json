@@ -1,14 +1,14 @@
 {
   "name": "dsh-bot-team",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
+  "version": "1.0.0",
   "description": "Bot Team: single chats and multi-agent group chat for DeepSeek Harness. Every bot gets a direct chat; create groups/topics, organize them into collapsible custom folders with drag ordering, add full-capability bot agents (files, search, web, workspace, commands) with their own model and BOT.md persona/working rules, @mention them to assign tasks, review each other's work, and run multi-round discussions.",
+  "type": "module",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
     "./locale/*.json": "./locale/*.json",
-    "./icon": "./icon.svg"
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
   },
   "files": [
     "index.js",
@@ -17,6 +17,7 @@
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
+    "LICENSE",
     "README.md"
   ],
   "dsh": {
@@ -32,5 +33,35 @@
       ]
     }
   },
-  "author": "shper"
+  "engines": {
+    "dsh": "^0.2.1-rc.3"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "plugin",
+    "bot",
+    "multi-agent",
+    "group-chat"
+  ],
+  "homepage": "https://github.com/shper/dsh-bot-team#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shper/dsh-bot-team.git",
+    "directory": "bot-team"
+  },
+  "bugs": {
+    "url": "https://github.com/shper/dsh-bot-team/issues"
+  },
+  "author": "shper",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "check": "node --check index.js && node --check client.js && for f in host/*.js; do node --check \"$f\" || exit 1; done",
+    "test": "node --test test/*.test.js",
+    "prepublishOnly": "npm run check && npm test"
+  }
 }
