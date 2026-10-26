@@ -31,6 +31,7 @@ function actionsFor(message, extra = {}) {
     onReview: noop,
     onRevise: noop,
     onRetry: noop,
+    onExecution: noop,
     ...extra,
   });
 }
@@ -39,8 +40,8 @@ const menuButtons = tree => walk(tree).filter(node => node.props?.role === 'menu
 
 test('a finished bot message offers reply, copy and review in that order', () => {
   const actions = actionsFor(botMessage());
-  assert.deepEqual(plain(actions.map(action => action.key)), ['reply', 'copy', 'quote', 'review']);
-  assert.deepEqual(plain(actions.map(action => action.label)), ['回复', '复制文本', '复制为引用', '评审']);
+  assert.deepEqual(plain(actions.map(action => action.key)), ['reply', 'copy', 'quote', 'review', 'execution']);
+  assert.deepEqual(plain(actions.map(action => action.label)), ['回复', '复制文本', '复制为引用', '评审', '执行过程']);
   assert.deepEqual(
     plain(actions.filter(action => action.hover !== false && !action.disabled).map(action => action.key)),
     ['reply', 'copy', 'review'],
@@ -50,7 +51,7 @@ test('a finished bot message offers reply, copy and review in that order', () =>
 
 test('streaming messages disable reply/copy, keep them inside the menu and keep the toolbar empty', () => {
   const empty = actionsFor(botMessage({ status: 'streaming', text: '' }));
-  assert.deepEqual(plain(empty.map(action => action.key)), ['reply', 'copy']);
+  assert.deepEqual(plain(empty.map(action => action.key)), ['reply', 'copy', 'execution']);
   assert.equal(empty[0].disabled, true);
   assert.equal(empty[1].disabled, true);
   assert.deepEqual(plain(empty.filter(action => action.hover !== false && !action.disabled)), []);
@@ -78,10 +79,10 @@ test('own messages skip review; quoted human replies add copy-quote and jump-to-
 
 test('review revisions and failed replies add their workflow actions', () => {
   const review = actionsFor(botMessage({ kind: 'review', meta: { reviewOf: 'm0' } }));
-  assert.deepEqual(plain(review.map(action => action.key)), ['reply', 'copy', 'quote', 'review', 'revise']);
+  assert.deepEqual(plain(review.map(action => action.key)), ['reply', 'copy', 'quote', 'review', 'revise', 'execution']);
 
   const failed = actionsFor(botMessage({ status: 'error', text: 'boom' }));
-  assert.deepEqual(plain(failed.map(action => action.key)), ['reply', 'copy', 'quote', 'review', 'retry']);
+  assert.deepEqual(plain(failed.map(action => action.key)), ['reply', 'copy', 'quote', 'review', 'retry', 'execution']);
   assert.equal(failed.find(action => action.key === 'retry').danger, true);
 });
 
@@ -219,4 +220,57 @@ test('right-clicking a message row opens the menu via the page and suppresses th
   assert.equal(menu.props.menu.y, 240);
   assert.equal(menu.props.menu.groupId, 'g1');
   assert.deepEqual(plain(menu.props.allMessages.map(item => item.messageId)), ['m1']);
+});
+
+test('execution is a separate menu-only action for every ordinary bot state', () => {
+  const calls = [];
+  for (const status of ['pending', 'streaming', 'done', 'error', 'stopped']) {
+    const message = botMessage({ messageId: status, status, text: '' });
+    const action = actionsFor(message, { onExecution: target => calls.push(target) }).find(item => item.key === 'execution');
+    assert.equal(action.label, '执行过程');
+    assert.equal(action.disabled, false);
+    assert.equal(action.hover, false);
+    action.onSelect();
+    assert.equal(calls.at(-1), message);
+  }
+  for (const patch of [{ author: { type: 'human' } }, { author: { type: 'system' } }, { kind: 'approval' }, { kind: 'system' }]) {
+    assert.equal(actionsFor(botMessage(patch)).some(item => item.key === 'execution'), false);
+  }
+});
+
+test('shared context menu invokes execution after closing, with the live source message', () => {
+  const snapshot = botMessage({ status: 'pending', text: '' });
+  const live = botMessage({ status: 'streaming', text: 'latest' });
+  const calls = [];
+  const tree = client.render(client.MessageContextMenu, {
+    menu: { message: snapshot, x: 1, y: 1 }, bots: [], allMessages: [live],
+    onClose: () => calls.push('close'), onExecution: message => calls.push(message),
+  });
+  menuButtons(tree).find(button => text(button) === '执行过程').props.onClick({ stopPropagation: noop });
+  assert.deepEqual(calls, ['close', live]);
+});
+
+test('direct and group pages open execution for the selected message without replacing the chat', () => {
+  for (const kind of ['direct', 'group']) {
+    const message = botMessage({ groupId: 'g/' + kind });
+    const local = loadClient({ state: {
+      ...client.initialState, loading: false, activeGroupId: message.groupId,
+      groups: [{ groupId: message.groupId, title: kind, kind, botId: 'b1' }],
+      messagesByGroup: { [message.groupId]: [message] },
+    } });
+    const first = local.render(local.BotTeamPage);
+    const list = walk(first).find(node => node.type === local.MessageList);
+    list.props.onContextMenu({ preventDefault: noop, stopPropagation: noop, clientX: 1, clientY: 2 }, message);
+    const menu = walk(local.render(local.BotTeamPage)).find(node => node.type === local.MessageContextMenu);
+    assert.equal(typeof menu.props.onExecution, 'function');
+    menu.props.onClose();
+    menu.props.onExecution(message);
+    const page = local.render(local.BotTeamPage);
+    const drawer = walk(page).find(node => node.type === local.ExecutionDrawer);
+    assert.equal(drawer.props.target.groupId, message.groupId);
+    assert.equal(drawer.props.target.message, message);
+    assert.equal(walk(page).find(node => node.type === local.MessageList).props.messages, list.props.messages);
+    drawer.props.onClose();
+    assert.equal(walk(local.render(local.BotTeamPage)).some(node => node.type === local.ExecutionDrawer), false);
+  }
 });

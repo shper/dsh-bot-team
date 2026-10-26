@@ -230,6 +230,11 @@ export async function openRepository(ctx, logger) {
       return domain.table('messages').put(message.messageId, message).catch((error) => warn('persist message', error));
     },
     putMessage(message) {
+      return repo.putMessageStrict(message).catch((error) => warn('persist message', error));
+    },
+    // Execution references must be durable before a prompt enters the agent inbox.
+    // Unlike putMessage, this path lets the caller fail closed on storage errors.
+    putMessageStrict(message) {
       messages.set(message.messageId, message);
       const list = messagesByGroup.get(message.groupId) ?? [];
       const index = list.findIndex((candidate) => candidate.messageId === message.messageId);
@@ -237,7 +242,7 @@ export async function openRepository(ctx, logger) {
       else list.push(message);
       sortBySeq(list);
       messagesByGroup.set(message.groupId, list);
-      return domain.table('messages').put(message.messageId, message).catch((error) => warn('persist message', error));
+      return domain.table('messages').put(message.messageId, message);
     },
     async deleteMessage(messageId) {
       const message = messages.get(messageId);

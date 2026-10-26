@@ -51,7 +51,7 @@ test('the real service boots, registers its routes/tools, and drives direct chat
   );
   try {
     await service.ready;
-    assert.equal(routes.length, 9, 'bootstrap/messages/events/action/health/file/upload/skills/export-pdf routes');
+    assert.equal(routes.length, 10, 'bootstrap/messages/execution/events/action/health/file/upload/skills/export-pdf routes');
     assert.deepEqual(
       routes.map((route) => route.path).sort(),
       [
@@ -61,6 +61,7 @@ test('the real service boots, registers its routes/tools, and drives direct chat
         '/api/bot-team.export.pdf',
         '/api/bot-team.file',
         '/api/bot-team.health',
+        '/api/bot-team.message-execution',
         '/api/bot-team.messages',
         '/api/bot-team.skills',
         '/api/bot-team.upload',

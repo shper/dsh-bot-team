@@ -14,6 +14,7 @@ import { CHAT_DISPLAY_SETTINGS_KEY, isChatDisplaySettings, normalizeChatDisplayS
 import { Personas } from './personas.js';
 import { AgentPool } from './agents.js';
 import { Engine } from './engine.js';
+import { readMessageExecution } from './execution.js';
 import { registerRoutes } from './routes.js';
 import { BOT_TEAM_TOOL_NAMES, registerBotTeamTools } from './tools.js';
 import { GroupBus, asString, fail, json, newId, now, trimmed } from './util.js';
@@ -348,6 +349,32 @@ export class BotTeamService {
         const code = error && typeof error.code === 'string' ? error.code : 'pdf-failed';
         return json(fail(code, String(error && error.message ? error.message : error)), code === 'pdf-font-unavailable' ? 501 : 500);
       }
+    });
+  }
+
+  /** Read one reply's recorded turn without resuming or sending to the Bot. */
+  handleMessageExecution(request) {
+    return this.withReady(async () => {
+      const url = new URL(request.url);
+      let response;
+      try {
+        response = json(await readMessageExecution({
+          ctx: this.ctx,
+          repo: this.repo,
+          groupId: url.searchParams.get('groupId') || '',
+          messageId: url.searchParams.get('messageId') || '',
+          afterSeq: url.searchParams.get('afterSeq'),
+          limit: url.searchParams.get('limit'),
+          signal: request.signal,
+        }));
+      } catch (error) {
+        if (request.signal.aborted) throw error;
+        const code = ['not-found', 'invalid-input'].includes(error?.code) ? error.code : 'execution-failed';
+        const status = code === 'not-found' ? 404 : code === 'invalid-input' ? 400 : 500;
+        response = json(fail(code, String(error?.message || error)), status);
+      }
+      response.headers.set('cache-control', 'no-store');
+      return response;
     });
   }
 

@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 const source = readFileSync(new URL('../client.js', import.meta.url), 'utf8');
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const marker = '    return {\n      inject:';
-const exposed = 'DEFAULT_CHAT_DISPLAY_SETTINGS, CHAT_DISPLAY_FIELDS, CHAT_DISPLAY_MODES, normalizeChatDisplaySettings, initialState, reducer, messageMetadataItems, renderMessageMetadata, MessageRow, MessageList, MessageContextMenu, messageActionList, placeMessageMenu, messageMenuHeight, buildQuoteMarkdown, MESSAGE_MENU_WIDTH, TypingDots, Avatar, GroupAvatar, GroupList, ChatSettingsDialog, BotTeamPage, useSse, GLOBAL_CSS, Modal, setTestLocale, uiT, UI_EN, isEnglishUi, withContent, inContent, translateSystemText, ApprovalRow, containModalFocus, SIDEBAR_COLLAPSED_KEY, readSidebarCollapsed, persistSidebarCollapsed, RIGHT_PANEL_COLLAPSED_KEY, readRightPanelCollapsed, persistRightPanelCollapsed, SECTIONS_COLLAPSED_KEY, readSectionsCollapsed, persistSectionsCollapsed, sectionFolderKey, isDirectGroup, replyMentionOf, applyReplyMention, buildSidebarModel, findSidebarGroup, scopeGroupIds, computeGroupDrop, computeFolderDrop, stepGroupOrder, stepFolderOrder, SidebarMenu, FolderFormDialog, GroupFormDialog, DirectPanel, MembersPanel, Composer, formatFileSize, findSkillTrigger, rankSkills';
+const exposed = 'DEFAULT_CHAT_DISPLAY_SETTINGS, CHAT_DISPLAY_FIELDS, CHAT_DISPLAY_MODES, normalizeChatDisplaySettings, initialState, reducer, messageMetadataItems, renderMessageMetadata, MessageRow, MessageList, MessageContextMenu, messageActionList, placeMessageMenu, messageMenuHeight, buildQuoteMarkdown, MESSAGE_MENU_WIDTH, TypingDots, Avatar, GroupAvatar, GroupList, ChatSettingsDialog, BotTeamPage, useSse, GLOBAL_CSS, Modal, setTestLocale, uiT, UI_EN, isEnglishUi, withContent, inContent, translateSystemText, ApprovalRow, containModalFocus, SIDEBAR_COLLAPSED_KEY, readSidebarCollapsed, persistSidebarCollapsed, RIGHT_PANEL_COLLAPSED_KEY, readRightPanelCollapsed, persistRightPanelCollapsed, SECTIONS_COLLAPSED_KEY, readSectionsCollapsed, persistSectionsCollapsed, sectionFolderKey, isDirectGroup, replyMentionOf, applyReplyMention, buildSidebarModel, findSidebarGroup, scopeGroupIds, computeGroupDrop, computeFolderDrop, stepGroupOrder, stepFolderOrder, SidebarMenu, FolderFormDialog, GroupFormDialog, DirectPanel, MembersPanel, Composer, formatFileSize, findSkillTrigger, rankSkills, mergeExecutionEvents, emptyExecutionState, mergeExecutionPage, projectExecutionEvents, executionPayload, createExecutionController, useMessageExecution, ExecutionPayload, ExecutionEvent, ExecutionDrawer';
 
 export const plain = value => JSON.parse(JSON.stringify(value));
 export function walk(node) {
@@ -40,14 +40,25 @@ export function loadClient(options = {}) {
     },
     useRef(initial) { return React.useState(() => ({ current: initial }))[0]; },
     useCallback(fn) { return fn; },
-    useEffect(fn) { effects.push(fn); },
+    useEffect(fn, deps) {
+      const index = cursor++;
+      if (!options.lifecycleEffects) { effects.push(fn); return; }
+      const previous = hooks[index];
+      if (previous && deps && deps.every((value, i) => Object.is(value, previous.deps?.[i]))) return;
+      const entry = { deps, cleanup: previous?.cleanup };
+      hooks[index] = entry;
+      effects.push(() => { entry.cleanup?.(); entry.cleanup = fn(); return entry.cleanup; });
+    },
   };
   const context = vm.createContext({
     window: {
       __ModuleLoader__: { load(value) { definition = value; } },
       localStorage: options.localStorage,
+      ...options.window,
     },
-    console, URL, Blob, setTimeout, clearTimeout,
+    console, URL, Blob, AbortController,
+    document: options.document, navigator: options.navigator,
+    setTimeout: options.setTimeout || setTimeout, clearTimeout: options.clearTimeout || clearTimeout,
     requestAnimationFrame: callback => { callback(0); return 1; },
     cancelAnimationFrame: () => {},
     fetch: options.fetch || (() => { throw new Error('Unexpected network request in client unit test'); }),
@@ -65,6 +76,8 @@ export function loadClient(options = {}) {
     apply: module.apply,
     inject: module.inject,
     effects,
+    flushEffects() { for (const effect of effects.splice(0)) effect(); },
+    unmount() { for (const hook of hooks) hook?.cleanup?.(); hooks.length = 0; effects.length = 0; },
     render(component, props) { cursor = 0; return component(props); },
     remount(component, props) { cursor = 0; hooks.length = 0; effects.length = 0; return component(props); },
   };

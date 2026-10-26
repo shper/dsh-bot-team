@@ -107,7 +107,8 @@ export class GroupBus {
   }
 
   emit(groupId, frame) {
-    if (frame && typeof frame.seq === 'number') this.lastSeq.set(groupId, frame.seq);
+    // Execution seq belongs to a member's session log, not the group timeline.
+    if (frame && frame.type !== 'execution.updated' && typeof frame.seq === 'number') this.lastSeq.set(groupId, frame.seq);
     const set = this.subscribers.get(groupId);
     if (!set) return;
     for (const write of [...set]) {

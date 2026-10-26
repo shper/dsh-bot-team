@@ -143,6 +143,7 @@ window.__ModuleLoader__.load({
     const ROUTES = {
       bootstrap: '/api/bot-team.bootstrap',
       messages: '/api/bot-team.messages',
+      execution: '/api/bot-team.message-execution',
       events: '/api/bot-team.events',
       action: '/api/bot-team.action',
       file: '/api/bot-team.file',
@@ -353,6 +354,8 @@ window.__ModuleLoader__.load({
           }`,
           { method: 'GET' },
         ),
+      execution: (groupId, messageId, afterSeq, signal) =>
+        request(`${ROUTES.execution}?groupId=${encodeURIComponent(groupId)}&messageId=${encodeURIComponent(messageId)}&afterSeq=${afterSeq}&limit=100`, { method: 'GET', signal }),
       action: (action, payload) =>
         request(ROUTES.action, {
           method: 'POST',
@@ -1300,6 +1303,73 @@ window.__ModuleLoader__.load({
       "单条新消息": " new message",
       "{count} 个 Bot": "{count} bots"
     };
+    // Execution copy stays additive so integrating the complete locale dictionary
+    // preserves any existing translations for shared labels.
+    for (const [key, value] of Object.entries({
+      "执行过程": "Execution details",
+      "查看这条回复的执行过程": "View this reply's execution details",
+      "关闭执行过程": "Close execution details",
+      "触发输入": "Trigger input",
+      "执行开始": "Execution started",
+      "执行结束": "Execution ended",
+      "模型开始处理": "Model processing started",
+      "模型处理结束": "Model processing ended",
+      "中间文本": "Intermediate text",
+      "未完成的模型输出": "Unfinished model output",
+      "等待审批": "Awaiting approval",
+      "审批决定": "Approval decision",
+      "重试": "Retry",
+      "上下文整理": "Context compaction",
+      "其他记录 · {type}": "Other record · {type}",
+      "输入原文": "Full input",
+      "文本原文": "Full text",
+      "附件记录": "Attachment records",
+      "记录详情": "Record details",
+      "执行记录与所选消息不匹配": "The execution records do not match the selected message",
+      "执行记录分页未前进，请重试": "Execution pagination did not advance. Please retry.",
+      "已复制完整内容": "Copied full contents",
+      "复制失败：{error}": "Copy failed: {error}",
+      "复制完整内容": "Copy full contents",
+      "内部工具 · {tool}": "Nested tool · {tool}",
+      "工具 · {tool}": "Tool · {tool}",
+      "工具": "Tool",
+      "失败": "Failed",
+      "完成": "Completed",
+      "等待结果": "Awaiting result",
+      "调用参数": "Call arguments",
+      "工具结果": "Tool result",
+      "工具结果 · {time}": "Tool result · {time}",
+      "错误详情": "Error details",
+      "会话记录服务暂不可用，请稍后重试。": "The session records service is unavailable. Please retry later.",
+      "原始会话记录已不存在。": "The original session records no longer exist.",
+      "原始会话记录损坏，暂时无法读取。": "The original session records are damaged and cannot be read.",
+      "暂时无法读取原始会话记录，请稍后重试。": "The original session records cannot be read right now. Please retry later.",
+      "这条消息尚未记录对应会话。": "A session has not yet been recorded for this message.",
+      "没有找到这条消息的执行轮次。": "The execution turn for this message was not found.",
+      "执行记录不完整，以下仅显示仍可读取的部分。": "Some execution records are missing. Only the available records are shown below.",
+      "这条历史消息没有关联执行记录。": "This older message has no linked execution records.",
+      "无法确认这条消息对应的执行范围。": "The execution boundaries for this message could not be verified.",
+      "请稍后刷新记录重试。": "Please refresh the records and try again later.",
+      "等待执行": "Waiting to run",
+      "执行中": "Running",
+      "已完成": "Completed",
+      "已停止": "Stopped",
+      "状态未知": "Unknown status",
+      "{bot} · 消息 #{message}": "{bot} · Message #{message}",
+      "加载失败：": "Loading failed: ",
+      "正在加载后续记录…": "Loading more records…",
+      "正在加载执行过程…": "Loading execution details…",
+      "执行记录正在准备，稍后会自动更新。": "Execution records are being prepared and will update automatically.",
+      "这条历史消息没有关联执行记录，无法定位当时的执行过程。": "This older message has no linked execution records, so its original execution cannot be located.",
+      "执行记录不可用。": "Execution records are unavailable. ",
+      "尚无可显示的执行记录。": "There are no execution records to display yet.",
+      "按时间排序的执行记录": "Execution records in chronological order",
+      "刷新记录": "Refresh records",
+      "打开完整会话": "Open full session",
+      "查看成员当前会话": "View member's current session"
+    })) {
+      if (!(key in UI_EN)) UI_EN[key] = value;
+    }
     const UI_ZH = { ...Object.fromEntries(Object.keys(UI_EN).map((key) => [key, key])), '单条新消息': '条新消息' };
 
     const CHAT_DISPLAY_MODES = [
@@ -3689,6 +3759,30 @@ body[data-ds-dark-theme] .bt-root {
 .bt-root ::-webkit-scrollbar-track { background: transparent; }
 body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.18); border: 3px solid transparent; background-clip: content-box; }
 body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.28); border: 3px solid transparent; background-clip: content-box; }
+
+/* Execution drawer overlays this page without unmounting its conversation. */
+.bt-execution-layer { position: absolute; inset: 0; z-index: 70; display: flex; justify-content: flex-end; background: rgba(16,24,40,.24); }
+.bt-execution-drawer { width: min(580px, 100%); height: 100%; min-width: 0; display: flex; flex-direction: column; background: var(--bt-surface); color: var(--bt-text); border-left: 1px solid var(--bt-border); box-shadow: -8px 0 28px rgba(0,0,0,.16); }
+.bt-execution-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 18px 20px; border-bottom: 1px solid var(--bt-border); font-size: 12px; line-height: 1.6; }
+.bt-execution-header h2 { margin: 0 0 4px; font-size: 17px; color: var(--bt-text-strong); }
+.bt-execution-source { color: var(--bt-text-2); overflow-wrap: anywhere; }
+.bt-execution-body { flex: 1; min-height: 0; overflow: auto; padding: 16px 20px; font-size: 12px; line-height: 1.6; }
+.bt-execution-footer { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--bt-border); }
+.bt-execution-events, .bt-execution-children { list-style: none; padding: 0; margin: 0; }
+.bt-execution-event { border-left: 2px solid var(--bt-border); margin: 0 0 16px 3px; padding-left: 12px; min-width: 0; }
+.bt-execution-event-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 10px; margin-bottom: 7px; color: var(--bt-text-2); }
+.bt-execution-event-head strong { color: var(--bt-text-strong); overflow-wrap: anywhere; }
+.bt-execution-event-head time { margin-left: auto; font-size: 11px; color: var(--bt-text-3); }
+.bt-execution-children { margin-top: 12px; }
+.bt-execution-payload { background: var(--bt-hover); border: 1px solid var(--bt-border); border-radius: 6px; margin-top: 6px; padding: 6px 8px; min-width: 0; }
+.bt-execution-payload summary { cursor: pointer; overflow-wrap: anywhere; }
+.bt-execution-payload summary:focus-visible { outline: 2px solid var(--bt-accent); outline-offset: 2px; }
+.bt-execution-preview { display: block; color: var(--bt-text-3); white-space: pre-wrap; max-height: 3.2em; overflow: hidden; margin-top: 3px; }
+.bt-execution-payload[open] .bt-execution-preview { display: none; }
+.bt-execution-payload button { margin: 7px 6px 0 0; }
+.bt-execution-payload pre { margin: 10px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow: auto; font-size: 11px; }
+.bt-execution-failed { color: var(--bt-danger-text); overflow-wrap: anywhere; }
+@media (max-width: 700px) { .bt-execution-drawer { width: 100%; border-left: 0; } .bt-execution-body, .bt-execution-header, .bt-execution-footer { padding: 12px; } }
 .bt-modal { animation: bt-modal-in .16s ease-out; }
 @keyframes bt-modal-in { from { opacity: 0; transform: translateY(8px) scale(.985); } to { opacity: 1; transform: none; } }
 .bt-modal-close:hover { background: var(--bt-hover) !important; color: var(--bt-text-2) !important; }
@@ -3944,7 +4038,9 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       return load;
     }
 
-    function useSse(groupId, dispatch) {
+    function useSse(groupId, dispatch, onExecutionUpdate) {
+      const executionListener = React.useRef(onExecutionUpdate);
+      executionListener.current = onExecutionUpdate;
       React.useEffect(() => {
         if (!groupId) return undefined;
         let closed = false;
@@ -3958,6 +4054,9 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               // Resync after a reconnect: SSE only guarantees frames after connect.
               dispatch({ type: 'messagesTick' });
             }
+            if ((type === 'hello' || type === 'execution.updated') && executionListener.current) {
+              executionListener.current({ ...frame, groupId });
+            }
             dispatch({ type: 'sse', frame });
           } catch {
             /* ignore malformed frames */
@@ -3969,6 +4068,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           'message.updated',
           'message.delta',
           'message.replace',
+          'execution.updated',
           'member.status',
           'member.added',
           'member.removed',
@@ -3987,9 +4087,307 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         return () => {
           closed = true;
           for (const [type, fn] of listeners) source.removeEventListener(type, fn);
+          source.onerror = null;
           source.close();
         };
       }, [groupId, dispatch]);
+    }
+
+    // Execution records stay separate from chat messages: metadata invalidation must
+    // never replace a bubble that is receiving message.delta frames.
+    function mergeExecutionEvents(current, incoming) {
+      const bySeq = new Map();
+      for (const event of [...(current || []), ...(incoming || [])]) {
+        if (event && Number.isSafeInteger(event.seq) && event.seq >= 0 && !bySeq.has(event.seq)) bySeq.set(event.seq, event);
+      }
+      return [...bySeq.values()].sort((a, b) => a.seq - b.seq);
+    }
+
+    function emptyExecutionState(groupId, messageId) {
+      return { groupId, messageId, events: [], nextSeq: -1, hasMore: false, availability: null, execution: null, status: null, error: null, loading: true, loadError: '' };
+    }
+
+    function mergeExecutionPage(current, page) {
+      const events = mergeExecutionEvents(current.events, page.events);
+      // nextSeq is the last raw record examined, even when that page is filtered empty.
+      const nextSeq = Math.max(current.nextSeq, Number.isSafeInteger(page.nextSeq) ? page.nextSeq : -1, events.length ? events[events.length - 1].seq : -1);
+      return { ...current, ...page, reason: page.reason, sessionId: page.sessionId, fallbackSessionId: page.fallbackSessionId, events, nextSeq, hasMore: page.hasMore === true, loadError: '' };
+    }
+
+    function executionPayload(value) {
+      if (typeof value === 'string') return value;
+      return value === undefined ? '' : JSON.stringify(value, null, 2);
+    }
+
+    function executionDuration(data) {
+      const ms = data && (data.durationMs ?? data.elapsedMs);
+      return Number.isFinite(ms) && ms >= 0 ? ms : null;
+    }
+
+    function executionFailed(value) {
+      return !!(value && (value.isError === true || value.ok === false || value.error || ['error', 'failed', 'rejected'].includes(value.status)));
+    }
+
+    function executionText(data) {
+      const message = data.message || data;
+      const content = message.content ?? message.text;
+      if (typeof content === 'string') return content;
+      if (Array.isArray(content)) return content.filter(part => part && part.type === 'text' && typeof part.text === 'string').map(part => part.text).join('');
+      return '';
+    }
+
+    /** Pair tools by scoped call IDs, including every PTC child of run_code. */
+    function projectExecutionEvents(events) {
+      const ordered = mergeExecutionEvents([], events);
+      const toolsByKey = new Map();
+      const nodes = [];
+      const scope = (data, id) => JSON.stringify([data.turn ?? null, data.step ?? null, id]);
+      const labels = {
+        'user/message': '触发输入', 'turn/start': '执行开始', 'turn/end': '执行结束',
+        'step/start': '模型开始处理', 'step/end': '模型处理结束', 'assistant/message': '中间文本',
+        'assistant/attempt': '未完成的模型输出', 'approval/asked': '等待审批', 'approval/decided': '审批决定',
+      };
+      for (const event of ordered) {
+        const data = event.data || {};
+        const type = String(event.type || 'unknown');
+        const isPtc = ['tool/ptc-dispatch-start', 'tool/ptc-dispatch', 'tool/ptc-dispatch-end'].includes(type);
+        const isTool = type === 'tool/call' || type === 'tool/result' || isPtc;
+        if (isTool) {
+          const callId = data.subCallId || data.callId || data.message?.toolCallId;
+          const key = callId ? scope(data, callId) : 'tool:' + event.seq;
+          let node = toolsByKey.get(key);
+          if (!node) {
+            node = { key, kind: 'tool', seq: event.seq, time: event.time, callId, turn: data.turn, step: data.step, children: [], status: 'pending', tool: data.tool || data.name || null, ptc: isPtc };
+            toolsByKey.set(key, node);
+            nodes.push(node);
+          }
+          node.parentCallId = data.parentCallId || (isPtc ? data.rootCallId : null) || node.parentCallId;
+          node.tool = data.tool || data.name || node.tool;
+          node.durationMs = executionDuration(data) ?? node.durationMs;
+          if (data.arguments !== undefined) node.arguments = data.arguments;
+          if (type === 'tool/call' || type === 'tool/ptc-dispatch-start') {
+            node.start = event;
+          } else {
+            node.end = event;
+            node.result = data.message?.content ?? data.result ?? data.content ?? data.message ?? data;
+            node.status = executionFailed(data.message) || executionFailed(data.result) || executionFailed(data) ? 'error' : 'done';
+            if (data.error) node.error = data.error;
+            if (data.attachments) node.attachments = data.attachments;
+          }
+          continue;
+        }
+        // Host filters private records; defense in depth also keeps future raw
+        // prompt/stream/reasoning variants out of this presentation layer.
+        if (/system|prompt|reasoning|stream|delta/.test(type)) continue;
+        let label = labels[type];
+        if (!label && /retry/.test(type)) label = '重试';
+        if (!label && /compact/.test(type)) label = '上下文整理';
+        const node = { key: 'event:' + event.seq, kind: 'record', seq: event.seq, time: event.time, type, label: label || '其他记录 · ' + type, unknown: !label, durationMs: executionDuration(data), payloads: [] };
+        if (type === 'user/message' || type === 'assistant/message') {
+          const text = executionText(data);
+          if (text) node.payloads.push({ label: type === 'user/message' ? '输入原文' : '文本原文', value: text });
+          if (data.attachments) node.payloads.push({ label: '附件记录', value: data.attachments });
+        } else if (type === 'assistant/attempt') {
+          node.payloads.push({ label: '记录详情', value: { turn: data.turn, step: data.step } });
+        } else if (label) {
+          node.payloads.push({ label: '记录详情', value: data });
+        }
+        nodes.push(node);
+      }
+      const parentOf = new Map();
+      for (const node of toolsByKey.values()) {
+        if (!node.parentCallId) continue;
+        const exact = toolsByKey.get(scope(node, node.parentCallId));
+        const candidates = exact ? [exact] : [...toolsByKey.values()].filter(candidate => candidate.callId === node.parentCallId && (node.turn == null || candidate.turn === node.turn));
+        if (candidates.length === 1 && candidates[0] !== node) parentOf.set(node, candidates[0]);
+      }
+      const roots = [];
+      for (const node of nodes) {
+        const parent = parentOf.get(node);
+        const visited = new Set([node]);
+        let ancestor = parent;
+        while (ancestor && !visited.has(ancestor)) { visited.add(ancestor); ancestor = parentOf.get(ancestor); }
+        if (parent && !ancestor) parent.children.push(node);
+        else roots.push(node);
+      }
+      return roots.sort((a, b) => a.seq - b.seq);
+    }
+
+    /** One disposable loader per selected message; invalidations during I/O queue
+     * another pass, and all pages are drained before waiting for the next SSE. */
+    function createExecutionController({ groupId, messageId, onChange, fetchPage = api.execution }) {
+      let state = emptyExecutionState(groupId, messageId);
+      let disposed = false;
+      let dirty = false;
+      let pending = null;
+      let requestController = null;
+      let preparingTimer = null;
+      let lastNotice = -1;
+      const publish = patch => { state = { ...state, ...patch }; if (!disposed) onChange(state); };
+      const refresh = () => {
+        if (disposed) return Promise.resolve();
+        clearTimeout(preparingTimer);
+        dirty = true;
+        if (pending) return pending;
+        pending = Promise.resolve().then(async () => {
+          publish({ loading: true, loadError: '' });
+          try {
+            while (!disposed && (dirty || state.hasMore)) {
+              dirty = false;
+              const afterSeq = state.nextSeq;
+              requestController = new AbortController();
+              const page = await fetchPage(groupId, messageId, afterSeq, requestController.signal);
+              if (disposed) return;
+              if (page.groupId !== groupId || page.messageId !== messageId) throw new Error(uiT('执行记录与所选消息不匹配'));
+              const next = mergeExecutionPage(state, page);
+              if (next.hasMore && next.nextSeq <= afterSeq) throw new Error(uiT('执行记录分页未前进，请重试'));
+              publish(next);
+            }
+          } catch (error) {
+            if (!disposed) publish({ loadError: String(error?.message || error) });
+          } finally {
+            pending = null;
+            requestController = null;
+            if (!disposed) {
+              publish({ loading: false });
+              if (state.availability === 'preparing' && !state.loadError) preparingTimer = setTimeout(refresh, 2000);
+            }
+          }
+        });
+        return pending;
+      };
+      return {
+        refresh,
+        getState: () => state,
+        notify(frame) {
+          if (disposed || frame.groupId !== groupId || (frame.type !== 'hello' && frame.messageId !== messageId)) return;
+          if (frame.type !== 'hello' && Number.isSafeInteger(frame.seq)) {
+            if (frame.seq <= lastNotice && !(!state.execution && frame.execution)) return;
+            lastNotice = Math.max(lastNotice, frame.seq);
+          }
+          void refresh();
+        },
+        dispose() { disposed = true; dirty = false; clearTimeout(preparingTimer); requestController?.abort(); },
+      };
+    }
+
+    function useMessageExecution(target) {
+      const groupId = target?.groupId;
+      const messageId = target?.message.messageId;
+      const [state, setState] = React.useState(() => emptyExecutionState(groupId, messageId));
+      const controller = React.useRef(null);
+      React.useEffect(() => {
+        if (!groupId || !messageId) return undefined;
+        const current = createExecutionController({ groupId, messageId, onChange: setState });
+        controller.current = current;
+        void current.refresh();
+        return () => { current.dispose(); if (controller.current === current) controller.current = null; };
+      }, [groupId, messageId]);
+      // A selection change renders before its effect runs. Never show A's records in B.
+      return { state: state.groupId === groupId && state.messageId === messageId ? state : emptyExecutionState(groupId, messageId), controller };
+    }
+
+    function ExecutionPayload({ label, value }) {
+      const [expanded, setExpanded] = React.useState(false);
+      const [copyStatus, setCopyStatus] = React.useState('');
+      const full = executionPayload(value);
+      return h('details', { className: 'bt-execution-payload', onToggle: event => setExpanded(event.currentTarget.open) },
+        h('summary', { tabIndex: 0 }, label, withRaw(() => h('span', { className: 'bt-execution-preview' }, full.slice(0, 120) + (full.length > 120 ? '…' : '')))),
+        expanded ? h(React.Fragment, null,
+          h('button', { type: 'button', style: S.smallBtn, onClick: () => copyTextToClipboard(full).then(() => setCopyStatus('已复制完整内容')).catch(error => setCopyStatus({ error: String(error?.message || error) })) }, '复制完整内容'),
+          withRaw(() => h('span', { role: 'status', 'aria-live': 'polite' }, typeof copyStatus === 'string' ? uiT(copyStatus) : uiT('复制失败：{error}', copyStatus))),
+          withRaw(() => h('pre', null, full)),
+        ) : null,
+      );
+    }
+
+    function ExecutionEvent({ node }) {
+      const duration = Number.isFinite(node.durationMs) ? (node.durationMs < 1000 ? node.durationMs + ' ms' : (node.durationMs / 1000).toFixed(2) + ' s') : '';
+      const tool = node.kind === 'tool';
+      return h('li', { className: 'bt-execution-event', 'data-execution-seq': node.seq },
+        h('div', { className: 'bt-execution-event-head' },
+          withRaw(() => h('strong', null, tool ? uiT(node.ptc ? '内部工具 · {tool}' : '工具 · {tool}', { tool: node.tool || uiT('工具') }) : node.unknown ? uiT('其他记录 · {type}', { type: node.type }) : uiT(node.label))),
+          tool ? h('span', { className: node.status === 'error' ? 'bt-execution-failed' : '' }, node.status === 'error' ? '失败' : node.status === 'done' ? '完成' : '等待结果') : null,
+          h('time', { title: String(node.time ?? '') }, formatTime(node.time)),
+          duration ? h('span', null, duration) : null,
+        ),
+        tool && node.arguments !== undefined ? h(ExecutionPayload, { label: '调用参数', value: node.arguments }) : null,
+        node.children?.length ? h('ol', { className: 'bt-execution-children' }, node.children.map(child => h(ExecutionEvent, { key: child.key, node: child }))) : null,
+        tool && node.result !== undefined ? h(ExecutionPayload, { label: node.end?.time ? uiT('工具结果 · {time}', { time: formatTime(node.end.time) }) : uiT('工具结果'), value: node.result }) : null,
+        tool && node.error ? h(ExecutionPayload, { label: '错误详情', value: node.error }) : null,
+        tool && node.attachments ? h(ExecutionPayload, { label: '附件记录', value: node.attachments }) : null,
+        (node.payloads || []).map((payload, index) => h(ExecutionPayload, { key: index, ...payload })),
+      );
+    }
+
+    function executionReasonText(reason) {
+      const messages = {
+        'session-query-unavailable': '会话记录服务暂不可用，请稍后重试。',
+        'session-log-missing': '原始会话记录已不存在。',
+        'session-log-corrupt': '原始会话记录损坏，暂时无法读取。',
+        'session-log-read-failed': '暂时无法读取原始会话记录，请稍后重试。',
+        'execution-session-not-recorded': '这条消息尚未记录对应会话。',
+        'execution-turn-not-recorded': '没有找到这条消息的执行轮次。',
+        'execution-log-incomplete': '执行记录不完整，以下仅显示仍可读取的部分。',
+        'legacy-message-has-no-execution-reference': '这条历史消息没有关联执行记录。',
+      };
+      if (messages[reason]) return messages[reason];
+      if (['invalid-execution-reference', 'execution-reference-changed', 'session-reference-mismatch', 'ambiguous-input-message', 'execution-reference-mismatch', 'ambiguous-recorded-turn', 'execution-boundary-missing', 'input-message-mismatch', 'execution-boundary-mismatch'].includes(reason)) return '无法确认这条消息对应的执行范围。';
+      return '请稍后刷新记录重试。';
+    }
+
+    function ExecutionDrawer({ target, state, onClose, onRefresh, onOpenSession = openBotSession }) {
+      const dialogRef = React.useRef(null);
+      const [sessionError, setSessionError] = React.useState('');
+      React.useEffect(() => {
+        const dialog = dialogRef.current;
+        if (!dialog) return undefined;
+        const release = containModalFocus(dialog);
+        const doc = dialog.ownerDocument;
+        const onKeyDown = event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); onClose(); } };
+        doc.addEventListener('keydown', onKeyDown);
+        return () => {
+          doc.removeEventListener('keydown', onKeyDown);
+          if (release) release();
+          if (target.returnFocus?.isConnected) target.returnFocus.focus({ preventScroll: true });
+        };
+      }, [target.groupId, target.message.messageId, onClose]);
+      const status = state.status || target.message.status;
+      const statusLabel = { pending: '等待执行', streaming: '执行中', running: '执行中', done: '已完成', error: '失败', stopped: '已停止' }[status] || status || '状态未知';
+      const sessionId = state.execution?.sessionId || state.sessionId;
+      const legacy = state.availability === 'legacy-unlinked';
+      const available = state.availability === 'available';
+      const records = projectExecutionEvents(state.events);
+      const reason = state.reason ? executionReasonText(state.reason) : '';
+      return h('div', { className: 'bt-root bt-execution-layer', onMouseDown: event => { if (event.target === event.currentTarget) onClose(); } },
+        h('aside', { ref: dialogRef, className: 'bt-execution-drawer', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'bt-execution-title', tabIndex: -1 },
+          h('header', { className: 'bt-execution-header' },
+            h('div', null,
+              h('h2', { id: 'bt-execution-title' }, '执行过程'),
+              withRaw(() => h('div', { className: 'bt-execution-source' }, uiT('{bot} · 消息 #{message}', { bot: target.message.author?.name || 'Bot', message: target.message.seq ?? target.message.messageId }))),
+              h('div', { role: 'status', 'aria-live': 'polite', className: status === 'error' ? 'bt-execution-failed' : '' }, statusLabel),
+            ),
+            h('button', { type: 'button', style: S.ghostBtn, onClick: onClose, 'aria-label': '关闭执行过程' }, '×'),
+          ),
+          h('div', { className: 'bt-execution-body', 'aria-busy': state.loading },
+            state.loadError ? h('div', { role: 'alert', className: 'bt-execution-failed' }, '加载失败：', withRaw(() => h('span', null, state.loadError)), h('button', { type: 'button', style: S.ghostBtn, disabled: state.loading, onClick: onRefresh }, '重试')) : null,
+            state.loading ? h('p', { role: 'status' }, state.events.length ? '正在加载后续记录…' : '正在加载执行过程…') : null,
+            state.availability === 'preparing' ? h('p', { role: 'status' }, '执行记录正在准备，稍后会自动更新。') : null,
+            legacy ? h('p', { role: 'status' }, '这条历史消息没有关联执行记录，无法定位当时的执行过程。') : null,
+            state.availability === 'unavailable' ? h('p', { role: 'status' }, '执行记录不可用。', reason) : null,
+            available && reason ? h('p', { role: 'status' }, reason) : null,
+            state.error ? withRaw(() => h('div', { role: 'alert', className: 'bt-execution-failed' }, executionPayload(state.error))) : null,
+            available && !records.length && !state.loading ? h('p', { role: 'status' }, '尚无可显示的执行记录。') : null,
+            records.length ? h('ol', { className: 'bt-execution-events', 'aria-label': '按时间排序的执行记录' }, records.map(node => h(ExecutionEvent, { key: node.key, node }))) : null,
+          ),
+          h('footer', { className: 'bt-execution-footer' },
+            h('button', { type: 'button', style: S.ghostBtn, onClick: onRefresh, disabled: state.loading }, '刷新记录'),
+            sessionId && !legacy ? h('button', { type: 'button', style: S.ghostBtn, onClick: () => onOpenSession(sessionId, setSessionError) }, '打开完整会话') : null,
+            legacy && state.fallbackSessionId ? h('button', { type: 'button', style: S.ghostBtn, onClick: () => onOpenSession(state.fallbackSessionId, setSessionError) }, '查看成员当前会话') : null,
+            sessionError ? h('span', { role: 'alert', className: 'bt-execution-failed' }, sessionError) : null,
+          ),
+        ),
+      );
     }
 
     function colorOfBot(bots, botId) {
@@ -4237,6 +4635,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       onReview,
       onRevise,
       onRetry,
+      onExecution,
     }) {
       const actions = [];
       const details = meta || {};
@@ -4329,6 +4728,12 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           hover: true,
           danger: true,
           onSelect: select(onRetry),
+        });
+      }
+      if (isPlainChatMessage(message) && message.author.type === 'bot' && typeof onExecution === 'function') {
+        actions.push({
+          key: 'execution', icon: 'execution', label: '执行过程', title: '查看这条回复的执行过程',
+          section: 'execution', disabled: false, hover: false, danger: false, onSelect: select(onExecution),
         });
       }
       return actions;
@@ -6498,6 +6903,10 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           h('path', { key: 'p', d: 'm7 10 2 2 4-4' }),
         ],
         edit: [h('path', { key: 'p', d: 'M13.5 4.5 15.5 6.5 8 14H6v-2l7.5-7.5Z' })],
+        execution: [
+          h('path', { key: 'p', d: 'M5 4v12M9 5h6M9 10h6M9 15h6' }),
+          h('circle', { key: 'c', cx: 5, cy: 10, r: 2 }),
+        ],
         retry: [
           h('path', { key: 'p1', d: 'M15.5 8.5A5.5 5.5 0 1 0 15 10.5' }),
           h('path', { key: 'p2', d: 'M15.5 4.5v4h-4' }),
@@ -6679,6 +7088,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         {
           className: 'bt-msg',
           'data-message-id': message.messageId,
+          tabIndex: -1,
           'data-own': mine ? 'true' : 'false',
           style: S.msgRow(mine, groupStart, groupEnd),
           onContextMenu: typeof onContextMenu === 'function' ? (event) => onContextMenu(event, message) : undefined,
@@ -6800,6 +7210,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       onReview,
       onRevise,
       onRetry,
+      onExecution,
     }) {
       // Prefer the live message so a streaming reply enables/disables menu items
       // as it finishes; fall back to the snapshot taken when the menu opened.
@@ -6820,6 +7231,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         onReview,
         onRevise,
         onRetry,
+        onExecution,
       });
       let separatorCount = 0;
       actions.forEach((action, index) => {
@@ -9373,7 +9785,11 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         persistSectionsCollapsed(state.sectionsCollapsed || {});
       }, [state.sectionsCollapsed]);
 
-      useSse(state.activeGroupId, dispatch);
+      const [executionTarget, setExecutionTarget] = React.useState(null);
+      const activeExecutionTarget = executionTarget?.groupId === state.activeGroupId ? executionTarget : null;
+      const execution = useMessageExecution(activeExecutionTarget);
+      const closeExecution = React.useCallback(() => setExecutionTarget(null), []);
+      useSse(state.activeGroupId, dispatch, frame => { if (activeExecutionTarget) execution.controller.current?.notify(frame); });
 
       const reportedRef = React.useRef(false);
       React.useEffect(() => {
@@ -9450,6 +9866,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       React.useEffect(() => {
         setReplyTarget(null);
         setMessageMenu(null);
+        setExecutionTarget(null);
         setHeaderMenuOpen(false);
         setShowJump(false);
         setNewCount(0);
@@ -9575,7 +9992,9 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           : null;
         const x = Number.isFinite(event.clientX) && event.clientX > 0 ? event.clientX : rect ? rect.left + 36 : 16;
         const y = Number.isFinite(event.clientY) && event.clientY > 0 ? event.clientY : rect ? rect.top + 22 : 16;
-        setMessageMenu({ message, x, y, groupId: activeGroup ? activeGroup.groupId : null });
+        const focused = typeof document === 'undefined' ? null : document.activeElement;
+        const returnFocus = focused && focused !== document.body && !focused.closest?.('.bt-msg-menu') ? focused : event.currentTarget;
+        setMessageMenu({ message, x, y, groupId: activeGroup ? activeGroup.groupId : null, returnFocus });
       };
 
       const openGroupCreate = (folderId) =>
@@ -10225,9 +10644,19 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                 onReview: activeIsDirect ? undefined : openReview,
                 onRevise: activeIsDirect ? undefined : doRevise,
                 onRetry: doRetry,
+                onExecution: message => setExecutionTarget({ groupId: messageMenu.groupId, message, returnFocus: messageMenu.returnFocus }),
               })
             : null,
         ),
+        executionTarget && executionTarget.groupId === state.activeGroupId
+          ? h(ExecutionDrawer, {
+              key: executionTarget.groupId + ':' + executionTarget.message.messageId,
+              target: executionTarget,
+              state: execution.state,
+              onClose: closeExecution,
+              onRefresh: () => execution.controller.current?.refresh(),
+            })
+          : null,
         dialog && dialog.kind === 'settings'
           ? h(ChatSettingsDialog, {
               settings: state.chatDisplaySettings,

@@ -5,6 +5,7 @@
  *   GET  /api/bot-team.bootstrap   — bots / groups / members / model catalog
  *   GET  /api/bot-team.messages    — timeline page (?groupId=&afterSeq=&beforeSeq=&limit=)
  *   GET  /api/bot-team.events      — SSE frames for one group
+ *   GET  /api/bot-team.message-execution — recorded execution for one Bot reply
  *   POST /api/bot-team.action      — { action, payload } (groups, direct chats,
  *                                    folders, members, messages, tasks …)
  *   GET  /api/bot-team.file        — persona file read (?botId=&kind=bot, legacy soul|agent)
@@ -16,6 +17,7 @@
 export const ROUTES = {
   bootstrap: '/api/bot-team.bootstrap',
   messages: '/api/bot-team.messages',
+  execution: '/api/bot-team.message-execution',
   events: '/api/bot-team.events',
   action: '/api/bot-team.action',
   health: '/api/bot-team.health',
@@ -40,6 +42,12 @@ export function registerRoutes(ctx, service) {
     methods: ['GET'],
     requestBody: 'buffered',
     fetch: (request) => service.handleMessages(request),
+  });
+  register({
+    path: ROUTES.execution,
+    methods: ['GET'],
+    requestBody: 'buffered',
+    fetch: (request) => service.handleMessageExecution(request),
   });
   register({
     path: ROUTES.events,

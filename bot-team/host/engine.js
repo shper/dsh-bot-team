@@ -25,6 +25,10 @@ import {
 import { newId, now, withTimeout } from './util.js';
 import { LastRequestMetrics } from './message-metrics.js';
 
+const executionSeq = (value) => Number.isSafeInteger(value) && value >= 0;
+const executionTurn = (value) => Number.isSafeInteger(value) && value > 0;
+const executionEvent = (type) => /^(?:turn|step|user|assistant|tool|tools|ptc|approval|llm|request|compaction)\//.test(type);
+
 export class Engine {
   constructor({ ctx, repo, pool, personas, bus, config, logger, quotaGuard, taskHook }) {
     this.ctx = ctx;
@@ -45,6 +49,7 @@ export class Engine {
     this.disposed = false;
 
     this.offSession = ctx.on('session/event', (session, event) => this.onSessionEvent(session, event));
+    this.offClaim = pool.attachClaimHandler?.((payload) => this.onInboxClaim(payload));
   }
 
   // ── message helpers ──────────────────────────────────────────────────────
@@ -220,6 +225,19 @@ export class Engine {
   startJob(job) {
     job.state = 'running';
     job.turn = null;
+    job.submitted = false;
+    job.turnStarts = new Map();
+    job.observedTurn = null;
+    job.observedTurnSeq = -1;
+    job.execution = {
+      version: 1,
+      jobId: job.jobId,
+      sessionId: null,
+      inputMessageId: null,
+      turn: null,
+      startSeq: null,
+      endSeq: null,
+    };
     job.steps = [];
     job.streamText = '';
     job.requestMetrics = new LastRequestMetrics();
@@ -250,7 +268,7 @@ export class Engine {
       provider: bot.provider ?? null,
       model: bot.model ?? null,
       reasoningEffort: bot.reasoningEffort ?? null,
-      meta: job.meta ?? null,
+      meta: { ...(job.meta || {}), execution: job.execution },
     });
     job.placeholderId = placeholder.messageId;
     this.bus.emit(job.groupId, { type: 'message.added', message: placeholder });
@@ -281,8 +299,9 @@ export class Engine {
         return;
       }
       job.sessionId = agent.id;
-      job.turn = null;
       this.activeBySession.set(agent.id, job);
+      await this.persistExecution(job, { sessionId: agent.id });
+      if (job.finished) return;
 
       try {
         await this.personas.refresh(bot.botId);
@@ -290,14 +309,26 @@ export class Engine {
         this.logger?.warn?.(`bot-team: refresh persona ${bot.botId} failed: ${String(error)}`);
       }
 
+      if (job.finished) return;
       const prompt = this.buildPrompt(job, bot, context);
       job.promptPreview = prompt.slice(0, 2000);
+      const inputMessageId = newId('umsg');
+      // Session.seq is the next accepted event index, an inclusive search floor.
+      const submittedSeq = agent.session?.seq;
+      await this.persistExecution(job, {
+        inputMessageId,
+        ...(executionSeq(submittedSeq) ? { submittedSeq } : {}),
+      });
+      // A stop/timeout may have occurred while the durable write was pending.
+      if (job.finished) return;
 
       // M0 P1: followup puts the EXACT value into the durable inbox — it must be
-      // a complete UserMessage (role + id + content + source).
-      agent.followup({
+      // a complete UserMessage (role + id + content + source). Claims may fire
+      // synchronously, so arm correlation only after the write has succeeded.
+      job.submitted = true;
+      await agent.followup({
         role: 'user',
-        id: newId('umsg'),
+        id: inputMessageId,
         content: [{ type: 'text', text: prompt }],
         source: { kind: 'user' },
       });
@@ -309,20 +340,114 @@ export class Engine {
     }
   }
 
+  emitExecutionUpdated(job, seq, includeExecution = false) {
+    this.bus.emit(job.groupId, {
+      type: 'execution.updated',
+      messageId: job.placeholderId,
+      seq: executionSeq(seq) ? seq : null,
+      ...(includeExecution ? { execution: { ...job.execution } } : {}),
+    });
+  }
+
+  async persistExecution(job, patch, seq = null) {
+    const message = this.repo.messages.get(job.placeholderId);
+    if (!message) throw new Error('无法保存执行记录：回复消息不存在');
+    job.execution = { ...job.execution, ...patch };
+    message.meta = { ...(message.meta || {}), execution: job.execution };
+    message.updatedAt = now();
+    // Do not use putMessage here: it deliberately swallows storage failures.
+    const saved = this.repo.putMessageStrict(message);
+    this.emitExecutionUpdated(job, seq, true);
+    await saved;
+  }
+
+  executionFailed(job, error) {
+    if (job.finished) return;
+    this.finishJob(job, 'error', `无法保存执行记录：${String(error?.message || error)}`);
+    if (job.submitted && job.execution.endSeq === null) {
+      try {
+        this.ctx.agents.get(job.sessionId)?.cancel?.({ kind: 'user' }, { keepInbox: false });
+      } catch (cancelError) {
+        this.logger?.warn?.(`bot-team: cancel agent failed: ${String(cancelError)}`);
+      }
+    }
+  }
+
+  bindExecutionTurn(job, turn) {
+    if (!executionTurn(turn) || (job.turn !== null && job.turn !== turn)) return;
+    if (job.turn === turn) return;
+    job.turn = turn;
+    job.observedTurn = turn;
+    const startSeq = job.turnStarts.get(turn) ?? null;
+    job.turnStarts.clear();
+    void this.persistExecution(job, { turn, startSeq }, startSeq)
+      .catch((error) => this.executionFailed(job, error));
+  }
+
+  onInboxClaim(payload) {
+    const job = this.activeBySession.get(payload?.agent?.id);
+    if (!job || job.finished || job.ending || !job.submitted) return;
+    if (!job.execution.inputMessageId || payload.message?.id !== job.execution.inputMessageId) return;
+    this.bindExecutionTurn(job, payload.turn);
+  }
+
   onSessionEvent(session, event) {
     if (!session || !event) return;
     const job = this.activeBySession.get(session.id);
-    if (!job || job.finished) return;
+    if (!job || job.finished || job.ending) return;
+    const data = event.data || {};
+    const correlated = Boolean(job.execution.inputMessageId);
+    if (correlated && !job.submitted) return;
+    if (executionSeq(event.seq) && executionSeq(job.execution.submittedSeq) && event.seq < job.execution.submittedSeq) return;
+
+    if (event.type === 'turn/start') {
+      if (!executionTurn(data.turn)) return;
+      // Legacy test/adapter events may omit both inbox identity and accepted seq.
+      // A real submitted job must always wait for an exact claim or input ID.
+      if (!correlated) {
+        if (!executionSeq(event.seq) && job.turn === null) job.turn = job.observedTurn = data.turn;
+        return;
+      }
+      // Adapters without accepted sequence numbers can still correlate the exact
+      // user input; leave their unknown boundary null instead of inventing a seq.
+      if (!executionSeq(event.seq) && job.observedTurnSeq < 0) job.observedTurn = data.turn;
+      if (executionSeq(event.seq)) {
+        if (event.seq > job.observedTurnSeq) {
+          job.observedTurn = data.turn;
+          job.observedTurnSeq = event.seq;
+        }
+        if (job.turn === null && !job.turnStarts.has(data.turn)) job.turnStarts.set(data.turn, event.seq);
+        if (job.turn === data.turn && job.execution.startSeq === null) {
+          void this.persistExecution(job, { startSeq: event.seq }, event.seq)
+            .catch((error) => this.executionFailed(job, error));
+        }
+      }
+      return;
+    }
+    if (event.type === 'user/message' && correlated) {
+      if ((data.id ?? data.message?.id) !== job.execution.inputMessageId) return;
+      // Accepted user/message contains the UserMessage itself, without a turn.
+      // Its exact ID disambiguates the enclosing turn/start candidate.
+      this.bindExecutionTurn(job, executionTurn(data.turn) ? data.turn : job.observedTurn);
+    }
+    if (job.turn === null) return;
+    if (executionTurn(data.turn) ? data.turn !== job.turn : job.observedTurn !== job.turn) return;
+    if (executionSeq(event.seq) && executionSeq(job.execution.startSeq) && event.seq < job.execution.startSeq) return;
+
+    if (event.type === 'turn/end' && data.turn === job.turn && correlated && executionSeq(event.seq)) {
+      job.ending = true;
+      void this.persistExecution(job, { endSeq: event.seq }, event.seq)
+        .then(() => this.finishTurn(job, data.reason))
+        .catch((error) => this.executionFailed(job, error));
+      return;
+    }
+    if (executionSeq(event.seq) && executionEvent(event.type)) this.emitExecutionUpdated(job, event.seq);
     if (event.type === 'approval/asked') {
       if (this.config.botApprovalPolicy !== 'never') this.approvalMessage(job, event.data || {});
       return;
     }
     if (event.type === 'approval/decided') {
       this.settleApproval(job, event.data && event.data.id, event.data && event.data.outcome);
-      return;
-    }
-    if (event.type === 'turn/start') {
-      if (job.turn === null) job.turn = event.data.turn;
       return;
     }
     if ((event.type === 'assistant/message' || event.type === 'assistant/attempt') && event.data.turn === job.turn) {
@@ -345,31 +470,35 @@ export class Engine {
       }
       return;
     }
-    if (event.type === 'turn/end' && event.data.turn === job.turn) {
-      const reason = event.data.reason || {};
-      if (reason.kind === 'completed') {
-        this.finishJob(job, 'done');
-      } else if (reason.kind === 'aborted') {
-        this.finishJob(job, 'stopped', reason.reason && reason.reason.kind === 'user' ? '已停止' : '已中断');
-      } else if (reason.kind === 'max-tokens') {
-        this.finishJob(job, 'error', '达到输出上限');
-      } else {
-        const detail = reason.error && reason.error.message ? reason.error.message : `turn ended: ${reason.kind}`;
-        this.finishJob(job, 'error', detail);
-      }
+    if (event.type === 'turn/end' && data.turn === job.turn) this.finishTurn(job, data.reason);
+  }
+
+  finishTurn(job, reason = {}) {
+    if (reason.kind === 'completed') {
+      this.finishJob(job, 'done');
+    } else if (reason.kind === 'aborted') {
+      this.finishJob(job, 'stopped', reason.reason && reason.reason.kind === 'user' ? '已停止' : '已中断');
+    } else if (reason.kind === 'max-tokens') {
+      this.finishJob(job, 'error', '达到输出上限');
+    } else {
+      const detail = reason.error && reason.error.message ? reason.error.message : `turn ended: ${reason.kind}`;
+      this.finishJob(job, 'error', detail);
     }
   }
 
   onAssistantStream(payload) {
     if (!payload || !payload.agent || !payload.frame) return;
     const job = this.activeBySession.get(payload.agent.id);
-    if (!job || job.finished) return;
+    if (!job || job.finished || job.ending || job.turn === null || job.observedTurn !== job.turn) return;
     const frame = payload.frame;
+    if (executionTurn(frame.turn) && frame.turn !== job.turn) return;
     if (frame.type === 'start') {
       job.requestMetrics?.start(frame, job.turn);
+      job.streamAttemptId = frame.attemptId;
       job.streamText = '';
       return;
     }
+    if (frame.attemptId && frame.attemptId !== job.streamAttemptId) return;
     if (frame.type === 'end') {
       job.requestMetrics?.end(frame);
       return;
@@ -427,7 +556,7 @@ export class Engine {
       message.usage = job.usage ?? null;
       message.generationStats = job.requestMetrics?.finish(status) ?? null;
       message.kind = job.messageKind ?? message.kind ?? 'chat';
-      const meta = { ...(message.meta || {}), ...(job.meta || {}) };
+      const meta = { ...(message.meta || {}), ...(job.meta || {}), execution: job.execution };
       if (job.kind === 'review' && status === 'done') {
         const verdict = parseReviewVerdict(text);
         if (verdict) meta.verdict = verdict;
@@ -436,6 +565,9 @@ export class Engine {
       message.updatedAt = now();
       this.repo.putMessage(message);
       this.bus.emit(job.groupId, { type: 'message.updated', message });
+      // The accepted end event may have invalidated before this final status.
+      // A null seq also refreshes stopped jobs and bypasses event deduplication.
+      this.emitExecutionUpdated(job, null, true);
     }
     if (job.approvalMessages && job.approvalMessages.size > 0) {
       for (const approvalId of [...job.approvalMessages.keys()]) {
@@ -680,7 +812,7 @@ export class Engine {
       triggerSeq: message.seq,
       triggerMessageId: message.replyTo || message.messageId,
       messageKind: 'chat',
-      meta: { retryOf: message.messageId },
+      meta: { ...meta, retryOf: message.messageId },
     });
   }
 
@@ -1079,6 +1211,7 @@ export class Engine {
     this.disposed = true;
     try {
       this.offSession?.();
+      this.offClaim?.();
     } catch {
       /* noop */
     }

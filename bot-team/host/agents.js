@@ -268,7 +268,7 @@ export class AgentPool {
         if (typeof agentCtx.on === 'function') {
           agentCtx.on('agent/assistant-stream', (payload) => {
             try {
-              this.streamHandler?.(payload);
+              this.streamHandler?.({ ...payload, agent });
             } catch {
               /* noop */
             }
@@ -276,6 +276,20 @@ export class AgentPool {
         }
       } catch (error) {
         this.logger?.warn?.(`bot-team: subscribe assistant stream failed: ${String(error)}`);
+      }
+
+      // Inbox claims are agent-scoped and contain only { message, turn }.
+      // Capture the actual agent, since a membership may later rotate sessions.
+      try {
+        agentCtx.on?.('agent/inbox/claimed', (payload) => {
+          try {
+            this.claimHandler?.({ ...payload, agent });
+          } catch (error) {
+            this.logger?.warn?.(`bot-team: handle inbox claim failed: ${String(error)}`);
+          }
+        });
+      } catch (error) {
+        this.logger?.warn?.(`bot-team: subscribe inbox claims failed: ${String(error)}`);
       }
 
       // 6) approval policy: `ask` lets a bot request one-time permission for a
@@ -310,6 +324,13 @@ export class AgentPool {
   /** Assistant stream frames are agent-scoped; the setup callback forwards them here. */
   attachStreamHandler(handler) {
     this.streamHandler = handler;
+  }
+
+  attachClaimHandler(handler) {
+    this.claimHandler = handler;
+    return () => {
+      if (this.claimHandler === handler) this.claimHandler = undefined;
+    };
   }
 
   async disposeMember(membershipId) {
