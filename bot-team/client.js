@@ -26,11 +26,18 @@ window.__ModuleLoader__.load({
     // Content values (names, titles, message bodies) are protected per subtree:
     // a string that is literally one of these values is never translated even
     // when it also happens to be a UI label ("取消" as a group name, etc.).
-    const contentStack = [];    const UI_TEXT_PROPS = ['title', 'placeholder', 'aria-label', 'aria-description', 'alt'];
+    const contentStack = [];
+    const UI_TEXT_PROPS = ['title', 'placeholder', 'aria-label', 'aria-description', 'alt'];
 
     function interpolateUi(template, params) {
       if (!params) return template;
       return String(template).replace(/\{(\w+)\}/g, (match, name) => (name in params ? String(params[name]) : match));
+    }
+
+    /** Pick a singular dictionary key for count === 1, otherwise the plural template. */
+    function pluralUi(oneKey, manyKey, count, params) {
+      if (Number(count) === 1) return uiT(oneKey);
+      return uiT(manyKey, { ...(params || {}), count });
     }
 
     /** Translate one UI string. Content keys fall through unchanged. */
@@ -109,11 +116,16 @@ window.__ModuleLoader__.load({
             cloned = true;
           }
         };
+        const rawTitle = props.rawTitle === true;
         if ('raw' in props) {
           ensure();
           delete nextProps.raw;
         }
-        if (!rawElement && rawDepth === 0) {
+        if ('rawTitle' in props) {
+          ensure();
+          delete nextProps.rawTitle;
+        }
+        if (!rawElement && !rawTitle && rawDepth === 0) {
           for (const key of UI_TEXT_PROPS) {
             if (typeof props[key] === 'string' && props[key] && !inContent(props[key])) {
               ensure();
@@ -122,7 +134,7 @@ window.__ModuleLoader__.load({
           }
         }
       }
-      const nextChildren = rawDepth > 0 ? children : children.map(translateChild);
+      const nextChildren = rawDepth > 0 || (props && props.raw === true) ? children : children.map(translateChild);
       return React.createElement(type, nextProps, ...nextChildren);
     }
 
@@ -136,6 +148,7 @@ window.__ModuleLoader__.load({
       file: '/api/bot-team.file',
       upload: '/api/bot-team.upload',
       skills: '/api/bot-team.skills',
+      exportPdf: '/api/bot-team.export.pdf',
     };
     // Generic attachments are stored verbatim by the Host attachment service.
     // The browser cap keeps a single draft from blocking the page on huge files.
@@ -316,7 +329,7 @@ window.__ModuleLoader__.load({
       try {
         response = await fetch(url, options);
       } catch (error) {
-        throw new Error(`无法连接 Host：${String(error && error.message ? error.message : error)}`);
+        throw new Error(uiT('无法连接 Host：{error}', { error: String(error && error.message ? error.message : error) }));
       }
       let body = null;
       try {
@@ -325,7 +338,7 @@ window.__ModuleLoader__.load({
         body = null;
       }
       if (!body || body.ok === false) {
-        const message = body && body.error && body.error.message ? body.error.message : `请求失败 (HTTP ${response.status})`;
+        const message = body && body.error && body.error.message ? body.error.message : uiT('请求失败 (HTTP {status})', { status: response.status });
         throw new Error(message);
       }
       return body;
@@ -367,6 +380,11 @@ window.__ModuleLoader__.load({
         request(
           `${ROUTES.skills}?groupId=${encodeURIComponent(groupId)}&memberId=${encodeURIComponent(memberId || '')}`,
           { method: 'GET' },
+        ),
+      exportPdf: (groupId, lang) =>
+        fetch(
+          `${ROUTES.exportPdf}?groupId=${encodeURIComponent(groupId)}&lang=${encodeURIComponent(lang || 'zh')}`,
+          { method: 'GET', credentials: 'same-origin' },
         ),
     };
 
@@ -532,17 +550,55 @@ window.__ModuleLoader__.load({
       return bot ? bot.name : message.author.name || 'Bot';
     }
 
+    // Host/system messages are stored as Chinese prose. Translate the known
+    // event forms at render time (and in exports) so historic data follows a
+    // language switch without rewriting persisted messages.
+    const SYSTEM_MESSAGE_PATTERNS = [
+      [/^讨论「(.+?)」总结失败\/中断，已结束。$/, (m) => uiT('讨论「{topic}」总结失败/中断，已结束。', { topic: m[1] })],
+      [/^讨论「(.+?)」因成员执行失败而停止。$/, (m) => uiT('讨论「{topic}」因成员执行失败而停止。', { topic: m[1] })],
+      [/^讨论「(.+?)」已停止：(.+)$/, (m) => uiT('讨论「{topic}」已停止：{message}', { topic: m[1], message: m[2] })],
+      [/^讨论「(.+?)」已停止。$/, (m) => uiT('讨论「{topic}」已停止。', { topic: m[1] })],
+      [/^讨论「(.+?)」结束。$/, (m) => uiT('讨论「{topic}」结束。', { topic: m[1] })],
+      [/^开始讨论：(.+?)（(\d+) 位成员，共 (\d+) 轮(，结束生成总结)?）$/, (m) => uiT('开始讨论：{topic}（{count} 位成员，共 {rounds} 轮{suffix}）', {
+        topic: m[1],
+        count: m[2],
+        rounds: m[3],
+        suffix: m[4] ? uiT('，结束生成总结') : '',
+      })],
+      [/^请 @(.+?) 评审 #(\d+)（(.+?)）的消息$/, (m) => uiT('请 @{reviewer} 评审 #{seq}（{author}）的消息', { reviewer: m[1], seq: m[2], author: m[3] })],
+      [/^请 @(.+?) 根据 #(\d+) 的评审意见修改 #(\d+)$/, (m) => uiT('请 @{bot} 根据 #{reviewSeq} 的评审意见修改 #{targetSeq}', { bot: m[1], reviewSeq: m[2], targetSeq: m[3] })],
+      [/^任务「(.+?)」已验收，前置依赖解除：(.+?) 可以派发了。$/, (m) => uiT('任务「{title}」已验收，前置依赖解除：{names} 可以派发了。', { title: m[1], names: m[2].split('、').join(', ') })],
+      [/^(.+?) 请求权限：工具 (.+?)(（(.+)）)?。$/, (m) => uiT('{name} 请求权限：工具 {tool}{reason}。', {
+        name: m[1],
+        tool: m[2],
+        reason: m[4] ? uiT('（{reason}）', { reason: m[4] }) : '',
+      })],
+    ];
+
+    function translateSystemText(text) {
+      if (!isEnglishUi()) return String(text || '');
+      const source = String(text || '');
+      for (const [pattern, render] of SYSTEM_MESSAGE_PATTERNS) {
+        const match = pattern.exec(source);
+        if (match) return render(match);
+      }
+      return source;
+    }
+
     function buildGroupMarkdown({ group, members, bots, messages }) {
       const lines = [];
+      const sep = isEnglishUi() ? ', ' : '、';
       lines.push(`# ${group.title}`);
       if (group.topic) lines.push(`> ${group.topic}`);
       lines.push('');
-      lines.push(`- 成员：${members.map((member) => {
+      lines.push(`${uiT('- 成员：')}${members.map((member) => {
         const bot = bots.find((candidate) => candidate.botId === member.botId);
-        return bot ? `${bot.name}（${bot.provider}/${bot.model}）` : '（已删除）';
-      }).join('、')}`);
-      lines.push(`- 导出时间：${new Date().toLocaleString()}`);
-      lines.push(`- 消息数：${messages.length}`);
+        return bot
+          ? `${bot.name}${isEnglishUi() ? ' (' : '（'}${bot.provider}/${bot.model}${isEnglishUi() ? ')' : '）'}`
+          : uiT('（已删除）');
+      }).join(sep)}`);
+      lines.push(`${uiT('- 导出时间：')}${new Date().toLocaleString(isEnglishUi() ? 'en-US' : 'zh-CN')}`);
+      lines.push(`${uiT('- 消息数：')}${messages.length}`);
       lines.push('');
       lines.push('---');
       lines.push('');
@@ -550,21 +606,21 @@ window.__ModuleLoader__.load({
         const author = authorNameOf(message, bots);
         const badges = [];
         if (message.meta && message.meta.round) badges.push(uiT('第 {round} 轮', { round: message.meta.round }));
-        if (message.meta && message.meta.summary) badges.push('讨论总结');
-        if (message.meta && message.meta.verdict === 'pass') badges.push('评审通过');
-        if (message.meta && message.meta.verdict === 'changes') badges.push('需修改');
+        if (message.meta && message.meta.summary) badges.push(uiT('讨论总结'));
+        if (message.meta && message.meta.verdict === 'pass') badges.push(uiT('评审通过'));
+        if (message.meta && message.meta.verdict === 'changes') badges.push(uiT('需修改'));
         if (message.status && message.status !== 'done') badges.push(message.status);
         lines.push(`## [#${message.seq}] ${author}${badges.length ? ` · ${badges.join(' · ')}` : ''}`);
         lines.push('');
         if (message.kind === 'system' || (message.author && message.author.type === 'system')) {
-          lines.push(`> ${String(message.text || '').replace(/\n/g, '\n> ')}`);
+          lines.push(`> ${translateSystemText(message.text).replace(/\n/g, '\n> ')}`);
         } else {
           lines.push(String(message.text || ''));
         }
         if (Array.isArray(message.attachments) && message.attachments.length > 0) {
           for (const attachment of message.attachments) {
             const size = formatFileSize(attachment.bytes);
-            lines.push('- 附件：' + attachment.name + (size ? '（' + size + '）' : ''));
+            lines.push(uiT('- 附件：') + attachment.name + (size ? (isEnglishUi() ? ' (' : '（') + size + (isEnglishUi() ? ')' : '）') : ''));
           }
         }
         lines.push('');
@@ -655,36 +711,38 @@ window.__ModuleLoader__.load({
 
     function buildGroupHtml({ group, members, bots, messages }) {
       const title = escapeHtml(group.title || 'Bot Team');
+      const en = isEnglishUi();
+      const sep = en ? ', ' : '、';
       const roster = members
         .map((member) => {
           const bot = bots.find((candidate) => candidate.botId === member.botId);
           return bot
             ? escapeHtml(
-                bot.name +
-                  '（' +
+                  bot.name +
+                  (en ? ' (' : '（') +
                   bot.provider +
                   '/' +
                   bot.model +
-                  '）',
+                  (en ? ')' : '）'),
               )
             : '';
         })
         .filter(Boolean)
-        .join('、');
+        .join(sep);
       const rows = messages
         .map((message) => {
           const author = escapeHtml(authorNameOf(message, bots));
           const badges = [];
-          if (message.meta && message.meta.round) badges.push('第 ' + message.meta.round + ' 轮');
-          if (message.meta && message.meta.summary) badges.push('总结');
-          if (message.meta && message.meta.verdict === 'pass') badges.push('评审通过');
-          if (message.meta && message.meta.verdict === 'changes') badges.push('需修改');
-          const body = markdownToHtml(message.text || '');
+          if (message.meta && message.meta.round) badges.push(uiT('第 {round} 轮', { round: message.meta.round }));
+          if (message.meta && message.meta.summary) badges.push(uiT('总结'));
+          if (message.meta && message.meta.verdict === 'pass') badges.push(uiT('评审通过'));
+          if (message.meta && message.meta.verdict === 'changes') badges.push(uiT('需修改'));
+          const body = markdownToHtml(message.author && message.author.type === 'system' ? translateSystemText(message.text) : message.text || '');
           const attachments = Array.isArray(message.attachments)
             ? message.attachments
                 .map((attachment) => {
                   const size = formatFileSize(attachment.bytes);
-                  return '<div class="attachment">附件 · ' + escapeHtml(attachment.name) + (size ? ' · ' + size : '') + '</div>';
+                  return '<div class="attachment">' + escapeHtml(uiT('附件')) + ' · ' + escapeHtml(attachment.name) + (size ? ' · ' + size : '') + '</div>';
                 })
                 .join('')
             : '';
@@ -703,7 +761,7 @@ window.__ModuleLoader__.load({
         })
         .join('\n');
       return (
-        '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>' +
+        '<!doctype html><html lang="' + (en ? 'en' : 'zh-CN') + '"><head><meta charset="utf-8"><title>' +
         title +
         '</title><style>' +
         'body{font-family:-apple-system,system-ui,sans-serif;max-width:860px;margin:32px auto;padding:0 20px;color:#1f2329;line-height:1.6}' +
@@ -715,11 +773,11 @@ window.__ModuleLoader__.load({
         title +
         '</h1>' +
         (group.topic ? '<blockquote>' + escapeHtml(group.topic) + '</blockquote>' : '') +
-        '<p>成员：' +
+        '<p>' + escapeHtml(uiT('成员：')) +
         roster +
-        '</p><p>导出时间：' +
-        escapeHtml(new Date().toLocaleString()) +
-        ' · 消息数：' +
+        '</p><p>' + escapeHtml(uiT('导出时间：')) +
+        escapeHtml(new Date().toLocaleString(en ? 'en-US' : 'zh-CN')) +
+        ' · ' + escapeHtml(uiT('消息数：')) +
         messages.length +
         '</p><hr/>' +
         rows +
@@ -727,8 +785,7 @@ window.__ModuleLoader__.load({
       );
     }
 
-    function downloadText(filename, text, mime) {
-      const blob = new Blob([text], { type: mime || 'text/markdown;charset=utf-8' });
+    function downloadBlob(filename, blob) {
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
       anchor.href = url;
@@ -739,12 +796,511 @@ window.__ModuleLoader__.load({
       setTimeout(() => URL.revokeObjectURL(url), 2000);
     }
 
+    function downloadText(filename, text, mime) {
+      downloadBlob(filename, new Blob([text], { type: mime || 'text/markdown;charset=utf-8' }));
+    }
+
+    function safeExportName(value, fallback) {
+      return String(value || fallback || 'bot-team').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').slice(0, 80) || fallback || 'bot-team';
+    }
+
     // Kept in sync with host/chat-settings.js; the Host persists these per profile.
     // UI dictionaries are keyed by the Chinese source string. UI_ZH is generated
     // from the same keys at registration time; UI_EN lives beside it so a missing
     // entry falls back to Chinese instead of blank text.
-    const UI_EN = {};
-    const UI_ZH = Object.fromEntries(Object.keys(UI_EN).map((key) => [key, key]));
+    const UI_EN = {
+      " · 群：": " · Groups: ",
+      " · 未加入任何群聊": " · No group chats",
+      " · 消息数：": " · Messages: ",
+      " [代码] ": " [code] ",
+      " [图片] ": " [image] ",
+      " 发消息…": " a message…",
+      " 个 Bot 正在回复 · 停止": " bots replying · Stop",
+      " 个文件": " files per message",
+      " 轮": " ",
+      "- 附件：": "- Attachment: ",
+      "（回复中）": " (replying)",
+      "（空）": "(empty)",
+      "（已删除）": "(deleted)",
+      "（Bot 已删除）": "(Bot deleted)",
+      "[消息]": "[Message]",
+      "」超过 32 MB，已跳过": "」 exceeds 32 MB and was skipped",
+      "」上传失败：": "” upload failed: ",
+      "@ 提及": "@ mention",
+      "↑↓ 选择 · Enter 插入 · Esc 关闭": "↑↓ to select · Enter to insert · Esc to close",
+      "↑↓ 选择 · Enter 确认": "↑↓ to select · Enter to confirm",
+      "+ 添加": "+ Add",
+      "+ 新建 Bot": "+ New Bot",
+      "＋ 新建分组…": "+ New folder…",
+      "+ 新建任务": "+ New task",
+      "</p><p>导出时间：": "</p><p>Exported at: ",
+      "<div class=\"attachment\">附件 · ": "<div class=\"attachment\">Attachment · ",
+      "<p>成员：": "<p>Members: ",
+      "把 SKILL.md 放到 .dsh/skills 或 ~/.dsh/skills 后重试。": "Put SKILL.md in .dsh/skills or ~/.dsh/skills, then retry.",
+      "版本": "Version",
+      "包名": "Package",
+      "保存": "Save",
+      "保存设置": "Save settings",
+      "保存中…": "Saving…",
+      "本群 tokens：0": "Group tokens: 0",
+      "编辑": "Edit",
+      "编辑 Bot": "Edit Bot",
+      "编辑群信息": "Edit group info",
+      "编辑这个 Bot": "Edit this Bot",
+      "不分组": "No folder",
+      "参与成员": "Participants",
+      "插画头像": "Illustrated avatars",
+      "插件说明、版本号与开发者信息。": "Plugin description, version, and developer information.",
+      "插入 @ 提及": "Insert @ mention",
+      "插入 @ 提及，选中群成员": "Insert an @ mention and pick a group member",
+      "插入 /技能名，让 Bot 按 Skill 执行": "Insert /skill-name to have the Bot run a Skill",
+      "插入模板": "Insert template",
+      "查看 Bot 会话": "View Bot conversation",
+      "查看会话": "View conversation",
+      "常驻显示": "Always show",
+      "出错": "Error",
+      "创建": "Create",
+      "创建 Bot": "Create Bot",
+      "创建单聊": "Create direct chat",
+      "创建后点任务卡片「派发」开始执行；执行中可「中断」；点「执行流」查看该 Bot 的完整执行过程。": "After creating a task, click “Dispatch” on its card to start; while it runs you can “Interrupt” it; click “Execution flow” to see the Bot's full run.",
+      "创建任务": "Create task",
+      "创建一个可复用的 Agent：定好它是谁、用什么模型。": "Create a reusable agent: define who it is and which model it uses.",
+      "从全局 Bot 库删除「": "Delete from the global Bot library: 「",
+      "从左侧「单聊」新建一个 Bot（自动获得一对一会话），或创建一个群/话题把多个 Bot 拉进来；每个 Bot 可以有自己的模型、BOT.md 人格与能力。": "Create a Bot from “Direct chat” on the left (it gets a one-on-one conversation automatically), or create a group/topic and add several Bots. Each Bot can have its own model, BOT.md persona, and capabilities.",
+      "打开 Bot Team 消息设置": "Open Bot Team message settings",
+      "打开单聊": "Open direct chat",
+      "待派发": "Pending dispatch",
+      "单聊": "Direct chat",
+      "单聊 · 多 Agent 群聊 · 自定义分组": "Direct chats · Multi-agent group chats · Custom folders",
+      "单聊消息会直接发给这个 Bot，不需要 @；它的回复会实时出现在这里。": "Direct messages go straight to this Bot, no @ needed; its replies appear here in real time.",
+      "单聊消息输入框": "Direct chat message input",
+      "单聊自动创建": "Auto-created direct chats",
+      "当前工作区没有可用的 Skill": "No Skills are available in the current workspace",
+      "当前浏览器不支持文件选择": "File selection is not supported in this browser",
+      "当前内容已包含该模板，未重复插入。": "This template is already included; it was not inserted again.",
+      "当前是插画群头像；可随机配色或重置为按名称生成。": "Currently using an illustrated group avatar; you can randomize colors or reset to name-based generation.",
+      "当前是插画头像；可随机换机器人或重置为按名称生成。": "Currently using an illustrated avatar; you can switch to another robot or reset to name-based generation.",
+      "当前是随机配色群头像；可再次随机或重置为按名称生成。": "Currently using a randomly colored group avatar; you can randomize again or reset to name-based generation.",
+      "当前是随机生成的机器人头像；可再次随机或重置为按名称生成。": "Currently using a randomly generated robot avatar; you can randomize again or reset to name-based generation.",
+      "导出 HTML": "Export HTML",
+      "导出 Markdown": "Export Markdown",
+      "等待审批": "Awaiting approval",
+      "低": "Low",
+      "第 ": "Round ",
+      "调整它的模型与人格设定；所有 Bot 默认具备完整工具权限。": "Adjust its model and persona; all Bots have full tool access by default.",
+      "定位到原消息": "Jump to original message",
+      "定位原消息": "Go to original message",
+      "对话": "Chats",
+      "发起多轮讨论": "Start multi-round discussion",
+      "发起评审": "Start review",
+      "发起讨论": "New discussion",
+      "发送": "Send",
+      "发送中…": "Sending…",
+      "发言中": "Speaking",
+      "分组": "Folder",
+      "分组名称": "Folder name",
+      "分组内还没有群": "No groups in this folder yet",
+      "分组上移": "Move folder up",
+      "分组下移": "Move folder down",
+      "分组在左侧「群聊」中可展开/收起，也可以直接拖动群调整位置。": "Folders can be expanded or collapsed under “Group chats” on the left; you can also drag groups to reorder them.",
+      "分组只影响左侧群聊列表的整理方式，不会移动或删除群内消息。": "Folders only change how the group chat list on the left is organized; they never move or delete messages in a group.",
+      "复制成带作者署名的 Markdown 引用": "Copy as a Markdown quote with author attribution",
+      "复制为引用": "Copy as quote",
+      "复制文本": "Copy text",
+      "复制消息原文（Markdown）": "Copy message source (Markdown)",
+      "高": "High",
+      "给 ": "Send ",
+      "更多单聊操作": "More direct chat actions",
+      "更多群操作": "More group actions",
+      "工作目录（可选，绝对路径）": "Working directory (optional, absolute path)",
+      "关闭": "Close",
+      "关于": "About",
+      "滚动到这条消息引用的原消息": "Scroll to the quoted original message",
+      "还没有 Bot，点「+ 新建 Bot」创建一个。": "No bots yet. Click “+ New Bot” to create one.",
+      "还没有 Bot。新建一个 Bot，就会自动拥有一个单聊窗口。": "No bots yet. Create a Bot and it automatically gets a direct chat.",
+      "还没有成员。添加一个 Bot，或用「新建 Bot」创建一个带人格设定的成员。": "No members yet. Add a Bot, or use “New Bot” to create one with a persona.",
+      "还没有分组。可在左侧「群聊」标题右侧点文件夹图标新建。": "No folders yet. Click the folder icon to the right of the “Group chats” heading on the left to create one.",
+      "还没有群。新建一个群/话题，然后把 Bot 拉进来。": "No groups yet. Create a group/topic, then add Bots.",
+      "还没有任务。新建并派发后，可中断执行、查看执行详情。": "No tasks yet. After creating and dispatching one, you can interrupt it or view execution details.",
+      "还没有消息": "No messages yet",
+      "海浪": "Waves",
+      "花朵": "Flower",
+      "话题（可选）": "Topic (optional)",
+      "恢复默认": "Restore default",
+      "回到底部": "Back to bottom",
+      "回复": "Reply",
+      "回复 ": "Reply to ",
+      "回复生成中，暂不可回复": "A reply is being generated; you can't reply yet.",
+      "回复使用的模型": "Model used for replies",
+      "回复这条消息": "Reply to this message",
+      "回复中": "Replying",
+      "会话操作": "Conversation actions",
+      "会话视图服务不可用": "Conversation view service unavailable",
+      "火箭": "Rocket",
+      "火焰": "Flame",
+      "技能": "Skills",
+      "加载 Bot Team…": "Loading Bot Team…",
+      "加载更早的消息": "Load earlier messages",
+      "将当前会话导出为 HTML": "Export the current conversation as HTML",
+      "将当前会话导出为 Markdown": "Export the current conversation as Markdown",
+      "结束后由第一位成员输出共识/分歧/待决": "The first member summarizes consensus / disagreements / open questions at the end.",
+      "结束总结": "Summary at end",
+      "仅手动": "Manual only",
+      "紧急": "Urgent",
+      "进行中": "In progress",
+      "开发者": "Developer",
+      "开始单聊": "Start direct chat",
+      "开始讨论": "Start discussion",
+      "可用工具": "Available tools",
+      "空内容直接填入；已有内容追加到末尾，末尾是旧模板时自动替换。": "Empty content is inserted directly; existing content is appended, and an old template at the end is replaced automatically.",
+      "空闲": "Idle",
+      "控制 Bot 回复下方的模型、Token 与速度信息；保存后应用于所有群聊与单聊。": "Controls the model, token, and speed details below Bot replies; applies to all group and direct chats after saving.",
+      "例如：产品方案评审": "e.g. Product proposal review",
+      "例如：单测通过、无 lint 错误": "e.g. Unit tests pass and there are no lint errors",
+      "例如：工作": "e.g. Work",
+      "例如：工作、产品、个人。同名分组只能有一个。": "e.g. Work, Product, Personal. Folder names must be unique.",
+      "例如：架构师 Alice": "e.g. Architect Alice",
+      "例如：如何看待把 Agent 群聊接入现有 IM？": "e.g. How should we integrate agent group chat with our existing IM?",
+      "例如：实现登录页表单校验": "e.g. Implement login form validation",
+      "例如：重点检查方案风险与遗漏；输出 结论：通过/需修改，再给建议。": "e.g. Focus on risks and gaps; output Conclusion: pass / needs changes, then suggestions.",
+      "联网": "Web access",
+      "浏览器不支持复制": "Copying is not supported in this browser",
+      "浏览器不支持图片处理": "Image processing is not supported in this browser",
+      "留空使用插件默认目录，或填 /Users/you/project": "Leave blank to use the plugin's default directory, or enter /Users/you/project",
+      "留空使用默认：$DSH_HOME/dsh-bot-team/groups/<群 id>；单聊默认 $DSH_HOME/dsh-bot-team/direct/<botId>。修改后 Bot 下一轮会重建 DSH 会话（群消息保留）。": "Leave blank for the default: $DSH_HOME/dsh-bot-team/groups/<group id>; direct chats default to $DSH_HOME/dsh-bot-team/direct/<botId>. After a change, the Bot rebuilds its DSH session on the next turn (group messages are kept).",
+      "轮数": "Rounds",
+      "没有匹配的 Skill": "No matching Skills",
+      "每条消息最多添加 ": "Up to ",
+      "命令": "Commands",
+      "模型名称": "Model name",
+      "模型与工具": "Model & tools",
+      "默认": "Default",
+      "默认按名称生成机器人头像；点「随机生成」换一个配色/表情。": "By default, a robot avatar is generated from the name; click “Randomize” for a new color/mood.",
+      "默认按群名称生成渐变底色；可随机配色、选插画或上传图片。": "By default, a gradient is generated from the group name; you can randomize colors, pick an illustration, or upload an image.",
+      "目标、范围、注意事项…": "Goals, scope, notes…",
+      "排队中": "Queued",
+      "派发": "Dispatch",
+      "平均回复速度": "Average reply speed",
+      "评审": "Review",
+      "评审通过": "Review passed",
+      "评审要求（可选）": "Review requirements (optional)",
+      "评审者": "Reviewer",
+      "普通": "Normal",
+      "请另一位成员评审这条回复": "Ask another member to review this reply",
+      "请人评审": "Request review",
+      "请先填写分组名称。": "Enter a folder name first.",
+      "请先填写显示名。": "Enter a display name first.",
+      "请选择图片文件": "Choose an image file",
+      "取消": "Cancel",
+      "取消回复": "Cancel reply",
+      "去审批": "Go to approval",
+      "群": "Group",
+      "群里 @ 时使用；Bot 之间也用它互相称呼。": "Used for @ mentions in groups; Bots also use it to address each other.",
+      "群聊": "Group chats",
+      "群聊分组与拖拽排序": "Group chat folders and drag-and-drop ordering",
+      "群聊设置已保存，已应用于所有群聊": "Group chat settings saved and applied to all group chats",
+      "群聊消息输入框": "Group chat message input",
+      "群名称": "Group name",
+      "群头像": "Group avatar",
+      "群头像会显示在左侧群列表和聊天顶部。": "The group avatar appears in the group list on the left and at the top of the chat.",
+      "让作者按这条评审意见修改": "Ask the author to revise based on this review",
+      "让作者修改": "Ask the author to revise",
+      "人格模板库": "Persona templates",
+      "人格与工作规范": "Persona & working guidelines",
+      "人格与工作规范在「编辑 Bot → BOT.md」中维护，下一轮回复生效。": "Persona and working guidelines are maintained in “Edit Bot → BOT.md” and take effect on the next reply.",
+      "任务 (": "Tasks (",
+      "任务标题": "Task title",
+      "任务描述（可选）": "Task description (optional)",
+      "任务与评审": "Tasks & reviews",
+      "删除": "Delete",
+      "删除 Bot": "Delete Bot",
+      "删除分组": "Delete folder",
+      "删除群": "Delete group",
+      "删除中…": "Deleting…",
+      "闪电": "Lightning",
+      "上传本地文件，Bot 可按路径读取": "Upload a local file; the Bot can read it by path",
+      "上传失败 · 移除后重试": "Upload failed · remove and retry",
+      "上传图片": "Upload image",
+      "上传中…": "Uploading…",
+      "上移": "Move up",
+      "设置": "Settings",
+      "设置模块": "Settings sections",
+      "审批不可用": "Approvals unavailable",
+      "审批请求": "Approval request",
+      "示例模型": "Sample model",
+      "示例数据 · 移入下方区域查看": "Sample data · hover the area below to view",
+      "收起侧栏": "Collapse sidebar",
+      "收起未分组": "Collapse Ungrouped",
+      "收起右侧面板": "Collapse right panel",
+      "输出 Token": "Output tokens",
+      "输入 Token": "Input tokens",
+      "输入消息，@ 成员派活…": "Type a message, @ a member to assign work…",
+      "数据保存在 $DSH_HOME/storages/bot_team；Bot 会话是真实 DSH session。人格文件在 $DSH_HOME/dsh-bot-team/bots/<botId>/BOT.md；单聊工作目录 $DSH_HOME/dsh-bot-team/direct/<botId>/，群聊工作目录 $DSH_HOME/dsh-bot-team/groups/<groupId>/。": "Data is stored in $DSH_HOME/storages/bot_team; Bot conversations are real DSH sessions. Persona files live in $DSH_HOME/dsh-bot-team/bots/<botId>/BOT.md; direct chat working directories are $DSH_HOME/dsh-bot-team/direct/<botId>/, and group chat working directories are $DSH_HOME/dsh-bot-team/groups/<groupId>/.",
+      "刷新": "Refresh",
+      "搜索": "Search",
+      "速度包含本次模型请求的等待与思考，不含工具执行；并非纯解码速度。缺少计时或 Token 数据的历史消息不显示速度。": "Speed includes waiting and thinking for this model request, excludes tool execution, and is not pure decode speed. Messages missing timing or token data show no speed.",
+      "随机配色": "Random colors",
+      "随机生成": "Randomize",
+      "所有 Bot 均具备完整工具权限": "All Bots have full tool access",
+      "它的单聊与全部单聊消息也会一并删除。": "Its direct chat and all direct chat messages will be deleted too.",
+      "讨论": "Discussion",
+      "讨论结束": "Discussion ended",
+      "讨论停止": "Discussion stopped",
+      "讨论议题": "Discussion topic",
+      "讨论中": "Discussing",
+      "讨论总结": "Discussion summary",
+      "提及成员": "Mention member",
+      "添加": "Add",
+      "添加成员": "Add members",
+      "添加文件或 Skill": "Add file or Skill",
+      "条新消息": " new messages",
+      "停止回复": "Stop reply",
+      "停止讨论": "Stop discussion",
+      "头像": "Avatar",
+      "头像图片不能超过 8MB": "Avatar image must be 8 MB or smaller",
+      "图片编码失败": "Failed to encode image",
+      "图片解码失败": "Failed to decode image",
+      "图片压缩后仍然过大，请换一张": "Image is still too large after compression; choose another one",
+      "拖动群到这里可移出分组": "Drag a group here to remove it from its folder",
+      "未分组": "Ungrouped",
+      "未分组 ✓": "Ungrouped ✓",
+      "未命名": "Untitled",
+      "未选择图片": "No image selected",
+      "未知": "Unknown",
+      "文件": "File",
+      "文件「": "File “",
+      "文件读写": "File access",
+      "我": "Me",
+      "我：": "Me: ",
+      "系统": "System",
+      "下一轮回复生效": "Takes effect on the next reply",
+      "下移": "Move down",
+      "先在右侧成员面板添加 Bot，再 @ 它们": "Add Bots in the members panel on the right, then @ mention them",
+      "先在右侧成员面板添加一个 Bot，再用 @ 提及它开始对话。": "Add a Bot in the members panel on the right, then @ mention it to start a conversation.",
+      "显示名": "Display name",
+      "消息": "Message",
+      "消息操作": "Message actions",
+      "消息设置": "Message settings",
+      "消息信息显示预览": "Message info display preview",
+      "效果预览": "Preview",
+      "新建 Bot": "New Bot",
+      "新建分组": "New folder",
+      "新建群 / 话题": "New group / topic",
+      "新建任务": "New task",
+      "新群": "New group",
+      "新消息": "New messages",
+      "星球": "Planet",
+      "星星": "Star",
+      "修改": "Revision",
+      "需修改": "Needs changes",
+      "悬停显示": "Show on hover",
+      "选择 Bot": "Select Bot",
+      "选择 Skill": "Select Skill",
+      "选择成员": "Select member",
+      "选择要提及的成员": "Select a member to mention",
+      "验收标准（可选）": "Acceptance criteria (optional)",
+      "叶子": "Leaf",
+      "依赖未完成：": "Blocked by: ",
+      "移出群": "Remove from group",
+      "移除文件": "Remove file",
+      "移除文件 ": "Remove file ",
+      "移动到分组": "Move to folder",
+      "已包含": "Included",
+      "已复制消息": "Message copied",
+      "已复制引用": "Quote copied",
+      "已交付": "Delivered",
+      "已拒绝": "Rejected",
+      "已取消": "Canceled",
+      "已上传自定义群头像（自动裁成 256×256 方形）。": "Custom group avatar uploaded (auto-cropped to a 256×256 square).",
+      "已上传自定义图片（自动裁成 256×256 方形）。": "Custom image uploaded (auto-cropped to a 256×256 square).",
+      "已跳过空文件「": "Skipped empty file 「",
+      "已停止": "Stopped",
+      "已验收": "Accepted",
+      "已隐藏全部消息信息": "All message info hidden",
+      "已允许一次": "Allowed once",
+      "已中断": "Interrupted",
+      "已中断任务": "Interrupted task",
+      "隐藏": "Hide",
+      "用户": "User",
+      "月亮": "Moon",
+      "云朵": "Cloud",
+      "运行中": "Running",
+      "在 Bot 会话里选择「允许一次」或「拒绝」；未处理会等到本轮超时，结果会同步回群里。": "Choose “Allow once” or “Deny” in the Bot conversation; unresolved requests wait until the turn times out, and the result is synced back to the group.",
+      "在 DSH Web GUI 中运行单聊与多 Agent 群聊：每个 Bot 自动拥有独立的单聊窗口；群聊支持自定义分组、拖拽排序与展开/收起；Bot 可配置自己的模型、BOT.md 人格和完整工具能力。": "Run direct chats and multi-agent group chats in the DSH Web GUI: every Bot automatically gets its own direct chat window; group chats support custom folders, drag-and-drop ordering, and expand/collapse; each Bot can configure its own model, BOT.md persona, and full tool capabilities.",
+      "在此分组新建群": "New group in this folder",
+      "在下方输入消息，用 @ 提及成员；被 @ 的 Bot 会并行回复。": "Type a message below and @ mention members; mentioned Bots reply in parallel.",
+      "暂无消息": "No messages yet",
+      "展开 / 收起": "Expand / collapse",
+      "展开侧栏": "Expand sidebar",
+      "展开未分组": "Expand Ungrouped",
+      "展开右侧面板": "Expand right panel",
+      "这个单聊的成员已不存在": "This direct chat's member no longer exists",
+      "这个群还没有 Bot；添加 Bot 后即可读取它的工作区 Skill。": "This group has no Bots yet; add a Bot to read Skills from its workspace.",
+      "这个群要讨论什么": "What should this group discuss?",
+      "这里是 Bot 的回复内容。": "This is the Bot's reply.",
+      "这是你与 Bot 的一对一会话。每条消息都会直接发给它，不需要 @；它的记忆与群聊相互独立。": "This is your one-on-one conversation with the Bot. Every message goes directly to it without @; its memory is separate from group chats.",
+      "这条消息没有可复制的文本": "This message has no text to copy",
+      "这条原消息在更早的历史里，请先加载更早的消息": "The original message is in earlier history; load earlier messages first.",
+      "正在加载 Skill…": "Loading Skills…",
+      "正在输入": "Typing",
+      "支持 Markdown · 留空则只使用默认角色设定": "Markdown supported · leave blank to use only the default role prompt",
+      "执行流": "Execution flow",
+      "执行中": "Running",
+      "只读附件": "Read-only attachment",
+      "只维护一个文件：先写「你是谁」，再写「你怎么做事」。建议保留「人格」「工作规范」两个小节标题，模型更容易遵循；也可以从模板库选一个人设快速起步。": "Maintain a single file: first describe “who you are”, then “how you work”. Keep the “Persona” and “Working guidelines” headings so the model follows them more reliably; you can also start quickly with a template.",
+      "指令": "Commands",
+      "指派：": "Assignee: ",
+      "指派：未知": "Assignee: unknown",
+      "指派成员已不存在": "Assignee no longer exists",
+      "指派给": "Assign to",
+      "中断": "Interrupt",
+      "中断当前会话进行中的回复": "Interrupt the in-progress reply in this conversation",
+      "重命名分组": "Rename folder",
+      "重试": "Retry",
+      "重试这条回复": "Retry this reply",
+      "重新读取 Skill 列表": "Reload Skill list",
+      "重置": "Reset",
+      "总结": "Summary",
+      "最近一次模型请求的输出 Token / 秒": "Output tokens per second for the latest model request",
+      "最近一次上报的输出用量（非累计）": "Last reported output usage (not cumulative)",
+      "最近一次上报的输入用量（非累计）": "Last reported input usage (not cumulative)",
+      "昨天": "Yesterday",
+      "Bot 管理": "Bot management",
+      "Bot 管理（全局）": "Bot management (global)",
+      "Bot 库": "Bot library",
+      "Bot 库里的 Bot 都已在群里。先关闭此窗口，用「新建 Bot」创建一个。": "All Bots in the library are already in this group. Close this window and use “New Bot” to create one.",
+      "Bot 是全局可复用的 Agent：每个 Bot 自动拥有一个单聊，也可以加入多个群，每个群内有独立会话与记忆。这里管理全局 Bot 库。": "Bots are globally reusable agents: each Bot automatically gets a direct chat and can join multiple groups, with an independent conversation and memory in each group. Manage the global Bot library here.",
+      "Bot Team 设置": "Bot Team settings",
+      "BOT.md 人格": "BOT.md persona",
+      "Enter 发送 · Shift + Enter 换行 · @ 提及成员 · / 选择 Skill": "Enter to send · Shift + Enter for a new line · @ to mention members · / to select a Skill",
+      "Enter 发送 · Shift + Enter 换行 · / 选择 Skill": "Enter to send · Shift + Enter for a new line · / to select a Skill",
+      "Host 仍是旧版本：重启 DSH（或重新启用 Bot Team）后，单聊与分组才会生效。": "The Host is still on an old version: restart DSH (or re-enable Bot Team) for direct chats and folders to take effect.",
+      "Host 未返回附件引用": "Host did not return an attachment reference",
+      "Skill 加载失败：": "Failed to load Skills: ",
+      "Token 用量（本单聊累计）": "Token usage (this direct chat, cumulative)",
+      "通用助手": "General assistant",
+      "推荐": "Recommended",
+      "先结论后理由；信息不足先说明假设。": "Conclusion first, then reasoning; state assumptions when information is insufficient.",
+      "代码实现工程师": "Software engineer",
+      "小步改动、先读代码；给出完整代码与自测结果。": "Make small, focused changes; read the code first; provide complete code and self-test results.",
+      "代码评审员": "Code reviewer",
+      "按阻塞/风险/建议分级，每条给出最小修复方式。": "Grade issues as blocking / risk / suggestion, with the minimal fix for each.",
+      "需求分析师": "Requirements analyst",
+      "目标、范围、验收标准；一次最多问 3 个关键问题。": "Goals, scope, acceptance criteria; ask at most 3 key questions at a time.",
+      "技术调研员": "Technical researcher",
+      "结论先行；关键事实带来源，区分已验证与推测。": "Conclusion first; cite sources for key facts and separate verified from speculative.",
+      "测试工程师": "Test engineer",
+      "覆盖正常/边界/异常；缺陷附最小复现步骤。": "Cover normal, boundary, and error paths; include minimal reproduction steps for defects.",
+      "文档写作者": "Documentation writer",
+      "按读者组织结构；示例可直接运行。": "Structure for the reader; examples should run as-is.",
+      "批判质疑者": "Devil's advocate",
+      "先假设方案失败，逐条给出验证与补救。": "Assume the proposal will fail, then give validation and remediation for each risk.",
+      "数据分析师": "Data analyst",
+      "先定口径；区分相关与因果，说明不确定性。": "Define metrics first; separate correlation from causation and state uncertainty.",
+      "第 {round} 轮": "Round {round}",
+      "第 {current}/{total} 轮": "Round {current}/{total}",
+      "{count} 个回复中": "{count} replying",
+      "{count} 个 Bot 正在回复 · 停止": "{count} bots replying · Stop",
+      "给 {title} 发消息…": "Send {title} a message…",
+      "回复 {name}": "Reply to {name}",
+      "{count} 个文件": "{count} files",
+      "每条消息最多添加 {count} 个文件": "Up to {count} files per message",
+      "「{name}」超过 32 MB，已跳过": "“{name}” exceeds 32 MB and was skipped",
+      "文件「{name}」上传失败：{error}": "Failed to upload “{name}”: {error}",
+      "已跳过空文件「{name}」": "Skipped empty file “{name}”",
+      "{count} 条新消息": "{count} new messages",
+      "任务 ({count})": "Tasks ({count})",
+      "成员 ({count})": "Members ({count})",
+      "{count} 位成员 · {bots} 个 Bot": "{count} members · {bots} bots",
+      "{count} 个运行中": "{count} running",
+      " · 限 {count} 轮/小时": " · Max {count} turns/hour",
+      "{count} 人": "{count} member(s)",
+      "{count} 个可选": "{count} available",
+      "{count} 字": "{count} chars",
+      "{count} 轮": "{count} rounds",
+      "本群 tokens：{total}（in {input} / out {output}）": "Group tokens: {total} (in {input} / out {output})",
+      "{name} 操作": "{name} actions",
+      "{name} 单聊操作": "{name} direct chat actions",
+      "{name}（单聊）": "{name} (direct chat)",
+      "{name} 发言中": "{name} speaking",
+      "{title}（回复中）": "{title} (replying)",
+      "和 {title} 打个招呼吧": "Say hello to {title}",
+      "已有 {count} 个 Bot。每个 Bot 都有自己的单聊；也可以在群里加入它们。": "You already have {count} bots. Each Bot has its own direct chat; you can also add them to groups.",
+      "删除 Bot「{name}」？它会从所有群移除，单聊与单聊消息也会一并删除。": "Delete Bot “{name}”? It will be removed from all groups, and its direct chat and messages will be deleted too.",
+      "它正在 {count} 个群中（{groups}），删除会同时把它移出这些群。": "It is in {count} groups ({groups}); deleting it will also remove it from them.",
+      "删除群「{title}」及其全部消息？": "Delete group “{title}” and all its messages?",
+      "删除分组「{title}」？": "Delete folder “{title}”?",
+      "删除分组「{title}」？其中 {count} 个群会移到「未分组」，不会被删除。": "Delete folder “{title}”? Its {count} groups will move to “Ungrouped”; they won't be deleted.",
+      "从全局 Bot 库删除「{name}」？": "Delete “{name}” from the global Bot library?",
+      "添加成员到「{title}」": "Add members to “{title}”",
+      "编辑 Bot：{name}": "Edit Bot: {name}",
+      "已插入「{title}」模板，可按需修改。": "Inserted the “{title}” template; edit it as needed.",
+      "输入 {input} · 输出 {output} · 合计 {total}": "Input {input} · Output {output} · Total {total}",
+      "最近一次模型请求平均速度：输出 {tokens} Token / {seconds} 秒。包含等待与思考，不含工具执行；非纯解码速度。": "Average speed of the latest model request: {tokens} output tokens / {seconds} s. Includes waiting and thinking, excludes tool execution; not pure decode speed.",
+      "最近一次上报的输出 Token（非本轮累计）：{count}": "Last reported output tokens (not this turn's total): {count}",
+      "最近一次上报的输入 Token（非本轮累计）：{count}": "Last reported input tokens (not this turn's total): {count}",
+      "模型：{provider}{model}": "Model: {provider}{model}",
+      "错误：{error}": "Error: {error}",
+      "保存失败：{error}": "Save failed: {error}",
+      "读取 BOT.md 失败：{error}": "Failed to read BOT.md: {error}",
+      "群头像读取失败：{error}": "Failed to read group avatar: {error}",
+      "头像读取失败：{error}": "Failed to read avatar: {error}",
+      "Skill 加载失败：{error}": "Failed to load Skills: {error}",
+      "请求失败 (HTTP {status})": "Request failed (HTTP {status})",
+      "无法连接 Host：{error}": "Cannot connect to Host: {error}",
+      "收起分组 {title}": "Collapse folder {title}",
+      "展开分组 {title}": "Expand folder {title}",
+      "收起{label}": "Collapse {label}",
+      "展开{label}": "Expand {label}",
+      "评审 #{seq}": "Review #{seq}",
+      "被评审消息 #{seq}": "Reviewed message #{seq}",
+      "任务 · {title} · {status}": "Task · {title} · {status}",
+      "指派：{name} · {hint}": "Assignee: {name} · {hint}",
+      "依赖未完成：{titles}": "Blocked by: {titles}",
+      "{count} 个群": "{count} groups",
+      "{name}：": "{name}: ",
+      "{count} 位成员": "{count} members",
+      " · {count} 个 Bot": " · {count} bots",
+      " · {count} 个运行中": " · {count} running",
+      "{error}（点击关闭）": "{error} (click to close)",
+      "指派：{name}": "Assignee: {name}",
+      "附件": "Attachment",
+      "成员：": "Members:",
+      "导出时间：": "Exported:",
+      "消息数：": "Messages:",
+      "（单聊）": " (direct chat)",
+      "导出 PDF": "Export PDF",
+      "将当前会话导出为 PDF": "Export this conversation as PDF",
+      "正在生成 PDF…": "Generating PDF…",
+      "PDF 导出失败": "PDF export failed",
+      "- 成员：": "- Members: ",
+      "- 导出时间：": "- Exported: ",
+      "- 消息数：": "- Messages: ",
+      "添加文件或执行指令": "Add file or command",
+      "移除文件 {name}": "Remove file {name}",
+      "例如（也可点「插入模板」选一套）：": "e.g. (or click “Insert template” to pick one):",
+      "分组 {title} 操作": "Folder {title} actions",
+      "讨论「{topic}」总结失败/中断，已结束。": "Discussion “{topic}” summary failed/interrupted; ended.",
+      "讨论「{topic}」因成员执行失败而停止。": "Discussion “{topic}” stopped because a member failed.",
+      "讨论「{topic}」已停止：{message}": "Discussion “{topic}” stopped: {message}",
+      "讨论「{topic}」已停止。": "Discussion “{topic}” stopped.",
+      "讨论「{topic}」结束。": "Discussion “{topic}” ended.",
+      "开始讨论：{topic}（{count} 位成员，共 {rounds} 轮{suffix}）": "Started discussion: {topic} ({count} members, {rounds} rounds{suffix})",
+      "，结束生成总结": ", summary at the end",
+      "请 @{reviewer} 评审 #{seq}（{author}）的消息": "Ask @{reviewer} to review message #{seq} ({author})",
+      "请 @{bot} 根据 #{reviewSeq} 的评审意见修改 #{targetSeq}": "Ask @{bot} to revise #{targetSeq} based on the review at #{reviewSeq}",
+      "任务「{title}」已验收，前置依赖解除：{names} 可以派发了。": "Task “{title}” accepted; dependencies cleared: {names} can now be dispatched.",
+      "{name} 请求权限：工具 {tool}{reason}。": "{name} requests permission: tool {tool}{reason}.",
+      "（{reason}）": " ({reason})",
+      "1 轮": "1 round",
+      "1 位成员": "1 member",
+      "1 个 Bot": "1 bot",
+      "1 人": "1 member",
+      "1 个 Bot 正在回复 · 停止": "1 bot replying · Stop",
+      "单条新消息": " new message",
+      "{count} 个 Bot": "{count} bots"
+    };
+    const UI_ZH = { ...Object.fromEntries(Object.keys(UI_EN).map((key) => [key, key])), '单条新消息': '条新消息' };
 
     const CHAT_DISPLAY_MODES = [
       { value: 'hover', label: '悬停显示' },
@@ -3658,7 +4214,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
     function buildQuoteMarkdown(name, text) {
       const body = String(text || '').replace(/\r\n?/g, '\n').trim();
       const lines = body ? body.split('\n') : [''];
-      const head = `> **${String(name || '消息')}**：${lines[0]}`.trimEnd();
+      const head = `> **${String(name || uiT('消息'))}**${isEnglishUi() ? ': ' : '：'}${lines[0]}`.trimEnd();
       const rest = lines.slice(1).map((line) => (line ? `> ${line}` : '>'));
       return rest.length ? [head, ...rest].join('\n') : head;
     }
@@ -4031,11 +4587,11 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           preview.length ? h('div', { style: S.msgFooter(false) }, renderMessageMetadata(preview))
             : h('div', { style: S.fieldHint }, '已隐藏全部消息信息'),
         ),
-        error ? h('div', { role: 'alert', style: { ...S.fieldHint, color: 'var(--bt-danger-text)', marginTop: 12 } }, `保存失败：${error}`) : null,
+        error ? h('div', { role: 'alert', style: { ...S.fieldHint, color: 'var(--bt-danger-text)', marginTop: 12 } }, uiT('保存失败：{error}', { error })) : null,
       );
 
       const info = pluginInfo && typeof pluginInfo === 'object' ? pluginInfo : {};
-      const version = typeof info.version === 'string' && info.version ? info.version : '1.0.0';
+      const version = typeof info.version === 'string' && info.version ? info.version : '1.1.0';
       const packageName = typeof info.packageName === 'string' && info.packageName ? info.packageName : 'dsh-bot-team';
       const author = typeof info.author === 'string' && info.author ? info.author : 'shper';
       const metaRows = [
@@ -4275,7 +4831,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                   if (typeof item.onSelect === 'function') item.onSelect();
                 },
               },
-              h('span', { style: S.sidebarMenuLabel }, item.label),
+              h('span', { style: S.sidebarMenuLabel, raw: item.raw === true }, item.label),
             );
           }),
         ),
@@ -4543,6 +5099,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           items.push({
             key: `move-${folder.folderId}`,
             label: `${active ? '✓ ' : ''}${folder.title}`,
+            raw: true,
             disabled: !hostLayoutReady || active,
             onSelect: () => moveGroupTo(group.groupId, folder.folderId),
           });
@@ -4706,7 +5263,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             h(
               'div',
               { style: S.groupItemTop },
-              h('span', { style: S.groupItemTitle, title: group.title }, group.title),
+              h('span', { style: S.groupItemTitle, title: group.title, raw: true }, group.title),
               h('span', { style: S.groupItemTime }, formatListTime(last && last.createdAt)),
             ),
             h(
@@ -4715,7 +5272,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               group.running ? h('span', { style: { ...S.dot('#22c55e', 'running'), width: 6, height: 6 } }) : null,
               h('span', { style: S.groupItemPreview, raw: true }, preview),
               !group.running && memberCount > 0
-                ? h('span', { style: { fontSize: 10, color: 'var(--bt-text-3)', flex: '0 0 auto' } }, uiT('{count} 人', { count: memberCount }))
+                ? h('span', { style: { fontSize: 10, color: 'var(--bt-text-3)', flex: '0 0 auto' } }, pluralUi('1 人', '{count} 人', memberCount))
                 : null,
             ),
           ),
@@ -4745,9 +5302,10 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             'data-bot-id': entry.bot.botId,
             'data-drop': edge || undefined,
             'data-dragging': isDragging ? 'true' : undefined,
-            'aria-label': `${entry.bot.name}（单聊）${entry.group && entry.group.running ? '（回复中）' : ''}`,
+            'aria-label': `${uiT('{name}（单聊）', { name: entry.bot.name })}${entry.group && entry.group.running ? uiT('（回复中）') : ''}`,
             'aria-current': active ? 'true' : undefined,
             title: directTooltip(entry),
+            rawTitle: true,
             style: {
               ...S.groupItem(active),
               ...(edge === 'before' ? S.dropBefore : edge === 'after' ? S.dropAfter : null),
@@ -4773,7 +5331,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             h(
               'div',
               { style: S.groupItemTop },
-              h('span', { style: S.groupItemTitle, title: entry.bot.name }, entry.bot.name),
+              h('span', { style: S.groupItemTitle, title: entry.bot.name, raw: true }, entry.bot.name),
               h('span', { style: S.groupItemTime }, formatListTime(last && last.createdAt)),
             ),
             h(
@@ -4799,8 +5357,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               type: 'button',
               className: 'bt-section-toggle',
               style: S.sectionToggle,
-              title: isCollapsed(key) ? `展开${label}` : `收起${label}`,
-              'aria-label': isCollapsed(key) ? `展开${label}` : `收起${label}`,
+              title: isCollapsed(key) ? uiT('展开{label}', { label }) : uiT('收起{label}', { label }),
+              'aria-label': isCollapsed(key) ? uiT('展开{label}', { label }) : uiT('收起{label}', { label }),
               'aria-expanded': !isCollapsed(key),
               'aria-controls': `bt-section-body-${key}`,
               onClick: () => toggleSection(key),
@@ -4816,6 +5374,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         h(
           'button',
           {
+            key: label,
             type: 'button',
             className: 'bt-section-action',
             style: S.sectionAction,
@@ -4860,8 +5419,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                 type: 'button',
                 className: 'bt-folder-toggle',
                 style: S.folderToggle,
-                title: folderCollapsed ? `展开分组 ${folder.title}` : `收起分组 ${folder.title}`,
-                'aria-label': folderCollapsed ? `展开分组 ${folder.title}` : `收起分组 ${folder.title}`,
+                title: folderCollapsed ? uiT('展开分组 {title}', { title: folder.title }) : uiT('收起分组 {title}', { title: folder.title }),
+                'aria-label': folderCollapsed ? uiT('展开分组 {title}', { title: folder.title }) : uiT('收起分组 {title}', { title: folder.title }),
                 'aria-expanded': !folderCollapsed,
                 'aria-controls': `bt-folder-body-${folder.folderId}`,
                 onClick: () => toggleSection(key),
@@ -4884,7 +5443,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                 },
                 h('path', { d: 'M2 4.5A1.5 1.5 0 0 1 3.5 3h2l1.3 1.5h4.7A1.5 1.5 0 0 1 13 6v4.5A1.5 1.5 0 0 1 11.5 12h-8A1.5 1.5 0 0 1 2 10.5z' }),
               ),
-              h('span', { style: S.folderName, title: folder.title }, folder.title),
+              h('span', { style: S.folderName, title: folder.title, raw: true }, folder.title),
               h('span', { style: S.folderCount }, folderEntry.groups.length),
             ),
             h(
@@ -4893,8 +5452,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                 type: 'button',
                 className: 'bt-folder-menu',
                 style: S.folderMenu,
-                title: `分组 ${folder.title} 操作`,
-                'aria-label': `分组 ${folder.title} 操作`,
+                title: uiT('分组 {title} 操作', { title: folder.title }),
+                'aria-label': uiT('分组 {title} 操作', { title: folder.title }),
                 onClick: (event) => openMenu(event, 'folder', folder.folderId),
               },
               '···',
@@ -5027,6 +5586,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                   'aria-current': entry.group && entry.group.groupId === state.activeGroupId ? 'true' : undefined,
                   'aria-label': `${uiT('{name}（单聊）', { name: entry.bot.name })}${entry.group && entry.group.running ? uiT('（回复中）') : ''}`,
                   title: directTooltip(entry),
+                  rawTitle: true,
                   style: S.railItem(!!(entry.group && entry.group.groupId === state.activeGroupId)),
                   onClick: () => onOpenDirect && onOpenDirect(entry.bot.botId, entry.group),
                   onKeyDown: (event) => {
@@ -5054,6 +5614,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                   'aria-label': `${group.title}${group.running ? uiT('（回复中）') : ''}`,
                   'aria-current': isActive ? 'true' : undefined,
                   title: groupTooltip(group),
+                  rawTitle: true,
                   style: S.railItem(isActive),
                   onClick: () => selectGroup(group),
                   onKeyDown: onGroupKeyDown(group),
@@ -5171,15 +5732,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       );
     }
     function GroupList(props) {
-      const state = (props && props.state) || {};
-      const values = [];
-      for (const group of state.groups || []) {
-        values.push(group.title, group.topic);
-        if (group.lastMessage) values.push(group.lastMessage.text, group.lastMessage.authorName);
-      }
-      for (const bot of state.bots || []) values.push(bot.name);
-      for (const folder of state.folders || []) values.push(folder.title);
-      return withContent(values, () => renderGroupList(props));
+      return renderGroupList(props);
     }
 
 
@@ -5701,6 +6254,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       return h('img', {
         src,
         alt: name,
+        rawTitle: true,
         style: S.avatarImage(size),
         onError: () => setFailed(true),
       });
@@ -5714,7 +6268,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         return h(RemoteAvatar, { src: avatarUrl, name: label, size });
       }
       if (avatar.startsWith('data:image/')) {
-        return h('img', { src: avatar, alt: label, style: S.avatarImage(size) });
+        return h('img', { src: avatar, alt: label, rawTitle: true, style: S.avatarImage(size) });
       }
       if (avatar.startsWith('art:')) {
         const artId = avatar.slice('art:'.length);
@@ -5733,7 +6287,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       const radius = size >= 36 ? 11 : 9;
       let content = null;
       if (avatar.startsWith('data:image/')) {
-        content = h('img', { src: avatar, alt: title, style: S.groupAvatarImage(size) });
+        content = h('img', { src: avatar, alt: title, rawTitle: true, style: S.groupAvatarImage(size) });
       } else if (avatar.startsWith('art:')) {
         const artId = avatar.slice('art:'.length);
         if (ART_MAP[artId]) content = h(ArtAvatar, { id: artId, size, radius });
@@ -5753,7 +6307,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       }
       return h(
         'span',
-        { 'aria-hidden': true, title, style: { position: 'relative', display: 'inline-flex', flex: '0 0 auto' } },
+        { 'aria-hidden': true, title, rawTitle: true, style: { position: 'relative', display: 'inline-flex', flex: '0 0 auto' } },
         content,
         group && group.running ? h('span', { style: S.groupAvatarDot }) : null,
       );
@@ -5824,7 +6378,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             meta.toolName ? h('span', { style: badgeStyle('#f3f4f6', '#4b5563') }, meta.toolName) : null,
             h('span', { style: { marginLeft: 'auto', fontSize: 10, color: 'var(--bt-text-3)' } }, formatTime(message.createdAt)),
           ),
-          h('div', { style: S.approvalText }, message.text || ''),
+          h('div', { style: S.approvalText, raw: true }, translateSystemText(message.text)),
           state === 'pending' && meta.sessionId
             ? h(
                 'div',
@@ -5993,18 +6547,24 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       const model = message.model || authorBot?.model || '';
       const provider = message.provider || authorBot?.provider || '';
       const effort = message.reasoningEffort || authorBot?.reasoningEffort || '';
-      if (model) add('model', model, `模型：${provider ? provider + ' / ' : ''}${model}${effort ? ' · reasoning ' + effort : ''}`);
+      if (model) {
+        const modelTitle = uiT('模型：{provider}{model}', { provider: provider ? provider + ' / ' : '', model });
+        add('model', model, modelTitle + (effort ? ' · reasoning ' + effort : ''));
+      }
       const usage = message.usage || {};
       const validTokens = value => Number.isSafeInteger(value) && value >= 0;
-      if (validTokens(usage.inputTokens)) add('inputTokens', `↑ ${formatTokens(usage.inputTokens)}`, `最近一次上报的输入 Token（非本轮累计）：${usage.inputTokens}`);
-      if (validTokens(usage.outputTokens)) add('outputTokens', `↓ ${formatTokens(usage.outputTokens)}`, `最近一次上报的输出 Token（非本轮累计）：${usage.outputTokens}`);
+      if (validTokens(usage.inputTokens)) add('inputTokens', `↑ ${formatTokens(usage.inputTokens)}`, uiT('最近一次上报的输入 Token（非本轮累计）：{count}', { count: usage.inputTokens }));
+      if (validTokens(usage.outputTokens)) add('outputTokens', `↓ ${formatTokens(usage.outputTokens)}`, uiT('最近一次上报的输出 Token（非本轮累计）：{count}', { count: usage.outputTokens }));
       const stats = message.generationStats;
       if (message.status === 'done' && stats?.scope === 'last-request' && Number.isFinite(stats.durationMs) && stats.durationMs > 0
           && validTokens(stats.outputTokens) && stats.outputTokens === usage.outputTokens) {
         const speed = stats.outputTokens * 1000 / stats.durationMs;
         if (Number.isFinite(speed) && speed >= 0) {
           add('speed', `${speed > 0 && speed < 0.1 ? '< 0.1' : speed.toFixed(1)} tok/s`,
-            `最近一次模型请求平均速度：输出 ${stats.outputTokens} Token / ${(stats.durationMs / 1000).toFixed(2)} 秒。包含等待与思考，不含工具执行；非纯解码速度。`);
+            uiT('最近一次模型请求平均速度：输出 {tokens} Token / {seconds} 秒。包含等待与思考，不含工具执行；非纯解码速度。', {
+              tokens: stats.outputTokens,
+              seconds: (stats.durationMs / 1000).toFixed(2),
+            }));
         }
       }
       // Always-visible fields lead, so hidden hover slots never leave a leading gap.
@@ -6046,10 +6606,11 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       }
       if (message.author && message.author.type === 'system') {
         const kindLabel = message.kind === 'review' ? '评审' : message.kind === 'revision' ? '修改' : message.kind === 'discussion' ? '讨论' : '';
+        const systemText = translateSystemText(message.text);
         return h(
           'div',
           { className: 'bt-system-row', style: S.systemRow },
-          h('span', { style: S.systemPill }, kindLabel ? `[${kindLabel}] ${message.text}` : message.text),
+          h('span', { style: S.systemPill, raw: true }, kindLabel ? `[${uiT(kindLabel)}] ${systemText}` : systemText),
         );
       }
       const mine = !!(message.author && message.author.type === 'human');
@@ -6057,7 +6618,10 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       const botId = message.author && message.author.botId;
       const color = mine ? '#3370ff' : colorOfBot(bots, botId);
       const authorBot = botId ? (bots || []).find((candidate) => candidate.botId === botId) : null;
-      const name = mine ? (profile && profile.name) || '我' : (authorBot && authorBot.name) || (message.author && message.author.name) || nameOfBot(bots, botId);
+      const messageAuthorName = message.author && message.author.name;
+      const name = mine
+        ? (profile && profile.name) || uiT('我')
+        : (authorBot && authorBot.name) || (messageAuthorName === '用户' ? uiT('用户') : messageAuthorName) || nameOfBot(bots, botId);
       const userAvatarUrl = mine && profile && profile.avatarUrl ? profile.avatarUrl : '';
       const streaming = message.status === 'pending' || message.status === 'streaming';
       const meta = message.meta || {};
@@ -6128,7 +6692,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                 'div',
                 { style: S.msgHead },
                 h('span', { style: { width: 6, height: 6, borderRadius: '50%', background: color, flex: '0 0 auto' } }),
-                h('span', { style: S.msgAuthor }, name),
+                h('span', { style: S.msgAuthor, raw: true }, name),
                 streaming ? h('span', { style: S.typingLabel }, '正在输入') : null,
               )
             : null,
@@ -6170,8 +6734,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                       title: '定位到原消息',
                       onClick: () => onJumpToMessage && onJumpToMessage(quoted.messageId),
                     },
-                    h('span', { style: S.replyQuoteName }, displayNameOf(quoted, bots, userProfile)),
-                    h('span', { style: S.replyQuoteText }, cleanPreview(quoted.text, 96) || '[消息]'),
+                    h('span', { style: S.replyQuoteName, raw: true }, displayNameOf(quoted, bots, userProfile)),
+                    h('span', { style: S.replyQuoteText, raw: true }, cleanPreview(quoted.text, 96) || uiT('[消息]')),
                   )
                 : null,
               messageAttachments.length > 0
@@ -6185,12 +6749,13 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                           key: attachment.attachmentId + ':' + attachment.name + ':' + index,
                           style: S.messageAttachment(mine),
                           title: attachment.path || attachment.name,
+                          rawTitle: true,
                         },
                         h(FileGlyph, { size: 15, style: { flex: '0 0 auto', opacity: 0.82 } }),
                         h(
                           'span',
                           { style: S.messageAttachmentBody },
-                          h('span', { style: S.messageAttachmentName }, attachment.name),
+                          h('span', { style: S.messageAttachmentName, raw: true }, attachment.name),
                           h(
                             'span',
                             { style: S.messageAttachmentMeta },
@@ -6207,7 +6772,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                   ? h(
                       'div',
                       { className: 'bt-rich', style: { ...S.msgText, color: message.status === 'error' ? '#b42318' : 'inherit' } },
-                      renderMarkdown(message.text, { own: mine }),
+                      withRaw(() => renderMarkdown(message.text, { own: mine })),
                       streaming ? h('span', { className: 'bt-cursor' }) : null,
                     )
                   : null,
@@ -6218,13 +6783,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       );
     }
     function MessageRow(props) {
-      const message = (props && props.message) || {};
-      const values = [message.text, message.error];
-      if (message.author) values.push(message.author.name);
-      if (message.task) values.push(message.task.title);
-      for (const attachment of message.attachments || []) values.push(attachment.name);
-      if (props && props.replyTarget) values.push(props.replyTarget.text);
-      return withContent(values, () => renderMessageRow(props));
+      return renderMessageRow(props);
     }
 
 
@@ -6412,6 +6971,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       onResize,
       onExportMarkdown,
       onExportHtml,
+      onExportPdf,
       onOpenSettings,
     }) {
       const isDirect = !!(group && group.kind === 'direct');
@@ -6840,7 +7400,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           setDraftAttachments((current) => current.map((item) => (
             item.id === itemId ? { ...item, status: 'error', error: message } : item
           )));
-          dispatch({ type: 'error', message: '文件「' + (file.name || 'file') + '」上传失败：' + message });
+          dispatch({ type: 'error', message: uiT('文件「{name}」上传失败：{error}', { name: file.name || 'file', error: message }) });
         }
       };
 
@@ -6849,16 +7409,16 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         if (event && event.target) event.target.value = '';
         if (picked.length === 0) return;
         if (draftCountRef.current + picked.length > MAX_DRAFT_ATTACHMENTS) {
-          dispatch({ type: 'flash', message: '每条消息最多添加 ' + MAX_DRAFT_ATTACHMENTS + ' 个文件' });
+            dispatch({ type: 'flash', message: uiT('每条消息最多添加 {count} 个文件', { count: MAX_DRAFT_ATTACHMENTS }) });
           return;
         }
         for (const file of picked) {
           if (!file || !file.size) {
-            dispatch({ type: 'flash', message: '已跳过空文件「' + ((file && file.name) || '未命名') + '」' });
+              dispatch({ type: 'flash', message: uiT('已跳过空文件「{name}」', { name: (file && file.name) || uiT('未命名') }) });
             continue;
           }
           if (file.size > MAX_ATTACHMENT_BYTES) {
-            dispatch({ type: 'flash', message: '「' + file.name + '」超过 32 MB，已跳过' });
+              dispatch({ type: 'flash', message: uiT('「{name}」超过 32 MB，已跳过', { name: file.name }) });
             continue;
           }
           void uploadFile(file);
@@ -7018,6 +7578,16 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           run: onExportHtml,
         });
       }
+      if (!isDirect && typeof onExportPdf === 'function') {
+        addMenuAction('指令', {
+          key: 'export-pdf',
+          label: '导出 PDF',
+          alias: 'export-pdf',
+          description: '将当前会话导出为 PDF',
+          icon: 'download',
+          run: onExportPdf,
+        });
+      }
       if (typeof onOpenSettings === 'function') {
         addMenuAction('指令', {
           key: 'settings',
@@ -7084,7 +7654,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                 ? h(
                     'div',
                     { style: S.skillEmpty },
-                    'Skill 加载失败：' + picker.error,
+                    uiT('Skill 加载失败：{error}', { error: picker.error }),
                     h(
                       'button',
                       {
@@ -7133,9 +7703,9 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                         h(
                           'div',
                           { style: S.skillOptionBody },
-                          h('span', { style: S.skillOptionName }, skill.name),
+                          h('span', { style: S.skillOptionName, raw: true }, skill.name),
                           skill.description
-                            ? h('span', { style: S.skillOptionDesc, title: skill.description }, cleanPreview(skill.description, 110))
+                            ? h('span', { style: S.skillOptionDesc, title: skill.description, raw: true }, cleanPreview(skill.description, 110))
                             : null,
                         ),
                         skill.modelInvocable === false ? h('span', { style: S.pickerHint }, '仅手动') : null,
@@ -7169,7 +7739,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                 },
               },
               h(Avatar, { bot: entry.bot, size: 22 }),
-              h('span', { style: S.pickerName }, entry.bot.name),
+              h('span', { style: S.pickerName, raw: true }, entry.bot.name),
               entry.member.running ? h('span', { style: S.pickerHint }, '回复中') : null,
             ),
           ),
@@ -7239,8 +7809,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                 h(
                   'div',
                   { style: S.replyBarBody },
-                  h('div', { style: S.replyBarLabel }, '回复 ' + replyName),
-                  h('div', { style: S.replyBarText }, cleanPreview(replyTarget.text, 120) || '[消息]'),
+                  h('div', { style: S.replyBarLabel }, uiT('回复 {name}', { name: replyName })),
+                  h('div', { style: S.replyBarText, raw: true }, cleanPreview(replyTarget.text, 120) || uiT('[消息]')),
                 ),
                 h(
                   'button',
@@ -7255,9 +7825,9 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                 { className: 'bt-draft-attachments', style: S.draftAttachments },
                 draftAttachments.map((item) => {
                   const meta = item.status === 'uploading'
-                    ? '上传中…'
+                    ? uiT('上传中…')
                     : item.status === 'error'
-                      ? '上传失败 · 移除后重试'
+                      ? uiT('上传失败 · 移除后重试')
                       : formatFileSize(item.size);
                   return h(
                     'div',
@@ -7266,12 +7836,13 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                       className: 'bt-draft-file',
                       style: S.draftAttachment(item.status),
                       title: item.error || item.name,
+                      raw: true,
                     },
                     h(FileGlyph, { size: 14, style: { flex: '0 0 auto', color: 'var(--bt-text-3)' } }),
                     h(
                       'span',
                       { style: S.draftAttachmentBody },
-                      h('span', { style: S.draftAttachmentName }, item.name),
+                      h('span', { style: S.draftAttachmentName, raw: true }, item.name),
                       h('span', { style: S.draftAttachmentMeta }, meta),
                     ),
                     h(
@@ -7281,7 +7852,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                         className: 'bt-draft-file-remove',
                         style: S.draftAttachmentRemove,
                         title: '移除文件',
-                        'aria-label': '移除文件 ' + item.name,
+                        'aria-label': uiT('移除文件 {name}', { name: item.name }),
                         onClick: () => removeDraftAttachment(item.id),
                       },
                       '×',
@@ -7294,7 +7865,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             ref: textareaRef,
             style: S.textarea,
             value: text,
-            placeholder: isDirect ? '给 ' + group.title + ' 发消息…' : '输入消息，@ 成员派活…',
+            placeholder: isDirect ? uiT('给 {title} 发消息…', { title: group.title }) : uiT('输入消息，@ 成员派活…'),
             onChange,
             onKeyDown,
             'aria-label': isDirect ? '单聊消息输入框' : '群聊消息输入框',
@@ -7349,7 +7920,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                     onClick: () => void api.action('message.stop', { groupId: group.groupId }).then(() => onSent && onSent()),
                   },
                   h('span', { style: { width: 6, height: 6, borderRadius: '50%', background: '#22c55e' } }),
-                  running.length + ' 个 Bot 正在回复 · 停止',
+                  pluralUi('1 个 Bot 正在回复 · 停止', '{count} 个 Bot 正在回复 · 停止', running.length),
                 )
               : null,
             h('span', { style: S.composerHint }, hint),
@@ -7444,7 +8015,11 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                 { style: S.directCard },
                 h('div', { style: { ...S.label, marginBottom: 4 } }, 'Token 用量（本单聊累计）'),
                 h('div', { style: S.directNote },
-                  `输入 ${Number(usage.inputTokens || 0).toLocaleString()} · 输出 ${Number(usage.outputTokens || 0).toLocaleString()} · 合计 ${Number(usage.totalTokens || 0).toLocaleString()}`),
+                  uiT('输入 {input} · 输出 {output} · 合计 {total}', {
+            input: Number(usage.inputTokens || 0).toLocaleString(),
+            output: Number(usage.outputTokens || 0).toLocaleString(),
+            total: Number(usage.totalTokens || 0).toLocaleString(),
+          })),
               )
             : null,
           h(
@@ -7674,7 +8249,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       const group = props && props.group;
       const discussion = props && props.discussion;
       if (group) values.push(group.title, group.topic);
-      for (const bot of (props && props.bots) || []) values.push(bot.name);
+      for (const bot of (props && props.bots) || []) values.push(bot.name, bot.provider, bot.model, bot.reasoningEffort);
       for (const task of (props && props.tasks) || []) values.push(task.title, task.description, task.acceptance);
       if (discussion) values.push(discussion.topic, discussion.summary);
       return withContent(values, () => renderMembersPanel(props));
@@ -7703,7 +8278,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           setAvatar(await createAvatarDataUrl(file));
           setError('');
         } catch (reason) {
-          setError(`群头像读取失败：${String(reason && reason.message ? reason.message : reason)}`);
+          setError(uiT('群头像读取失败：{error}', { error: String(reason && reason.message ? reason.message : reason) }));
         } finally {
           if (avatarFileRef.current) avatarFileRef.current.value = '';
         }
@@ -7827,7 +8402,9 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
     }
     function GroupFormDialog(props) {
       const group = props && props.group;
-      return withContent([group && group.title, group && group.topic], () => renderGroupFormDialog(props));
+      const values = [group && group.title, group && group.topic];
+      for (const folder of (props && props.folders) || []) values.push(folder.title);
+      return withContent(values, () => renderGroupFormDialog(props));
     }
 
 
@@ -7910,9 +8487,9 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           inGroups.length
             ? uiT('它正在 {count} 个群中（{groups}），删除会同时把它移出这些群。', { count: inGroups.length, groups: inGroups.map((group) => group.title).join(isEnglishUi() ? ', ' : '、') })
             : '',
-          hasDirect ? '它的单聊与全部单聊消息也会一并删除。' : '',
+          hasDirect ? uiT('它的单聊与全部单聊消息也会一并删除。') : '',
         ].filter(Boolean).join('\n');
-        if (!window.confirm('从全局 Bot 库删除「' + bot.name + '」？' + (warning ? `\n\n${warning}` : ''))) return;
+        if (!window.confirm(uiT('从全局 Bot 库删除「{name}」？', { name: bot.name }) + (warning ? `\n\n${warning}` : ''))) return;
         setBusyId(bot.botId);
         setError('');
         try {
@@ -7956,7 +8533,9 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                 h(
                   'div',
                   { style: { fontSize: 11, color: 'var(--bt-text-3)', marginTop: 2 } },
-                  bot.provider + '/' + bot.model + (inGroups.length ? ' · 群：' + inGroups.map((group) => group.title).join('、') : ' · 未加入任何群聊'),
+                  bot.provider + '/' + bot.model + (inGroups.length
+                    ? uiT(' · 群：') + inGroups.map((group) => group.title).join(isEnglishUi() ? ', ' : '、')
+                    : uiT(' · 未加入任何群聊')),
                 ),
                 h(
                   'div',
@@ -8018,7 +8597,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           })
           .catch((reason) => {
             if (!cancelled) {
-              setPersonaStatus(`读取 BOT.md 失败：${String(reason && reason.message ? reason.message : reason)}`);
+              setPersonaStatus(uiT('读取 BOT.md 失败：{error}', { error: String(reason && reason.message ? reason.message : reason) }));
             }
           });
         return () => {
@@ -8097,7 +8676,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           setAvatar(await createAvatarDataUrl(file));
           setError('');
         } catch (reason) {
-          setError(`头像读取失败：${String(reason && reason.message ? reason.message : reason)}`);
+          setError(uiT('头像读取失败：{error}', { error: String(reason && reason.message ? reason.message : reason) }));
         } finally {
           if (avatarFileRef.current) avatarFileRef.current.value = '';
         }
@@ -8335,7 +8914,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               setBotMd(event.target.value);
               if (templateNote) setTemplateNote('');
             },
-            placeholder: `例如（也可点「插入模板」选一套）：\n${PERSONA_TEMPLATE}`,
+            placeholder: `${uiT('例如（也可点「插入模板」选一套）：')}\n${PERSONA_TEMPLATE}`,
           }),
           h(
             'div',
@@ -8524,6 +9103,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
     function TaskDialog(props) {
       const values = [];
       const task = props && props.task;
+      const group = props && props.group;
+      if (group) values.push(group.title, group.topic);
       if (task) values.push(task.title, task.description, task.acceptance);
       for (const member of (props && props.members) || []) {
         const bot = member && member.bot;
@@ -8573,7 +9154,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           ],
         },
         error ? h('div', { style: { ...S.errorBanner, borderRadius: 8, marginBottom: 10 } }, error) : null,
-        h(Field, { label: uiT('被评审消息 #{seq}', { seq: target.seq }) }, h('div', { style: { ...S.input, maxHeight: 120, overflow: 'auto', whiteSpace: 'pre-wrap', fontSize: 12, color: 'var(--bt-text-2)' } }, target.text || '（空）')),
+        h(Field, { label: uiT('被评审消息 #{seq}', { seq: target.seq }) }, h('div', { style: { ...S.input, maxHeight: 120, overflow: 'auto', whiteSpace: 'pre-wrap', fontSize: 12, color: 'var(--bt-text-2)' } }, translateSystemText(target.text) || '（空）')),
         h(
           Field,
           { label: '评审者' },
@@ -8594,6 +9175,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
     function ReviewDialog(props) {
       const values = [];
       const target = props && props.target;
+      const group = props && props.group;
+      if (group) values.push(group.title, group.topic);
       if (target) values.push(target.text, target.authorName, target.error);
       for (const member of (props && props.members) || []) {
         const bot = member && member.bot;
@@ -8684,7 +9267,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             h(
               'select',
               { style: S.input, value: rounds, onChange: (event) => setRounds(Number(event.target.value)) },
-              [1, 2, 3, 4, 5].map((value) => h('option', { key: value, value }, `${value} 轮`)),
+              [1, 2, 3, 4, 5].map((value) => h('option', { key: value, value }, pluralUi('1 轮', '{count} 轮', value))),
             ),
           ),
           h(
@@ -9198,7 +9781,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             activeGroup && activeGroup.topic ? activeGroup.topic : '',
           ].filter(Boolean).join(' · ')
         : [
-            `${uiT('{count} 位成员', { count: members.length })}${botMembers.length ? uiT(' · {count} 个 Bot', { count: botMembers.length }) : ''}`,
+            `${pluralUi('1 位成员', '{count} 位成员', members.length)}${botMembers.length ? ' · ' + pluralUi('1 个 Bot', '{count} 个 Bot', botMembers.length) : ''}`,
             activeGroup && activeGroup.topic ? activeGroup.topic : '',
           ]
             .filter(Boolean)
@@ -9222,7 +9805,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           const allMessages = await collectAllMessages(activeGroup.groupId);
           const markdown = buildGroupMarkdown({ group: activeGroup, members, bots: state.bots, messages: allMessages });
           const date = new Date().toISOString().slice(0, 10);
-          downloadText(String(activeGroup.title || 'bot-team').replace(/[\\/:*?"<>|]/g, '_') + '-' + date + '.md', markdown);
+          downloadText(safeExportName(activeGroup.title, 'bot-team') + '-' + date + '.md', markdown);
           uiReport({ kind: 'action', action: 'group.export' });
         } catch (error) {
           dispatch({ type: 'error', message: String(error && error.message ? error.message : error) });
@@ -9235,12 +9818,26 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           const allMessages = await collectAllMessages(activeGroup.groupId);
           const html = buildGroupHtml({ group: activeGroup, members, bots: state.bots, messages: allMessages });
           const date = new Date().toISOString().slice(0, 10);
-          downloadText(
-            String(activeGroup.title || 'bot-team').replace(/[\\/:*?"<>|]/g, '_') + '-' + date + '.html',
-            html,
-            'text/html;charset=utf-8',
-          );
+          downloadText(safeExportName(activeGroup.title, 'bot-team') + '-' + date + '.html', html, 'text/html;charset=utf-8');
           uiReport({ kind: 'action', action: 'group.export-html' });
+        } catch (error) {
+          dispatch({ type: 'error', message: String(error && error.message ? error.message : error) });
+        }
+      };
+
+      const exportPdf = async () => {
+        if (!activeGroup) return;
+        try {
+          const response = await api.exportPdf(activeGroup.groupId, uiLocale());
+          if (!response.ok) {
+            const body = await response.json().catch(() => null);
+            const message = body && body.error && body.error.message ? body.error.message : `HTTP ${response.status}`;
+            throw new Error(message);
+          }
+          const blob = await response.blob();
+          const date = new Date().toISOString().slice(0, 10);
+          downloadBlob(safeExportName(activeGroup.title, 'bot-team') + '-' + date + '.pdf', blob);
+          uiReport({ kind: 'action', action: 'group.export-pdf' });
         } catch (error) {
           dispatch({ type: 'error', message: String(error && error.message ? error.message : error) });
         }
@@ -9299,7 +9896,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                       h(
                         'div',
                         { style: S.chatTitleRow },
-                        h('div', { style: S.chatTitle, title: activeGroup.title }, activeGroup.title),
+                        h('div', { style: S.chatTitle, title: activeGroup.title, raw: true }, activeGroup.title),
                         runningMembers.length > 0
                           ? h(
                               'span',
@@ -9309,7 +9906,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                             )
                           : null,
                       ),
-                      h('div', { style: S.chatTopic, title: headerSubtitle }, headerSubtitle),
+                      h('div', { style: S.chatTopic, title: headerSubtitle, raw: true }, headerSubtitle),
                     ),
                     h(
                       'div',
@@ -9422,6 +10019,10 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                                       setHeaderMenuOpen(false);
                                       void exportHtml();
                                     }),
+                                activeIsDirect ? null : menuItem('导出 PDF', () => {
+                                  setHeaderMenuOpen(false);
+                                  void exportPdf();
+                                }),
                                 activeIsDirect
                                   ? null
                                   : h(React.Fragment, null,
@@ -9518,7 +10119,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                           'button',
                           { type: 'button', className: 'bt-jump-btn', style: S.jumpButton, onClick: () => scrollToLatest('auto') },
                           newCount > 0 ? h('span', { className: 'bt-chat-scroll-badge' }, newCount > 99 ? '99+' : String(newCount)) : null,
-                          newCount > 0 ? '条新消息' : '回到底部',
+                          newCount > 0 ? (newCount === 1 ? uiT('单条新消息') : uiT('条新消息')) : uiT('回到底部'),
                           h('span', { style: { fontSize: 10, color: 'var(--bt-text-3)' } }, '↓'),
                         )
                       : null,
@@ -9536,9 +10137,14 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                       void exportMarkdown();
                     },
                     onExportHtml: activeIsDirect
-                      ? undefined
+                      ? null
                       : () => {
                           void exportHtml();
+                        },
+                    onExportPdf: activeIsDirect
+                      ? null
+                      : () => {
+                          void exportPdf();
                         },
                     onOpenSettings: () => dispatch({ type: 'dialog', dialog: { kind: 'settings' } }),
                     onResize: () => {
@@ -9601,8 +10207,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                 h('button', { style: S.ghostBtn, onClick: openBotCreate }, '+ 新建 Bot'),
                 h('div', { style: { fontSize: 12, color: 'var(--bt-text-3)', lineHeight: 1.7 } }, uiT('已有 {count} 个 Bot。每个 Bot 都有自己的单聊；也可以在群里加入它们。', { count: state.bots.length })),
                 state.bots.map((bot) => h('div', { key: bot.botId, style: { ...S.memberCard, cursor: 'pointer' }, onClick: () => openBotEdit(bot) },
-                  h('div', { style: S.memberTop }, h(Avatar, { bot, size: 24 }), h('span', { style: S.memberName }, bot.name)),
-                  h('div', { style: S.memberMeta }, `${bot.model}`),
+                  h('div', { style: S.memberTop }, h(Avatar, { bot, size: 24 }), h('span', { style: S.memberName, raw: true }, bot.name)),
+                  h('div', { style: S.memberMeta, raw: true }, `${bot.model}`),
                 )),
               )),
           messageMenu && messageMenu.groupId === state.activeGroupId

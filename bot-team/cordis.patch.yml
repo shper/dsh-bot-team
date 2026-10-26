@@ -25,6 +25,9 @@
         # ask: surface approval requests in the group and answer in the bot session.
         # never: deterministic headless deny (unattended/CI).
         botApprovalPolicy: ask
+        # PDF export discovers a system CJK TrueType font. Set pdfFontPath to
+        # override it with an explicit .ttf/.ttc file.
+        pdfFontPath: ''
         maxTurnsPerHour: 120
         dailyTokenBudget: 5000000
         # smokeResultsDir is intentionally unset: it defaults to <cwd>/.bot-team.

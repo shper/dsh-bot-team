@@ -11,6 +11,7 @@
  *   PUT  /api/bot-team.file        — persona file write (JSON body { botId, kind, text })
  *   POST /api/bot-team.upload      — generic file upload (?name=&groupId=; raw bytes)
  *   GET  /api/bot-team.skills      — user-invocable skills for a group workspace
+ *   GET  /api/bot-team.export.pdf  — group timeline as a PDF (?groupId=&lang=)
  */
 export const ROUTES = {
   bootstrap: '/api/bot-team.bootstrap',
@@ -21,6 +22,7 @@ export const ROUTES = {
   file: '/api/bot-team.file',
   upload: '/api/bot-team.upload',
   skills: '/api/bot-team.skills',
+  exportPdf: '/api/bot-team.export.pdf',
 };
 
 export function registerRoutes(ctx, service) {
@@ -69,6 +71,13 @@ export function registerRoutes(ctx, service) {
     requestBody: 'buffered',
     fetch: (request) => service.handleUploadHttp(request),
   });
+  register({
+    path: ROUTES.exportPdf,
+    methods: ['GET'],
+    requestBody: 'buffered',
+    fetch: (request) => service.handleExportPdf(request),
+  });
+
   register({
     path: ROUTES.skills,
     methods: ['GET'],

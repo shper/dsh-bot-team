@@ -51,13 +51,14 @@ test('the real service boots, registers its routes/tools, and drives direct chat
   );
   try {
     await service.ready;
-    assert.equal(routes.length, 8, 'bootstrap/messages/events/action/health/file/upload/skills routes');
+    assert.equal(routes.length, 9, 'bootstrap/messages/events/action/health/file/upload/skills/export-pdf routes');
     assert.deepEqual(
       routes.map((route) => route.path).sort(),
       [
         '/api/bot-team.action',
         '/api/bot-team.bootstrap',
         '/api/bot-team.events',
+        '/api/bot-team.export.pdf',
         '/api/bot-team.file',
         '/api/bot-team.health',
         '/api/bot-team.messages',
@@ -84,9 +85,9 @@ test('the real service boots, registers its routes/tools, and drives direct chat
     assert.equal(boot.folders.length, 0);
     assert.equal(boot.groups.filter((group) => group.kind === 'direct').length, 1);
     assert.equal(boot.plugin.packageName, 'dsh-bot-team');
-    assert.equal(boot.plugin.version, '1.0.0');
+    assert.equal(boot.plugin.version, '1.1.0');
     assert.equal(boot.plugin.author, 'shper');
-    assert.equal(service.healthPayload().pluginVersion, '1.0.0');
+    assert.equal(service.healthPayload().pluginVersion, '1.1.0');
 
     const folder = await service.dispatch('folder.create', { title: '工作' });
     const group = await service.dispatch('group.create', { title: '集成群', folderId: folder.folderId });

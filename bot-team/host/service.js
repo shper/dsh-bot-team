@@ -32,6 +32,7 @@ import {
   sortByOrder,
 } from './layout.js';
 import { parseMentionsFromText, renderGroupContext, renderPersona } from './prompt.js';
+import { buildGroupPdf } from './pdf.js';
 import { defaultWorkspaceDir, ensureWorkspaceDir, isStandardLayout, migrateLegacyLayout } from './workspace.js';
 
 class ServiceError extends Error {
@@ -53,7 +54,7 @@ try {
 export const PLUGIN_INFO = Object.freeze({
   name: 'Bot Team',
   packageName: typeof pluginPackage.name === 'string' ? pluginPackage.name : 'dsh-bot-team',
-  version: typeof pluginPackage.version === 'string' ? pluginPackage.version : '1.0.0',
+  version: typeof pluginPackage.version === 'string' ? pluginPackage.version : '1.1.0',
   author: typeof pluginPackage.author === 'string'
     ? pluginPackage.author
     : pluginPackage.author && typeof pluginPackage.author.name === 'string'
@@ -310,6 +311,43 @@ export class BotTeamService {
         hasMore,
         running: this.engine.isRunning(groupId),
       });
+    });
+  }
+
+  /** Export one group timeline as a self-contained PDF (subset CJK font). */
+  async handleExportPdf(request) {
+    return this.withReady(async () => {
+      const url = new URL(request.url);
+      const groupId = url.searchParams.get('groupId') || '';
+      const group = this.repo.getGroup(groupId);
+      if (!group) return json(fail('not-found', `群 ${groupId} 不存在`), 404);
+      const lang = String(url.searchParams.get('lang') || 'zh').toLowerCase().startsWith('en') ? 'en' : 'zh';
+      try {
+        const pdf = await buildGroupPdf({
+          group,
+          members: this.repo.membersOf(groupId),
+          bots: this.repo.allBots(),
+          messages: this.repo.messagesOf(groupId),
+          lang,
+          fontPath: this.config.pdfFontPath || '',
+        });
+        const stamp = new Date().toISOString().slice(0, 10);
+        const safe = String(group.title || 'bot-team')
+          .replace(/[\/:*?"<>|\u0000-\u001f]/g, '_')
+          .slice(0, 80) || 'bot-team';
+        const filename = `${safe}-${stamp}.pdf`;
+        return new Response(pdf, {
+          headers: {
+            'content-type': 'application/pdf',
+            'content-disposition': `attachment; filename="bot-team-${stamp}.pdf"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+            'content-length': String(pdf.length),
+            'cache-control': 'no-store',
+          },
+        });
+      } catch (error) {
+        const code = error && typeof error.code === 'string' ? error.code : 'pdf-failed';
+        return json(fail(code, String(error && error.message ? error.message : error)), code === 'pdf-font-unavailable' ? 501 : 500);
+      }
     });
   }
 

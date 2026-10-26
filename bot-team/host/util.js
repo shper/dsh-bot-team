@@ -38,6 +38,7 @@ export function resolveConfig(raw = {}) {
     dailyTokenBudget: positiveInt(raw.dailyTokenBudget, 5000000, 1000, 100000000),
     toolWaitTimeoutMs: positiveInt(raw.toolWaitTimeoutMs, 180000, 10000, 900000),
     maxMembersPerGroup: positiveInt(raw.maxMembersPerGroup, 12, 1, 50),
+    pdfFontPath: typeof raw.pdfFontPath === 'string' ? raw.pdfFontPath.trim() : '',
     smokeTest: raw.smokeTest === true,
     smokeResultsDir: typeof raw.smokeResultsDir === 'string' && raw.smokeResultsDir.trim().length > 0
       ? path.resolve(raw.smokeResultsDir)

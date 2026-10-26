@@ -2,7 +2,7 @@
 
 > 把 DeepSeek Harness 变成一间「Bot 公司」：每个 Bot 都是真实的 Agent，有独立会话、模型、人格和全套工具。你可以像用 IM 一样单聊、拉群、`@` 派活、评审、讨论、建任务。
 
-`版本 1.0.0` · `MIT` · `DSH 0.2.1-rc.x` · `npm dsh-bot-team`
+`版本 1.1.0` · `MIT` · `DSH 0.2.1-rc.x` · `npm dsh-bot-team`
 
 ![群聊：@ 派活、任务板、评审与审批卡片](docs/assets/v0.6-feed.png)
 
@@ -27,14 +27,15 @@ Bot Team 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
 | 流式 | 实时流式输出、停止、失败重试、断线补齐 |
 | 消息 | 引用回复（群聊回复 Bot 时自动 `@` 原作者）、右键菜单、同作者消息合并、时间分隔、新消息分隔线、回到底部 |
 | 输入 | 左下角 **+** 打开 DSH 风格分组命令菜单（文件 / 技能 / 提及 / 停止 / 导出 / 设置）；键入 `/` 选择 Skill；文件存入 DSH 附件库，Bot 拿到只读路径 |
-| 导出 | 群聊导出 Markdown / HTML |
+| 导出 | 群聊导出 Markdown / HTML / PDF（PDF 文本可选中、A4 分页、页脚页码） |
 
 ### 组织与界面
 
 - 单聊、群聊、未分组和自定义分组都能展开 / 收起，群与分组支持拖动排序；
 - 左侧栏可收起成 68px 图标栏，消息区获得更多宽度；
 - 深浅色跟随 DSH（light / dark / system），使用 `--bt-*` token，切换即时生效；
-- 账号头像、群头像（随机配色 / 10 个 SVG 插画 / 上传）、Bot 头像（按名字生成机器人面具）。
+- 账号头像、群头像（随机配色 / 10 个 SVG 插画 / 上传）、Bot 头像（按名字生成机器人面具）；
+- **中文 / English 界面**跟随 DSH 的 **设置 → General → Language** 即时切换；宿主生成的讨论/评审/审批事件消息也会随语言切换，Bot 消息、群名、Bot 名等用户内容保持不变。
 
 ### 协作
 
@@ -59,17 +60,19 @@ bot_team_discuss       bot_team_task_create    bot_team_task_list   bot_team_tas
 ### 桌面版
 
 1. 左侧栏 **插件 / Plugins** → **添加插件**；
-2. 填 `dsh-bot-team@1.0.0`（也可以填本地目录绝对路径或 Git 地址）；
+2. 填 `dsh-bot-team@1.1.0`（也可以填本地目录绝对路径或 Git 地址）；
 3. 安装完成后启用；如果之前启用过，对该 bundle **disable → enable**（或完整重启 DSH）；
 4. 刷新页面，左侧栏出现 **Bot Team** 图标。
 
 ### CLI
 
 ```sh
-dsh plugin --profile <profile> add dsh-bot-team@1.0.0
+dsh plugin --profile <profile> add dsh-bot-team@1.1.0
 ```
 
 安装后同样要重新加载 Host 模块（disable→enable 或重启）。
+
+> `1.1.0` 是当前源码版本；npm 上的公开发行版需按 [发布指南](docs/发布指南.md) 执行 `npm publish`。在发布前安装本机源码，请用本地目录路径。
 
 ### 从源码
 
@@ -78,6 +81,8 @@ git clone https://github.com/shper/dsh-bot-team.git
 ```
 
 在插件页把 `/path/to/dsh-bot-team/bot-team` 作为本地目录添加；或让 Agent 执行 `plugin_manager` 的 `install_bundle`，`target` 填这个绝对路径。改完代码需要 disable→enable 或重启，才会加载新的 Host 模块。
+
+> v1.1 起新增 `fontkit` 运行时依赖（PDF 字体子集）；从源码 link 安装时先在 `bot-team/` 执行 `npm install`。
 
 ### 兼容性
 
@@ -157,12 +162,13 @@ tools/        开发辅助（asar 读取）
 
 ## 开发
 
-宿主侧是普通 ESM，不 import 任何 `@deepseek-ai/*` 包；客户端是单文件 `client.js`，React 来自平台模块表。测试不依赖第三方包、不调用真实模型、不访问个人数据。
+宿主侧是普通 ESM，不 import 任何 `@deepseek-ai/*` 包；客户端是单文件 `client.js`，React 来自平台模块表。PDF 导出用 `fontkit` 读取并子集化系统 CJK 字体（唯一运行时依赖）；其余测试不依赖第三方包、不调用真实模型、不访问个人数据。
 
 ```sh
 cd bot-team
+npm install          # 安装唯一运行时依赖 fontkit（PDF 字体子集）
 npm run check        # node --check：index.js / client.js / host/*.js
-npm test             # 125 条隔离测试
+npm test             # 134 条隔离测试（本机有 CJK 字体时 133 通过 + 1 条按字体条件跳过）
 npm pack --dry-run   # 查看真正会被发布的文件
 ```
 
@@ -170,11 +176,12 @@ npm pack --dry-run   # 查看真正会被发布的文件
 
 ## 已知限制
 
-- UI 文案目前只有中文；
 - 分组只有一层；展开 / 收起是浏览器本地偏好，不跨设备同步；
 - 讨论为固定轮次，同一群同时只允许一个讨论；
 - 任务队列是 Engine 内存态，重启后排队标记丢失（任务仍为进行中）；
 - Markdown 渲染较轻量：无语法高亮，图片未支持；
+- PDF 使用系统 CJK 字体（macOS 优先 Hiragino Sans GB / Arial Unicode（宋体等无嵌入许可的字体自动跳过）；Windows/Linux 用常见中文字体）；没有 CJK 字体时导出返回 501，可用 `pdfFontPath` 指定字体文件；PDF 为轻量排版（无图片/头像、链接不可点击、emoji 可能缺字），正文文本可选中与搜索；
+- 语言只覆盖界面与宿主事件消息；Bot 的回复、群名/Bot 名、人格模板正文、部分宿主错误仍按原语言显示；
 - Bot 的操作边界由群/单聊工作目录、`botSandbox` 与审批策略共同约束。
 
 ## 文档
@@ -183,8 +190,8 @@ npm pack --dry-run   # 查看真正会被发布的文件
 - [使用指南](docs/使用指南.md)
 - [发布指南](docs/发布指南.md)
 - [升级检查清单](docs/升级检查清单.md)
-- [最新变更记录：v0.8.1 单聊目录分层](docs/v0.8.1-单聊目录分层-变更记录.md)
-- 当前版本 `1.0.0`，也是首个 npm 公开发行版；`docs/` 的 v0.5–v0.8.1 是发布前的 0.x 内部迭代记录，公开版本从 `1.0.0` 开始。
+- [最新变更记录：v1.1 中英双语与导出 PDF](docs/v1.1-i18n与PDF-变更记录.md)
+- 当前版本 `1.1.0`；`1.0.0` 是首个 npm 公开发行版，`docs/` 的 v0.5–v0.8.1 是发布前的 0.x 内部迭代记录。
 - 历史验证报告中的 `.bot-team/`、`.bot-team-spike/`、`tmp/` 证据文件已在发布前清理，报告保留为历史记录。
 
 ## License
@@ -196,8 +203,8 @@ MIT © [shper](https://github.com/shper)
 **Bot Team** is a DeepSeek Harness plugin for long-lived agent colleagues. Every bot is a real DSH agent with its own persistent session, model, `BOT.md` persona and full toolset (files, search, web, commands inside a `workspace-write` sandbox). Each bot gets a direct chat; groups support `@mention` dispatch, parallel streaming replies, peer review, multi-round discussions, and a task board with priorities, dependencies, review/acceptance and a dispatch queue. Data lives in the `bot_team` storage domain and `$DSH_HOME/dsh-bot-team/`; group conversations never pollute session logs.
 
 ```sh
-# Desktop: Plugins → Add plugin → dsh-bot-team@1.0.0, then reload
-dsh plugin --profile <profile> add dsh-bot-team@1.0.0
+# Desktop: Plugins → Add plugin → dsh-bot-team@1.1.0, then reload
+dsh plugin --profile <profile> add dsh-bot-team@1.1.0
 ```
 
-Requires DSH `0.2.1-rc.x`. UI text is Chinese for now. MIT licensed.
+Requires DSH `0.2.1-rc.x`. The UI follows DSH's zh/en language setting, and group timelines export to Markdown, HTML, or a paginated PDF with selectable text. MIT licensed.
