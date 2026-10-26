@@ -7,7 +7,7 @@
 - **模型**：provider / model / reasoning effort / maxTokens（创建时 `agentOptions`，resume 时复传）；
 - **头像**：按名称生成机器人面具、点「随机生成」换配色/表情、选 10 个 SVG 插画之一，或自定义上传（浏览器裁成 256×256，存为 data URL）；
 - **人格与工作规范**：`<botsDir>/<botId>/BOT.md`（一个文件写「你是谁」+「你怎么做事」，在页面内编辑，下一轮生效；旧版 SOUL.md/AGENT.md 仍可读取）；
-- **工具**：所有 Bot 默认全能力——文件读写、搜索、联网、命令执行，session 沙箱为 `workspace-write`，范围受群工作目录限制。
+- **工具**：所有 Bot 统一为全能力 Bot——文件读写、搜索、联网、命令执行、Skill；不提供只读版或按角色裁剪工具的版本。session 沙箱为 `workspace-write`，范围受群/单聊工作目录限制。
 
 群、分组、Bot、成员、消息都保存在插件自己的 storage domain `bot_team`（`$DSH_HOME/storages/bot_team/`），不污染会话日志。单聊也是 group 记录（`kind: "direct"`），由 Host 自动创建与清理。
 
@@ -169,7 +169,7 @@ node --check bot-team/client.js
 - 讨论仅固定轮次（无 AI 主持人、同一群同时只允许一个讨论）。
 - 讨论中的单条消息不支持重试（请重新发起讨论）。
 - 审批默认 `ask`：Bot 越界/升权时会在群时间线出现「审批请求」卡片，点「去审批」打开该 Bot 的 DSH 会话选择「允许一次 / 拒绝」；无人处理时会等到本轮超时。`botApprovalPolicy: never` 可切回严格的自动拒绝模式。
-- 所有 Bot 默认全能力，没有 per-Bot 权限分级；安全边界依赖群工作目录与 `botSandbox`。
+- Bot 的操作边界由群/单聊工作目录、`botSandbox` 与审批策略共同约束。
 - UI 文案为中文（i18n 后续）。
 - 任务板（正式任务/验收/状态流转）仍为 v0.5 计划。
 - 导出 HTML 为轻量 Markdown 转换（无表格/图片）。
@@ -188,4 +188,4 @@ node --check bot-team/client.js
 
 ## 下一阶段（M5）
 
-完整 i18n（zh/en）、可选的 per-Bot 权限分级（只读/全能力）、导出 PDF、多进程配额账本、持久任务队列 / 优先级抢占。
+完整 i18n（zh/en）、导出 PDF、多进程配额账本、持久任务队列 / 优先级抢占。

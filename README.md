@@ -13,7 +13,7 @@ Bot Team 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
 - 每个 Bot 有名字、头像、独立的 provider / model / reasoning effort / maxTokens，以及独立 Session 记忆；
 - 人格与工作规范写在 `BOT.md`，改完下一轮生效；
 - 单聊是它的工位，群聊是会议室，任务板是工单系统，评审和讨论是流程；
-- 所有 Bot 默认全能力：读写文件、搜索、联网、执行命令、Skill（`workspace-write` 沙箱，范围受群/单聊工作目录限制）；
+- 所有 Bot 统一为全能力 Bot：读写文件、搜索、联网、执行命令、Skill；不提供只读版或按角色裁剪工具的版本（`workspace-write` 沙箱，范围受群/单聊工作目录限制）；
 - Bot 本身就是普通的 DSH 会话，随时可以点「查看会话」跳进它的执行流。
 
 ## 功能
@@ -175,7 +175,7 @@ npm pack --dry-run   # 查看真正会被发布的文件
 - 讨论为固定轮次，同一群同时只允许一个讨论；
 - 任务队列是 Engine 内存态，重启后排队标记丢失（任务仍为进行中）；
 - Markdown 渲染较轻量：无语法高亮，图片未支持；
-- 没有 per-Bot 权限分级，安全边界依赖工作目录与 `botSandbox`。
+- Bot 的操作边界由群/单聊工作目录、`botSandbox` 与审批策略共同约束。
 
 ## 文档
 

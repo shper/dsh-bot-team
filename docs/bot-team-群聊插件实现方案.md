@@ -1,6 +1,6 @@
 # DSH 多 Agent 群聊插件 `bot_team` — 详细实现方案（v0.1 讨论稿）
 
-> 注（v0.5.7）：能力档位已取消，所有 Bot 统一为全能力（文件读写、搜索、联网、命令），并统一使用 `workspace-write`。本文中的「讨论型/评审型/执行型」、`allowWorkBots`、read-only guard 等描述为历史设计记录。
+> 当前产品原则：所有 Bot 统一为全能力 Bot，不提供只读版或按角色裁剪工具的版本，也不再规划 per-Bot 权限分级。v0.5.7 已取消能力档位，所有 Bot 统一具备文件读写、搜索、联网、命令执行能力，并使用 `workspace-write`。本文中的「讨论型/评审型/执行型」、`allowWorkBots`、read-only guard 等描述为历史设计记录。
 >
 > 注（v0.8）：包名与 Client module id 已改为 `dsh-bot-team`，文件数据目录改为 `$DSH_HOME/dsh-bot-team/`；文中 `@local/bot-team`、`$DSH_HOME/bot-team` 为历史写法。
 >
@@ -903,7 +903,7 @@ domain 模型 + 群 CRUD + Bot CRUD + 单 bot @ 派发 + 流式消息 + 停止 +
 > domain schema v2 迁移框架、按群配额/限流（每小时轮数 + 每日 token）、per-bot 沙箱档位（talk/review=read-only，work=workspace-write）、
 > 执行型 Bot 开关（allowWorkBots，创建前原子校验）、`/api/bot-team.health` 健康检查、导出 HTML、
 > [使用指南](使用指南.md) 与 [升级检查清单](升级检查清单.md) 均已落地；冒烟 `smoke-v6` 14/14 全绿。
-> 完整 i18n 与按 capability 精确收敛工具可见性顺延到下一阶段。
+> 完整 i18n 顺延到下一阶段；原「按 capability 精确收敛工具可见性」计划已取消，所有 Bot 统一全能力。
 
 
 权限档位细化（sandbox per-bot）、domain 迁移脚本、限流与配额、文档、演示数据、升级兼容检查。
