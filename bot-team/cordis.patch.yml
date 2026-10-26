@@ -1,0 +1,57 @@
+# Bot Team bundle patch: the plugin row + the full-capability preset its bots mount.
+#
+# Presets are ordinary @deepseek-ai/dsh-agent-preset declarations. A bot agent is
+# created by the Host half with meta.agentPreset and mounts the preset in its
+# setup callback (same mechanism the Web session controller uses).
+- insert:
+    - id: bot-team
+      name: 'dsh-bot-team'
+      config:
+        # Empty ⇒ $DSH_HOME/dsh-bot-team (plugin data root).
+        dataDir: ''
+        # Empty ⇒ <dataDir>/bots (BOT.md persona files).
+        botsDir: ''
+        # Legacy fallback only: new groups default to <dataDir>/groups/<groupId>,
+        # direct chats to <dataDir>/<botId>. Empty ⇒ the Host process cwd.
+        defaultCwd: ''
+        maxParallelTurns: 3
+        maxContextMessages: 40
+        turnTimeoutMs: 300000
+        # M1 verification finished: stop writing demo/smoke data on activation.
+        # Flip back to true only when re-running the end-to-end smoke checks.
+        smokeTest: false
+        # M4 hardening defaults
+        botSandbox: true
+        # ask: surface approval requests in the group and answer in the bot session.
+        # never: deterministic headless deny (unattended/CI).
+        botApprovalPolicy: ask
+        maxTurnsPerHour: 120
+        dailyTokenBudget: 5000000
+        smokeResultsDir: /Users/shper/Documents/11_dsh_plugin/bot_team/.bot-team
+
+    - id: preset-bot-team-tools
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: bot-team-tools
+        name: 'Bot Team · 全能'
+        description: 'Bot Team bot：文件读写、搜索、联网、命令执行，workspace-write 沙箱。'
+        order: 40
+        plugins:
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+            disabled: !!js process.platform === 'win32'
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true

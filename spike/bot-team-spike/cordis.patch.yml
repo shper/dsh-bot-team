@@ -1,0 +1,16 @@
+# M0 throwaway spike bundle for the Bot Team plugin.
+#
+# Applied on top of the desktop profile. Remove the whole bundle afterwards with
+# plugin_manager remove_bundle '@local/bot-team-spike'.
+- insert:
+    - id: bot-team-spike
+      name: '@local/bot-team-spike'
+      config:
+        # Absolute path of the workspace results directory (spike output).
+        resultsDir: /Users/shper/Documents/11_dsh_plugin/bot_team/.bot-team-spike
+        # Run the host-side self test automatically on activation.
+        autoSelfTest: true
+        # Close a self-close SSE test stream after this many frames.
+        sseCloseAfterFrames: 3
+        # Per-turn timeout for the bot test.
+        turnTimeoutMs: 120000

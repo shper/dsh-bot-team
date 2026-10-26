@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+
+# Local plugin data / smoke output
+.bot-team/
+.bot-team-spike/
+
+# Scratch renders and one-off previews
+tmp/
+
+# Dependencies and package artifacts
+node_modules/
+*.tgz
+*.log
