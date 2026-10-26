@@ -58,6 +58,7 @@ export class Engine {
       kind: fields.kind ?? 'chat',
       text: typeof fields.text === 'string' ? fields.text : '',
       mentions: Array.isArray(fields.mentions) ? [...fields.mentions] : [],
+      attachments: Array.isArray(fields.attachments) ? fields.attachments.map((attachment) => ({ ...attachment })) : [],
       replyTo: fields.replyTo ?? null,
       status: fields.status ?? 'done',
       error: null,
@@ -139,7 +140,7 @@ export class Engine {
     throw error;
   }
 
-  postHumanMessage({ groupId, text, mentions, author, replyTo }) {
+  postHumanMessage({ groupId, text, mentions, author, replyTo, attachments }) {
     const group = this.repo.getGroup(groupId);
     if (!group) throw new Error(`group ${groupId} does not exist`);
     let replyToId = null;
@@ -155,6 +156,7 @@ export class Engine {
       author: author || { type: 'human', name: '用户' },
       text,
       mentions,
+      attachments,
       replyTo: replyToId,
       status: 'done',
     });

@@ -1,8 +1,8 @@
 # DSH 多 Agent 群聊插件 `bot_team` — 详细实现方案（v0.1 讨论稿）
 
-> 注（v1.5.7）：能力档位已取消，所有 Bot 统一为全能力（文件读写、搜索、联网、命令），并统一使用 `workspace-write`。本文中的「讨论型/评审型/执行型」、`allowWorkBots`、read-only guard 等描述为历史设计记录。
+> 注（v0.5.7）：能力档位已取消，所有 Bot 统一为全能力（文件读写、搜索、联网、命令），并统一使用 `workspace-write`。本文中的「讨论型/评审型/执行型」、`allowWorkBots`、read-only guard 等描述为历史设计记录。
 >
-> 注（v1.8）：包名与 Client module id 已改为 `dsh-bot-team`，文件数据目录改为 `$DSH_HOME/dsh-bot-team/`；文中 `@local/bot-team`、`$DSH_HOME/bot-team` 为历史写法。
+> 注（v0.8）：包名与 Client module id 已改为 `dsh-bot-team`，文件数据目录改为 `$DSH_HOME/dsh-bot-team/`；文中 `@local/bot-team`、`$DSH_HOME/bot-team` 为历史写法。
 >
 > 目标：在 DSH Web GUI 里做一个"群聊/话题"能力：一个群可以拉入多个 bot agent，每个 bot 可单独设置模型、SOUL.md / AGENT.md 人格与行为规范；用户可以在群里 @A 派任务、@B 评审 A 的结果、或让 A/B/C 就一个问题讨论。
 >
@@ -424,9 +424,9 @@ if (summarizeAtEnd) 让第一个成员输出「共识/分歧/待决问题」
 - 「停止」= `group.stop()`：中断当前 bot turn（`agent.cancel({kind:'user'}, {keepInbox:false})`），清空该群 pending 队列，讨论标 `stopped`，已产出的消息保留。
 - 限制：一个群同时只允许一个讨论；`maxTurnsPerDiscussion`（默认 30）兜底防跑飞。
 
-### 6.4 任务（v1.5，可选）
+### 6.4 任务（v0.5，可选）
 
-> **v1.5 任务板已完成**：见 [任务板验证报告](v1.5-任务板-验证报告.md)；**v1.5.1 任务模型工具 + 依赖/优先级已完成**：见 [v1.5.1 验证报告](v1.5.1-任务模型工具-验证报告.md)；**v1.5.2 队列/一键派发已完成**：见 [v1.5.2 验证报告](v1.5.2-任务队列与一键派发-验证报告.md)。tasks 表 + 状态机（pending→in_progress→delivered→accepted/changes_requested→返工）+ Engine 派发/交付/评审 hook + 右栏任务卡片 + 消息任务标记；冒烟 smoke-v7 覆盖两条链路。
+> **v0.5 任务板已完成**：见 [任务板验证报告](v0.5-任务板-验证报告.md)；**v0.5.1 任务模型工具 + 依赖/优先级已完成**：见 [v0.5.1 验证报告](v0.5.1-任务模型工具-验证报告.md)；**v0.5.2 队列/一键派发已完成**：见 [v0.5.2 验证报告](v0.5.2-任务队列与一键派发-验证报告.md)。tasks 表 + 状态机（pending→in_progress→delivered→accepted/changes_requested→返工）+ Engine 派发/交付/评审 hook + 右栏任务卡片 + 消息任务标记；冒烟 smoke-v7 覆盖两条链路。
 
 在消息语义之上加一个轻量任务板（复用 agent-team 的 CAS 思路）：
 
@@ -458,7 +458,7 @@ interface Task { taskId; groupId; title; description; acceptance?;
 
 ### 7.1 增量记忆
 
-每个成员记录 `lastSeenSeq`。一次 turn 的上下文 = `messages[lastSeenSeq+1 .. now]`，按 `maxContextMessages` 截断（超长时保留最新，并在头部加一行"更早的 N 条消息已省略"；v1.5 用滚动摘要替代省略）。
+每个成员记录 `lastSeenSeq`。一次 turn 的上下文 = `messages[lastSeenSeq+1 .. now]`，按 `maxContextMessages` 截断（超长时保留最新，并在头部加一行"更早的 N 条消息已省略"；v0.5 用滚动摘要替代省略）。
 
 好处：token 不随群历史线性暴涨；每个 bot 只消费"自己没看过的部分"，且能看到其他 bot 的发言（共享群上下文）。代价：无法回放很久之前的细节——通过引用消息（`replyTo` 带原文）和任务交付物补齐。
 
@@ -886,15 +886,15 @@ domain 模型 + 群 CRUD + Bot CRUD + 单 bot @ 派发 + 流式消息 + 停止 +
 
 `bot_team_*` 模型工具（主会话可建群/派发）、查看 bot 私聊会话、群导出、Markdown 渲染优化、i18n 完整。
 
-### v1.5 任务板（已完成）
+### v0.5 任务板（已完成）
 
-> **进展：✅ 已完成并安装验证**（报告见 [v1.5-任务板-验证报告](v1.5-任务板-验证报告.md)）。
+> **进展：✅ 已完成并安装验证**（报告见 [v0.5-任务板-验证报告](v0.5-任务板-验证报告.md)）。
 > `tasks` 表 + 状态机、任务派发/修改 prompt、交付物与任务关联、评审 verdict 自动流转、右栏任务面板、
 > 新建任务对话框、消息任务标记；冒烟 `smoke-v7` 16/16（含 `taskFlowAccepted` / `taskChangesAndRework`）。
-> **v1.5.1**：新增 `bot_team_task_create/list/update` 三个模型工具、任务依赖 DAG（环检测、就绪校验、验收后自动解锁、级联取消）
+> **v0.5.1**：新增 `bot_team_task_create/list/update` 三个模型工具、任务依赖 DAG（环检测、就绪校验、验收后自动解锁、级联取消）
 > 与优先级（排序/展示/编辑）；修复了引入的宿主崩溃（异步 taskHook rejection）。冒烟 `smoke-v8` 20/20。
-> **v1.5.2**：一键派发（`task.dispatch_ready` + UI 按钮）、Engine 队列快照与「排队中」标记、可选 `autoDispatchReady`；冒烟 `smoke-v9` 23/23。
-> **v1.5.3**：按反馈简化任务面板（仅留派发/中断/执行详情），新增真正的中断（`engine.cancelTaskRun` abort 当前 turn）
+> **v0.5.2**：一键派发（`task.dispatch_ready` + UI 按钮）、Engine 队列快照与「排队中」标记、可选 `autoDispatchReady`；冒烟 `smoke-v9` 23/23。
+> **v0.5.3**：按反馈简化任务面板（仅留派发/中断/执行详情），新增真正的中断（`engine.cancelTaskRun` abort 当前 turn）
 > 与一键"执行流"（直接打开该任务 Bot 的 DSH 会话）；新建任务精简为标题/描述/验收标准/指派；评审/验收/编辑/批量派发能力保留在工具/API 中。
 
 ### M4 打磨与硬化（2–3 天）
@@ -943,7 +943,7 @@ domain 模型 + 群 CRUD + Bot CRUD + 单 bot @ 派发 + 流式消息 + 停止 +
 7. **能力默认档**：**讨论 / 评审(只读) 可自由用；执行(可写工作区) 需显式开启（推荐）**。执行档需要确认 bot 能改工作区文件是否可接受。
 8. **模型工具**：**默认开启 `bot_team_*`（推荐，用户可在普通会话里指挥群）** / 只留 UI / 完全不要。开启会在每个会话的系统提示里增加一小段工具说明（约百 token 级）。
 9. **群的工作目录**：一期是否需要（执行型 bot 用它作为 workspace）？**推荐需要，默认继承当前 DSH 会话的工作目录**。
-10. **是否需要"任务板"（正式任务/验收/状态流转）**：**排 v1.5（推荐）**，一期用 @ + 评审消息即可覆盖。
+10. **是否需要"任务板"（正式任务/验收/状态流转）**：**排 v0.5（推荐）**，一期用 @ + 评审消息即可覆盖。
 
 ---
 

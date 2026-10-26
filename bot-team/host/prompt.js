@@ -110,19 +110,49 @@ export function renderGroupContext(repo, botId, groupId) {
   return lines.join('\n');
 }
 
+function formatAttachmentSize(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value < 0) return '';
+  if (value < 1024) return `${Math.round(value)} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let amount = value / 1024;
+  let unit = 0;
+  while (amount >= 1024 && unit < units.length - 1) {
+    amount /= 1024;
+    unit += 1;
+  }
+  return `${amount >= 10 ? Math.round(amount) : amount.toFixed(1)} ${units[unit]}`;
+}
+
 function formatContextMessage(repo, message) {
   if (message.kind === 'approval') return null;
   const name = message.author?.type === 'human'
     ? '用户'
     : message.author?.name ?? (message.author?.botId ? botName(repo, message.author.botId) : '系统');
+  const attachments = Array.isArray(message.attachments)
+    ? message.attachments.filter((attachment) => attachment && attachment.name)
+    : [];
   let text = typeof message.text === 'string' ? message.text : '';
   if (text.length > MAX_CONTEXT_MESSAGE_CHARS) {
     text = `${text.slice(0, MAX_CONTEXT_MESSAGE_CHARS)}…（已截断）`;
   }
   if (message.status === 'pending' || message.status === 'streaming') return null;
   if (message.status === 'error') text = `（该成员本轮失败：${message.error ?? '未知错误'}）`;
-  if (!text) return null;
-  return `[#${message.seq}] ${name}：${text}`;
+  if (!text && attachments.length === 0) return null;
+  // The space after the colon is deliberate: dsh-tool-skill only recognizes a
+  // slash gesture token that starts at a whitespace boundary, and the wrapped
+  // context renders as `用户： /skill-name`.
+  const lines = [`[#${message.seq}] ${name}： ${text || '（仅附件）'}`];
+  if (attachments.length > 0) {
+    lines.push('附件（已保存为只读文件，可用文件工具按路径读取）：');
+    for (const attachment of attachments) {
+      const label = String(attachment.name || '附件').replace(/[\r\n\t]/g, ' ').slice(0, 160);
+      const size = formatAttachmentSize(attachment.bytes);
+      const path = typeof attachment.path === 'string' && attachment.path ? attachment.path : '';
+      lines.push(`- ${label}${size ? `（${size}）` : ''}${path ? `：${path}` : '（路径不可用）'}`);
+    }
+  }
+  return lines.join('\n');
 }
 
 /**
@@ -151,6 +181,14 @@ export function buildTurnPrompt({ repo, botId, groupId, contextMessages, trigger
     .filter(Boolean);
   lines.push(rendered.length > 0 ? rendered.join('\n') : '（无新消息）');
   lines.push('</new-messages>');
+  const attachmentCount = contextMessages.reduce(
+    (total, message) => total + (Array.isArray(message.attachments) ? message.attachments.length : 0),
+    0,
+  );
+  if (attachmentCount > 0) {
+    lines.push('');
+    lines.push('用户消息中的附件是只读文件；需要时先用文件工具读取，不要修改它们。');
+  }
   lines.push('');
   lines.push('<your-turn>');
   if (direct) {

@@ -67,6 +67,9 @@ const TASK_PRIORITIES = ['urgent', 'high', 'normal', 'low'];
 const TASK_PRIORITY_RANK = { urgent: 0, high: 1, normal: 2, low: 3 };
 const MAX_TASK_DEPENDENCIES = 10;
 const PERSONA_KINDS = new Set(['bot', 'soul', 'agent']);
+const MAX_MESSAGE_ATTACHMENTS = 10;
+const MAX_ATTACHMENT_BYTES = 32 * 1024 * 1024;
+const ATTACHMENT_ID_RE = /^sha256:[0-9a-f]{64}$/;
 
 const BOT_COLORS = ['#2f7ed8', '#8b5cf6', '#0d9488', '#d97706', '#db2777', '#4f46e5', '#65a30d', '#dc2626'];
 
@@ -240,7 +243,8 @@ export class BotTeamService {
           ? {
               messageId: lastMessage.messageId,
               seq: lastMessage.seq,
-              text: String(lastMessage.text || '').slice(0, 240),
+              text: String(lastMessage.text || '').slice(0, 240) ||
+                (Array.isArray(lastMessage.attachments) && lastMessage.attachments.length > 0 ? '[附件]' : ''),
               status: lastMessage.status,
               authorName: this.authorName(lastMessage),
               createdAt: lastMessage.createdAt,
@@ -471,6 +475,167 @@ export class BotTeamService {
       const file = this.personas.fileOf(botId, kind);
       return json({ ok: true, botId, kind, text, file });
     });
+  }
+
+  /**
+   * Upload one generic file into the DSH attachment store. Browser file inputs
+   * send the raw bytes; the store keeps them verbatim under the harness home and
+   * returns a durable read-only reference. The client only ever holds the
+   * reference metadata, never a host path.
+   */
+  async handleUploadHttp(request) {
+    return this.withReady(async () => {
+      const url = new URL(request.url);
+      const groupId = String(url.searchParams.get('groupId') || '');
+      if (groupId && !this.repo.getGroup(groupId)) {
+        return json(fail('not-found', `群 ${groupId} 不存在`), 404);
+      }
+      const rawName = String(url.searchParams.get('name') || '');
+      const name = rawName.replace(/[\\/\r\n\t]/g, ' ').trim().slice(0, 160);
+      if (!name) return json(fail('invalid-input', '文件名不能为空'), 400);
+      const declared = Number(request.headers.get('content-length'));
+      if (Number.isFinite(declared) && declared > MAX_ATTACHMENT_BYTES) {
+        return json(fail('limit', '文件不能超过 32 MB'), 413);
+      }
+      let data;
+      try {
+        data = new Uint8Array(await request.arrayBuffer());
+      } catch {
+        return json(fail('invalid-input', '文件读取失败'), 400);
+      }
+      if (data.byteLength === 0) return json(fail('invalid-input', '文件为空'), 400);
+      if (data.byteLength > MAX_ATTACHMENT_BYTES) {
+        return json(fail('limit', '文件不能超过 32 MB'), 413);
+      }
+      const store = this.ctx.get('attachments');
+      if (!store || typeof store.saveFile !== 'function') {
+        return json(fail('unavailable', '附件服务不可用（Host 未挂载 dsh-attachment）'), 503);
+      }
+      let ref;
+      try {
+        ref = await store.saveFile({ data, name });
+      } catch (error) {
+        return json(fail('attachment-failed', `文件保存失败：${String(
+          error && error.message ? error.message : error,
+        )}`), 500);
+      }
+      return json({
+        ok: true,
+        attachment: {
+          attachmentId: String(ref.attachmentId),
+          name: String(ref.name || name),
+          bytes: Number.isSafeInteger(ref.bytes) ? ref.bytes : data.byteLength,
+        },
+      });
+    });
+  }
+
+  /** User-invocable skills for the group workspace, read through a bot's agent scope. */
+  handleSkillsHttp(request) {
+    return this.withReady(async () => {
+      const url = new URL(request.url);
+      const groupId = url.searchParams.get('groupId') || '';
+      const memberId = url.searchParams.get('memberId') || '';
+      return json({ ok: true, ...(await this.listSkills(groupId, memberId)) });
+    });
+  }
+
+  async listSkills(groupId, memberId = '') {
+    const group = this.repo.getGroup(groupId);
+    if (!group) throw new ServiceError('not-found', `群 ${groupId} 不存在`);
+    const members = this.repo.membersOf(groupId).filter(
+      (member) => member.enabled !== false && this.repo.getBot(member.botId),
+    );
+    let member;
+    if (memberId) {
+      member = members.find((candidate) => candidate.membershipId === memberId);
+      if (!member) throw new ServiceError('not-found', '成员不存在或已停用');
+    } else {
+      member = members[0];
+    }
+    if (!member) return { groupId, memberId: null, skills: [], reason: 'no-member' };
+    const skillsService = this.ctx.get('skills');
+    if (!skillsService || typeof skillsService.list !== 'function') {
+      throw new ServiceError('unavailable', 'Skill 服务不可用（Host 未挂载 dsh-skill）');
+    }
+    let agent;
+    try {
+      agent = await this.pool.ensure(member.membershipId);
+    } catch (error) {
+      throw new ServiceError('agent-failed', `无法准备 Bot 会话：${String(
+        error && error.message ? error.message : error,
+      )}`);
+    }
+    let cwd = group.workspaceCwd || defaultWorkspaceDir(this.config, group);
+    const workingDirectory = this.ctx.get('workingDirectory');
+    if (workingDirectory && typeof workingDirectory.ensure === 'function') {
+      try {
+        const ensured = await workingDirectory.ensure(agent);
+        if (typeof ensured === 'string' && ensured) cwd = ensured;
+      } catch {
+        /* fall back to the group workspace */
+      }
+    }
+    let summaries;
+    try {
+      summaries = await skillsService.list({ cwd, scope: agent });
+    } catch (error) {
+      throw new ServiceError('skills-failed', `Skill 列表读取失败：${String(
+        error && error.message ? error.message : error,
+      )}`);
+    }
+    const skills = (Array.isArray(summaries) ? summaries : [])
+      .filter((skill) => skill && skill.invocation && skill.invocation.userInvocable === true)
+      .map((skill) => ({
+        name: String(skill.name || ''),
+        description: String(skill.description || ''),
+        whenToUse: String(skill.whenToUse || ''),
+        modelInvocable: skill.invocation.modelInvocable === true,
+        source: String(skill.source || ''),
+        provider: String(skill.provider || ''),
+        ...(typeof skill.path === 'string' && skill.path ? { path: skill.path } : {}),
+      }))
+      .filter((skill) => skill.name);
+    return { groupId, memberId: member.membershipId, cwd, skills };
+  }
+
+  attachmentStore() {
+    const store = this.ctx.get('attachments');
+    return store && typeof store.fileHostPath === 'function' ? store : null;
+  }
+
+  /** Resolve the read-only host path the bot's file tools can open. */
+  attachmentPathOf(attachment) {
+    const store = this.attachmentStore();
+    if (!store) return null;
+    try {
+      const value = store.fileHostPath({
+        attachmentId: attachment.attachmentId,
+        name: attachment.name,
+        bytes: attachment.bytes,
+      });
+      return typeof value === 'string' && value ? value : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Keep only durable references produced by the attachment store. */
+  normalizeMessageAttachments(value) {
+    if (!Array.isArray(value)) return [];
+    const result = [];
+    for (const item of value) {
+      if (result.length >= MAX_MESSAGE_ATTACHMENTS) break;
+      if (!item || typeof item !== 'object') continue;
+      const attachmentId = String(item.attachmentId || '');
+      if (!ATTACHMENT_ID_RE.test(attachmentId)) continue;
+      const name = String(item.name || '').replace(/[\\/\r\n\t]/g, ' ').trim().slice(0, 160) || '附件';
+      const bytes = Number.isSafeInteger(item.bytes) && item.bytes >= 0 ? item.bytes : 0;
+      if (result.some((candidate) => candidate.attachmentId === attachmentId && candidate.name === name)) continue;
+      const path = this.attachmentPathOf({ attachmentId, name, bytes });
+      result.push({ attachmentId, name, bytes, ...(path ? { path } : {}) });
+    }
+    return result;
   }
 
   // ── action dispatch ──────────────────────────────────────────────────────
@@ -1468,7 +1633,8 @@ export class BotTeamService {
     const group = this.repo.getGroup(groupId);
     if (!group) throw new ServiceError('not-found', '群不存在');
     const text = asString(input.text, this.config.maxMessageChars).trim();
-    if (!text) throw new ServiceError('invalid-input', '消息不能为空');
+    const attachments = this.normalizeMessageAttachments(input.attachments);
+    if (!text && attachments.length === 0) throw new ServiceError('invalid-input', '消息不能为空');
     const groupMembers = this.repo.membersOf(groupId);
     let mentions = Array.isArray(input.mentions)
       ? input.mentions.filter((value) => typeof value === 'string')
@@ -1483,7 +1649,7 @@ export class BotTeamService {
       mentions = parseMentionsFromText(this.repo, groupId, text);
     }
     const replyTo = typeof input.replyTo === 'string' && input.replyTo ? input.replyTo : null;
-    return this.engine.postHumanMessage({ groupId, text, mentions, replyTo });
+    return this.engine.postHumanMessage({ groupId, text, mentions, replyTo, attachments });
   }
 
   async stopGroup(input) {
@@ -1815,7 +1981,7 @@ export class BotTeamService {
         taskDetail = { error: String(error && error.stack ? error.stack : error) };
       }
 
-      // 4c) v1.5.1: priority sorting + dependency gating + cycle rejection + auto-unblock
+      // 4c) v0.5.1: priority sorting + dependency gating + cycle rejection + auto-unblock
       let taskPriorityPass = false;
       let dependencyGatingPass = false;
       let dependencyCyclePass = false;
@@ -1906,7 +2072,7 @@ export class BotTeamService {
         taskMetaDetail = { error: String(error && error.stack ? error.stack : error) };
       }
 
-      // 4d) v1.5.2: one-click batch dispatch, queue snapshot, auto-dispatch off by default
+      // 4d) v0.5.2: one-click batch dispatch, queue snapshot, auto-dispatch off by default
       for (const stale of this.repo.tasksOf(group.groupId)) {
         if (stale.status === 'pending') {
           try {
@@ -2137,7 +2303,7 @@ export class BotTeamService {
         healthPass = false;
       }
 
-      // v1.7: every bot owns exactly one single chat, and group folders survive
+      // v0.7: every bot owns exactly one single chat, and group folders survive
       // create → move → reorder → delete (groups fall back to 未分组).
       let directChatPass = false;
       let folderLifecyclePass = false;

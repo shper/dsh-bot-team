@@ -118,7 +118,7 @@ export class AgentPool {
     }
 
     // DSH fixes a session's sandbox root to its creation cwd and refuses to adopt
-    // a session under another cwd, so a group whose workspace moved (v1.8 layout
+    // a session under another cwd, so a group whose workspace moved (v0.8 layout
     // migration, or a workspace edit) needs a fresh session. Group history lives
     // in the domain, so the bot keeps the conversation; only its DSH session log
     // restarts. The old session file is left on disk.

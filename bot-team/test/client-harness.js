@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 const source = readFileSync(new URL('../client.js', import.meta.url), 'utf8');
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const marker = '    return {\n      inject:';
-const exposed = 'DEFAULT_CHAT_DISPLAY_SETTINGS, CHAT_DISPLAY_FIELDS, CHAT_DISPLAY_MODES, normalizeChatDisplaySettings, initialState, reducer, messageMetadataItems, renderMessageMetadata, MessageRow, MessageList, MessageContextMenu, messageActionList, placeMessageMenu, messageMenuHeight, buildQuoteMarkdown, MESSAGE_MENU_WIDTH, TypingDots, Avatar, GroupAvatar, GroupList, ChatSettingsDialog, BotTeamPage, useSse, GLOBAL_CSS, Modal, containModalFocus, SIDEBAR_COLLAPSED_KEY, readSidebarCollapsed, persistSidebarCollapsed, RIGHT_PANEL_COLLAPSED_KEY, readRightPanelCollapsed, persistRightPanelCollapsed, SECTIONS_COLLAPSED_KEY, readSectionsCollapsed, persistSectionsCollapsed, sectionFolderKey, isDirectGroup, buildSidebarModel, findSidebarGroup, scopeGroupIds, computeGroupDrop, computeFolderDrop, stepGroupOrder, stepFolderOrder, SidebarMenu, FolderFormDialog, GroupFormDialog, DirectPanel, MembersPanel, Composer';
+const exposed = 'DEFAULT_CHAT_DISPLAY_SETTINGS, CHAT_DISPLAY_FIELDS, CHAT_DISPLAY_MODES, normalizeChatDisplaySettings, initialState, reducer, messageMetadataItems, renderMessageMetadata, MessageRow, MessageList, MessageContextMenu, messageActionList, placeMessageMenu, messageMenuHeight, buildQuoteMarkdown, MESSAGE_MENU_WIDTH, TypingDots, Avatar, GroupAvatar, GroupList, ChatSettingsDialog, BotTeamPage, useSse, GLOBAL_CSS, Modal, containModalFocus, SIDEBAR_COLLAPSED_KEY, readSidebarCollapsed, persistSidebarCollapsed, RIGHT_PANEL_COLLAPSED_KEY, readRightPanelCollapsed, persistRightPanelCollapsed, SECTIONS_COLLAPSED_KEY, readSectionsCollapsed, persistSectionsCollapsed, sectionFolderKey, isDirectGroup, replyMentionOf, applyReplyMention, buildSidebarModel, findSidebarGroup, scopeGroupIds, computeGroupDrop, computeFolderDrop, stepGroupOrder, stepFolderOrder, SidebarMenu, FolderFormDialog, GroupFormDialog, DirectPanel, MembersPanel, Composer, formatFileSize, findSkillTrigger, rankSkills';
 
 export const plain = value => JSON.parse(JSON.stringify(value));
 export function walk(node) {
@@ -48,6 +48,8 @@ export function loadClient(options = {}) {
       localStorage: options.localStorage,
     },
     console, URL, Blob, setTimeout, clearTimeout,
+    requestAnimationFrame: callback => { callback(0); return 1; },
+    cancelAnimationFrame: () => {},
     fetch: options.fetch || (() => { throw new Error('Unexpected network request in client unit test'); }),
     EventSource: options.EventSource,
   });

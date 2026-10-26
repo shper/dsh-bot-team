@@ -15,7 +15,116 @@ window.__ModuleLoader__.load({
   id: 'dsh-bot-team',
   factory(require) {
     const React = require('react');
-    const h = React.createElement;
+    // ── i18n ────────────────────────────────────────────────────────────
+    // DSH owns the zh/en locale preference (Settings → General). The Host-side
+    // locale service exposes ctx.locale; UI copy is translated at render time so
+    // constants and menus follow a language switch without re-registration.
+    const LOCALE_NS = 'botTeam';
+    let localeRuntime = null;
+    let testLocale = null;
+    let rawDepth = 0;
+    // Content values (names, titles, message bodies) are protected per subtree:
+    // a string that is literally one of these values is never translated even
+    // when it also happens to be a UI label ("取消" as a group name, etc.).
+    const contentStack = [];    const UI_TEXT_PROPS = ['title', 'placeholder', 'aria-label', 'aria-description', 'alt'];
+
+    function interpolateUi(template, params) {
+      if (!params) return template;
+      return String(template).replace(/\{(\w+)\}/g, (match, name) => (name in params ? String(params[name]) : match));
+    }
+
+    /** Translate one UI string. Content keys fall through unchanged. */
+    function uiT(key, params) {
+      if (typeof key !== 'string' || key.length === 0) return key;
+      if (localeRuntime && typeof localeRuntime.t === 'function') return localeRuntime.t(key, params);
+      if (testLocale === 'en' && UI_EN[key] !== undefined) return interpolateUi(UI_EN[key], params);
+      return params ? interpolateUi(key, params) : key;
+    }
+
+    /** Active DSH locale id ('zh', 'en', …); test builds default to Chinese. */
+    function uiLocale() {
+      if (localeRuntime && typeof localeRuntime.getLocale === 'function') return localeRuntime.getLocale();
+      return testLocale || 'zh';
+    }
+
+    function isEnglishUi() {
+      return /^en/i.test(String(uiLocale() || ''));
+    }
+
+    /** Test builds: force one of the built-in locales without a DSH context. */
+    function setTestLocale(locale) {
+      testLocale = locale === 'en' ? 'en' : locale === 'zh' ? 'zh' : null;
+    }
+
+    function inContent(text) {
+      for (let index = contentStack.length - 1; index >= 0; index -= 1) {
+        if (contentStack[index].has(text)) return true;
+      }
+      return false;
+    }
+
+    /** Protect exact content values while building one UI subtree. */
+    function withContent(values, fn) {
+      const set = new Set();
+      for (const value of values || []) {
+        if (typeof value === 'string' && value) set.add(value);
+      }
+      contentStack.push(set);
+      try {
+        return fn();
+      } finally {
+        contentStack.pop();
+      }
+    }
+
+    /** Build content trees (Markdown, quoted text) without translating them. */
+    function withRaw(fn) {
+      rawDepth += 1;
+      try {
+        return fn();
+      } finally {
+        rawDepth -= 1;
+      }
+    }
+
+    function translateChild(child) {
+      if (typeof child === 'string') return rawDepth > 0 || inContent(child) ? child : uiT(child);
+      if (Array.isArray(child)) return child.map(translateChild);
+      return child;
+    }
+
+    /**
+     * All UI text flows through this createElement wrapper. Static copy is
+     * translated by exact dictionary lookup; elements marked `raw: true` render
+     * user/bot content untouched (names, titles, messages, errors).
+     */
+    function h(type, props, ...children) {
+      let nextProps = props;
+      if (props) {
+        const rawElement = props.raw === true;
+        let cloned = false;
+        const ensure = () => {
+          if (!cloned) {
+            nextProps = { ...props };
+            cloned = true;
+          }
+        };
+        if ('raw' in props) {
+          ensure();
+          delete nextProps.raw;
+        }
+        if (!rawElement && rawDepth === 0) {
+          for (const key of UI_TEXT_PROPS) {
+            if (typeof props[key] === 'string' && props[key] && !inContent(props[key])) {
+              ensure();
+              nextProps[key] = uiT(props[key]);
+            }
+          }
+        }
+      }
+      const nextChildren = rawDepth > 0 ? children : children.map(translateChild);
+      return React.createElement(type, nextProps, ...nextChildren);
+    }
 
     const PAGE_KEY = 'bot-team';
     const EMPTY_MESSAGES = [];
@@ -25,7 +134,13 @@ window.__ModuleLoader__.load({
       events: '/api/bot-team.events',
       action: '/api/bot-team.action',
       file: '/api/bot-team.file',
+      upload: '/api/bot-team.upload',
+      skills: '/api/bot-team.skills',
     };
+    // Generic attachments are stored verbatim by the Host attachment service.
+    // The browser cap keeps a single draft from blocking the page on huge files.
+    const MAX_ATTACHMENT_BYTES = 32 * 1024 * 1024;
+    const MAX_DRAFT_ATTACHMENTS = 10;
     const TASK_PRIORITY_LABEL = { urgent: '紧急', high: '高', normal: '普通', low: '低' };
     const ACCOUNT_CLIENT_VERSION = '0.2.1-rc.3';
     // The right-click menu's box is sized in JS so placement can clamp it to the viewport.
@@ -239,7 +354,72 @@ window.__ModuleLoader__.load({
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ botId, kind, text }),
         }),
+      upload: (groupId, file) =>
+        request(
+          `${ROUTES.upload}?groupId=${encodeURIComponent(groupId || '')}&name=${encodeURIComponent(file.name || 'file')}`,
+          {
+            method: 'POST',
+            headers: { 'content-type': file.type || 'application/octet-stream' },
+            body: file,
+          },
+        ),
+      skills: (groupId, memberId) =>
+        request(
+          `${ROUTES.skills}?groupId=${encodeURIComponent(groupId)}&memberId=${encodeURIComponent(memberId || '')}`,
+          { method: 'GET' },
+        ),
     };
+
+    function formatFileSize(bytes) {
+      const value = Number(bytes);
+      if (!Number.isFinite(value) || value < 0) return '';
+      if (value < 1024) return Math.round(value) + ' B';
+      const units = ['KB', 'MB', 'GB', 'TB'];
+      let amount = value / 1024;
+      let unit = 0;
+      while (amount >= 1024 && unit < units.length - 1) {
+        amount /= 1024;
+        unit += 1;
+      }
+      return (amount >= 10 ? Math.round(amount) : amount.toFixed(1)) + ' ' + units[unit];
+    }
+
+    /** The / menu only opens on a whitespace-bounded token under the caret. */
+    function findSkillTrigger(value, caret) {
+      const text = typeof value === 'string' ? value : '';
+      const position = Number.isInteger(caret) ? Math.min(Math.max(caret, 0), text.length) : text.length;
+      const before = text.slice(0, position);
+      const match = /(^|\s)\/([a-zA-Z0-9-]*)$/.exec(before);
+      if (!match) return null;
+      return { start: match.index + match[1].length, query: match[2] };
+    }
+
+    function isOrderedSubsequence(haystack, needle) {
+      let cursor = 0;
+      for (const character of needle) {
+        const found = haystack.indexOf(character, cursor);
+        if (found < 0) return false;
+        cursor = found + 1;
+      }
+      return true;
+    }
+
+    /** Fuzzy name filter: prefix matches first, then ordered subsequences, stable. */
+    function rankSkills(skills, query) {
+      const list = Array.isArray(skills)
+        ? skills.filter((skill) => skill && typeof skill.name === 'string' && skill.name.length > 0)
+        : [];
+      const needle = String(query || '').trim().toLowerCase();
+      if (!needle) return list.slice();
+      const matches = [];
+      list.forEach((skill, index) => {
+        const name = skill.name.toLowerCase();
+        if (!isOrderedSubsequence(name, needle)) return;
+        matches.push({ skill, index, prefix: name.startsWith(needle) });
+      });
+      matches.sort((left, right) => Number(right.prefix) - Number(left.prefix) || left.index - right.index);
+      return matches.map((entry) => entry.skill);
+    }
 
     /** Fire-and-forget UI verification report (ends up in the Host smoke log). */
     function uiReport(payload) {
@@ -345,9 +525,9 @@ window.__ModuleLoader__.load({
     }
 
     function authorNameOf(message, bots) {
-      if (!message || !message.author) return '未知';
-      if (message.author.type === 'human') return message.author.name || '用户';
-      if (message.author.type === 'system') return '系统';
+      if (!message || !message.author) return uiT('未知');
+      if (message.author.type === 'human') return message.author.name || uiT('用户');
+      if (message.author.type === 'system') return uiT('系统');
       const bot = message.author.botId ? bots.find((candidate) => candidate.botId === message.author.botId) : null;
       return bot ? bot.name : message.author.name || 'Bot';
     }
@@ -369,7 +549,7 @@ window.__ModuleLoader__.load({
       for (const message of messages) {
         const author = authorNameOf(message, bots);
         const badges = [];
-        if (message.meta && message.meta.round) badges.push(`第 ${message.meta.round} 轮`);
+        if (message.meta && message.meta.round) badges.push(uiT('第 {round} 轮', { round: message.meta.round }));
         if (message.meta && message.meta.summary) badges.push('讨论总结');
         if (message.meta && message.meta.verdict === 'pass') badges.push('评审通过');
         if (message.meta && message.meta.verdict === 'changes') badges.push('需修改');
@@ -380,6 +560,12 @@ window.__ModuleLoader__.load({
           lines.push(`> ${String(message.text || '').replace(/\n/g, '\n> ')}`);
         } else {
           lines.push(String(message.text || ''));
+        }
+        if (Array.isArray(message.attachments) && message.attachments.length > 0) {
+          for (const attachment of message.attachments) {
+            const size = formatFileSize(attachment.bytes);
+            lines.push('- 附件：' + attachment.name + (size ? '（' + size + '）' : ''));
+          }
         }
         lines.push('');
       }
@@ -494,6 +680,14 @@ window.__ModuleLoader__.load({
           if (message.meta && message.meta.verdict === 'pass') badges.push('评审通过');
           if (message.meta && message.meta.verdict === 'changes') badges.push('需修改');
           const body = markdownToHtml(message.text || '');
+          const attachments = Array.isArray(message.attachments)
+            ? message.attachments
+                .map((attachment) => {
+                  const size = formatFileSize(attachment.bytes);
+                  return '<div class="attachment">附件 · ' + escapeHtml(attachment.name) + (size ? ' · ' + size : '') + '</div>';
+                })
+                .join('')
+            : '';
           const badgeHtml = badges.length ? ' · ' + badges.join(' · ') : '';
           return (
             '<article class="msg"><header>#' +
@@ -503,6 +697,7 @@ window.__ModuleLoader__.load({
             badgeHtml +
             '</header><div class="body">' +
             body +
+            attachments +
             '</div></article>'
           );
         })
@@ -515,6 +710,7 @@ window.__ModuleLoader__.load({
         'h1{font-size:22px}blockquote{border-left:3px solid #d1d5db;margin:0;padding-left:12px;color:#6b7280}' +
         'pre{background:#f6f8fa;border-radius:8px;padding:10px;overflow:auto}code{font-family:ui-monospace,monospace;font-size:12px}' +
         '.msg{border-bottom:1px solid #eee;padding:10px 0}.msg header{font-size:12px;color:#6b7280;font-weight:600;margin-bottom:4px}' +
+        '.attachment{display:inline-block;margin-top:6px;padding:4px 8px;border:1px solid #e5e7eb;border-radius:6px;background:#f9fafb;color:#4b5563;font-size:12px}' +
         '</style></head><body><h1>' +
         title +
         '</h1>' +
@@ -544,6 +740,12 @@ window.__ModuleLoader__.load({
     }
 
     // Kept in sync with host/chat-settings.js; the Host persists these per profile.
+    // UI dictionaries are keyed by the Chinese source string. UI_ZH is generated
+    // from the same keys at registration time; UI_EN lives beside it so a missing
+    // entry falls back to Chinese instead of blank text.
+    const UI_EN = {};
+    const UI_ZH = Object.fromEntries(Object.keys(UI_EN).map((key) => [key, key]));
+
     const CHAT_DISPLAY_MODES = [
       { value: 'hover', label: '悬停显示' },
       { value: 'always', label: '常驻显示' },
@@ -1327,7 +1529,7 @@ window.__ModuleLoader__.load({
       },
     };
 
-    // ── visual refresh: cohesive tokens (v1.5.5) ──────────────────────────
+    // ── visual refresh: cohesive tokens (v0.5.5) ──────────────────────────
     Object.assign(S, {
       root: {
         ...S.root,
@@ -1810,7 +2012,7 @@ window.__ModuleLoader__.load({
       },
     });
 
-    // ── v1.6 group-chat feed ──────────────────────────────────────────────
+    // ── v0.6 group-chat feed ──────────────────────────────────────────────
     Object.assign(S, {
       left: { ...S.left, width: 264 },
       leftHeader: { ...S.leftHeader, padding: '16px 14px 10px' },
@@ -2345,7 +2547,172 @@ window.__ModuleLoader__.load({
       },
     });
 
-    // ── v1.6.5 collapsible group sidebar ─────────────────────────────────
+    Object.assign(S, {
+      addButton: {
+        width: 30,
+        height: 30,
+        padding: 0,
+        borderRadius: 999,
+        border: '1px solid var(--bt-border)',
+        background: 'var(--bt-surface)',
+        color: 'var(--bt-text-2)',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        cursor: 'pointer',
+        flex: '0 0 auto',
+      },
+      addMenu: {
+        position: 'absolute',
+        left: 0,
+        right: 0,
+        bottom: 'calc(100% + 6px)',
+        zIndex: 43,
+        maxHeight: 400,
+        overflowY: 'auto',
+        padding: 4,
+        borderRadius: 14,
+        border: '1px solid var(--bt-border)',
+        background: 'var(--bt-surface)',
+        boxShadow: '0 18px 48px rgba(16,24,40,0.20)',
+        boxSizing: 'border-box',
+      },
+      addMenuGroup: {
+        padding: '5px 8px 2px',
+        marginTop: 3,
+        fontSize: 11,
+        fontWeight: 500,
+        lineHeight: '16px',
+        color: 'var(--bt-text-3)',
+      },
+      addMenuItem: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        width: '100%',
+        minHeight: 34,
+        padding: '6px 8px',
+        border: 0,
+        borderRadius: 8,
+        background: 'transparent',
+        color: 'var(--bt-text)',
+        fontSize: 13,
+        lineHeight: '20px',
+        textAlign: 'left',
+        cursor: 'pointer',
+        boxSizing: 'border-box',
+      },
+      addMenuIcon: {
+        width: 14,
+        height: 14,
+        flex: '0 0 14px',
+        color: 'var(--bt-text-3)',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      },
+      addMenuName: {
+        flex: '0 1 auto',
+        maxWidth: '40%',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+        color: 'var(--bt-text)',
+      },
+      addMenuAlias: {
+        flex: '0 1 auto',
+        maxWidth: '20%',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+        color: 'var(--bt-text-3)',
+        fontSize: 12,
+        lineHeight: '18px',
+      },
+      addMenuDesc: {
+        flex: 1,
+        minWidth: 0,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+        textAlign: 'right',
+        color: 'var(--bt-text-3)',
+        fontSize: 12,
+        lineHeight: '18px',
+      },
+      skillPicker: { ...S.picker, width: 360, maxWidth: 'calc(100vw - 48px)', maxHeight: 320 },
+      skillOptionBody: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 },
+      skillOptionName: { fontSize: 12.5, color: 'var(--bt-text)', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+      skillOptionDesc: { fontSize: 10.5, color: 'var(--bt-text-3)', lineHeight: 1.4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+      skillIcon: { color: 'var(--bt-text-3)', flex: '0 0 auto' },
+      skillEmpty: { padding: '16px 12px', fontSize: 11.5, color: 'var(--bt-text-3)', lineHeight: 1.6 },
+      skillRefresh: {
+        padding: 0,
+        border: 0,
+        background: 'transparent',
+        color: 'var(--bt-accent)',
+        fontSize: 10.5,
+        cursor: 'pointer',
+      },
+      skillRetry: {
+        marginTop: 8,
+        height: 26,
+        padding: '0 10px',
+        borderRadius: 6,
+        border: '1px solid var(--bt-border-strong)',
+        background: 'var(--bt-surface)',
+        color: 'var(--bt-text-2)',
+        fontSize: 11,
+        cursor: 'pointer',
+      },
+      draftAttachments: { display: 'flex', flexWrap: 'wrap', gap: 6, padding: '10px 12px 0' },
+      draftAttachment: (status) => ({
+        display: 'flex',
+        alignItems: 'center',
+        gap: 7,
+        maxWidth: 280,
+        minWidth: 0,
+        padding: '4px 5px 4px 7px',
+        borderRadius: 8,
+        border: '1px solid ' + (status === 'error' ? 'var(--bt-danger-border)' : 'var(--bt-border)'),
+        background: status === 'error' ? 'var(--bt-danger-bg)' : 'var(--bt-bg-subtle)',
+        opacity: status === 'uploading' ? 0.72 : 1,
+      }),
+      draftAttachmentBody: { flex: 1, minWidth: 0 },
+      draftAttachmentName: { display: 'block', fontSize: 11, fontWeight: 500, color: 'var(--bt-text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+      draftAttachmentMeta: { display: 'block', fontSize: 9.5, color: 'var(--bt-text-3)', marginTop: 1 },
+      draftAttachmentRemove: {
+        width: 18,
+        height: 18,
+        padding: 0,
+        border: 0,
+        borderRadius: 5,
+        background: 'transparent',
+        color: 'var(--bt-text-3)',
+        fontSize: 14,
+        lineHeight: 1,
+        cursor: 'pointer',
+        flex: '0 0 auto',
+      },
+      messageAttachments: { display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 7 },
+      messageAttachment: (mine) => ({
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        maxWidth: 340,
+        minWidth: 0,
+        padding: '6px 8px',
+        borderRadius: 8,
+        border: '1px solid ' + (mine ? 'rgba(255,255,255,0.26)' : 'var(--bt-border)'),
+        background: mine ? 'rgba(255,255,255,0.14)' : 'var(--bt-bg-subtle)',
+        boxSizing: 'border-box',
+      }),
+      messageAttachmentBody: { flex: 1, minWidth: 0 },
+      messageAttachmentName: { display: 'block', fontSize: 11.5, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+      messageAttachmentMeta: { display: 'block', fontSize: 10, opacity: 0.72, marginTop: 1 },
+    });
+
+    // ── v0.6.5 collapsible group sidebar ─────────────────────────────────
     Object.assign(S, {
       sidebar: (collapsed) => ({
         ...S.left,
@@ -2437,7 +2804,7 @@ window.__ModuleLoader__.load({
       },
       railActionIcon: { display: 'block', flex: '0 0 18px', width: 18, height: 18 },
 
-      // v1.7 single chats + custom group sections.
+      // v0.7 single chats + custom group sections.
       sidebarScroll: {
         flex: 1,
         minHeight: 0,
@@ -2616,7 +2983,7 @@ window.__ModuleLoader__.load({
         letterSpacing: '0.02em',
       },
 
-      // v1.7 settings dialog: left module nav + message settings / about.
+      // v0.7 settings dialog: left module nav + message settings / about.
       settingsShell: { display: 'flex', gap: 22, minHeight: 430, alignItems: 'stretch' },
       settingsNav: {
         width: 190,
@@ -2776,7 +3143,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
 .bt-root .bt-sidebar-action:active { background: var(--bt-accent-soft) !important; color: var(--bt-accent) !important; filter: none; }
 .bt-root .bt-sidebar-action svg { pointer-events: none; }
 
-/* v1.6.5 collapsible group sidebar: icons-only rail, tooltips carry the labels. */
+/* v0.6.5 collapsible group sidebar: icons-only rail, tooltips carry the labels. */
 .bt-root .bt-sidebar { transition: width 180ms ease; }
 .bt-root .bt-sidebar-toggle:hover { background: var(--bt-hover) !important; color: var(--bt-text-strong) !important; filter: none; }
 .bt-root .bt-sidebar-toggle:active { background: var(--bt-accent-soft) !important; color: var(--bt-accent) !important; filter: none; }
@@ -2785,7 +3152,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
 .bt-root .bt-group-rail { scrollbar-width: none; -ms-overflow-style: none; }
 .bt-root .bt-group-rail::-webkit-scrollbar { width: 0; height: 0; display: none; }
 
-/* v1.7 direct chats + custom sections: quiet headers, hover affordances, drop targets. */
+/* v0.7 direct chats + custom sections: quiet headers, hover affordances, drop targets. */
 .bt-root .bt-section-toggle:hover, .bt-root .bt-folder-toggle:hover { background: var(--bt-hover) !important; filter: none; color: var(--bt-text-2) !important; }
 .bt-root .bt-section-action:hover, .bt-root .bt-folder-menu:hover { background: var(--bt-hover) !important; color: var(--bt-text-2) !important; filter: none; }
 .bt-root .bt-section-toggle:focus-visible, .bt-root .bt-folder-toggle:focus-visible,
@@ -2806,7 +3173,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
 .bt-root .bt-direct-caption { white-space: nowrap; }
 .bt-root .bt-sidebar-menu .bt-msg-menu-item { height: 30px; }
 
-/* v1.7 settings dialog: quiet module nav, responsive one-column fallback. */
+/* v0.7 settings dialog: quiet module nav, responsive one-column fallback. */
 .bt-root .bt-settings-nav-item:hover { background: var(--bt-hover) !important; color: var(--bt-text-strong) !important; filter: none; }
 .bt-root .bt-settings-nav-item:focus-visible { outline: 2px solid var(--bt-accent); outline-offset: 1px; }
 @media (max-width: 700px) {
@@ -2823,7 +3190,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
   .bt-root .bt-settings-nav-item { width: auto; flex: 0 0 auto; }
 }
 
-/* v1.6 group feed */
+/* v0.6 group feed */
 .bt-root .bt-group-item:hover { background: var(--bt-hover) !important; }
 .bt-root .bt-group-item[data-active="true"]:hover { background: var(--bt-accent-soft) !important; }
 .bt-root .bt-timeline { scrollbar-gutter: stable; }
@@ -2940,6 +3307,13 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
 }
 .bt-root .bt-tool-btn:hover { background: var(--bt-hover) !important; filter: none; }
 .bt-root .bt-tool-btn.bt-tool-danger:hover { background: var(--bt-danger-bg) !important; }
+.bt-root .bt-add-btn:hover, .bt-root .bt-add-btn[aria-expanded="true"] { background: var(--bt-hover) !important; color: var(--bt-text) !important; }
+.bt-root .bt-add-menu { transform-origin: bottom center; }
+.bt-root .bt-add-menu-item:hover,
+.bt-root .bt-add-menu-item:focus { background: var(--bt-hover) !important; filter: none; outline: none; }
+.bt-root .bt-add-menu-item:focus-visible { box-shadow: inset 0 0 0 1px var(--bt-border-strong); }
+.bt-root .bt-draft-file-remove:hover { background: var(--bt-hover) !important; color: var(--bt-text-2) !important; }
+.bt-root .bt-skill-picker .bt-picker-item { align-items: flex-start; }
 .bt-root .bt-picker-item:hover { background: var(--bt-hover); }
 .bt-root .bt-picker-item[data-active="true"] { background: var(--bt-accent-soft); }
 .bt-root .bt-header-btn:hover { background: var(--bt-hover) !important; border-color: var(--bt-border-strong) !important; }
@@ -2952,7 +3326,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
 .bt-root .bt-menu-backdrop { position: fixed; inset: 0; z-index: 41; }
 .bt-root .bt-menu { animation: bt-menu-in .12s ease-out; transform-origin: top right; }
 .bt-root .bt-persona-menu { transform-origin: bottom left; }
-/* v1.6.4 message context menu (fixed so the timeline never clips it) */
+/* v0.6.4 message context menu (fixed so the timeline never clips it) */
 .bt-root .bt-msg-menu { transform-origin: top left; }
 .bt-root .bt-msg-menu-item:hover { background: var(--bt-hover) !important; filter: none; }
 .bt-root .bt-msg-menu-item:disabled { opacity: .42; cursor: default; background: transparent !important; filter: none !important; }
@@ -3100,8 +3474,14 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
       const target = new Date(date.getFullYear(), date.getMonth(), date.getDate());
       const days = Math.round((today.getTime() - target.getTime()) / 86400000);
-      if (days === 0) return `今天 ${clock}`;
-      if (days === 1) return `昨天 ${clock}`;
+      if (days === 0) return isEnglishUi() ? `Today ${clock}` : `今天 ${clock}`;
+      if (days === 1) return isEnglishUi() ? `Yesterday ${clock}` : `昨天 ${clock}`;
+      if (isEnglishUi()) {
+        const monthDay = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        return date.getFullYear() === now.getFullYear()
+          ? `${monthDay} ${clock}`
+          : `${monthDay}, ${date.getFullYear()} ${clock}`;
+      }
       if (date.getFullYear() === now.getFullYear()) return `${date.getMonth() + 1}月${date.getDate()}日 ${clock}`;
       return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日 ${clock}`;
     }
@@ -3116,9 +3496,11 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       const target = new Date(date.getFullYear(), date.getMonth(), date.getDate());
       const days = Math.round((today.getTime() - target.getTime()) / 86400000);
       if (days === 0) return `${padClock(date.getHours())}:${padClock(date.getMinutes())}`;
-      if (days === 1) return '昨天';
+      if (days === 1) return isEnglishUi() ? 'Yesterday' : '昨天';
       if (date.getFullYear() === now.getFullYear()) return `${date.getMonth() + 1}/${date.getDate()}`;
-      return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`;
+      return isEnglishUi()
+        ? `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`
+        : `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`;
     }
 
     function formatFullTime(value) {
@@ -3139,8 +3521,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
 
     function cleanPreview(text, limit = 100) {
       const source = String(text || '')
-        .replace(/```[\s\S]*?```/g, ' [代码] ')
-        .replace(/!\[[^\]]*\]\([^)]*\)/g, ' [图片] ')
+        .replace(/```[\s\S]*?```/g, uiT(' [代码] '))
+        .replace(/!\[[^\]]*\]\([^)]*\)/g, uiT(' [图片] '))
         .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
         .replace(/[`*_~>#|]/g, '')
         .replace(/\s+/g, ' ')
@@ -3149,11 +3531,82 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
     }
 
     function displayNameOf(message, bots, userProfile) {
-      if (!message || !message.author) return '未知';
-      if (message.author.type === 'human') return (userProfile && userProfile.name) || '我';
-      if (message.author.type === 'system') return '系统';
+      if (!message || !message.author) return uiT('未知');
+      if (message.author.type === 'human') return (userProfile && userProfile.name) || uiT('我');
+      if (message.author.type === 'system') return uiT('系统');
       const bot = message.author.botId ? (bots || []).find((candidate) => candidate.botId === message.author.botId) : null;
       return bot ? bot.name : message.author.name || 'Bot';
+    }
+
+    /**
+     * The group member behind a bot-authored message. Replying in a group
+     * defaults to @-mentioning this bot so the reply actually dispatches.
+     */
+    function replyMentionOf(message, members, bots) {
+      if (!message || !message.author || message.author.type !== 'bot') return null;
+      const botId = message.author.botId;
+      if (!botId) return null;
+      const member = (members || []).find(
+        (candidate) => candidate && candidate.botId === botId && candidate.enabled !== false,
+      );
+      if (!member) return null;
+      const bot = (bots || []).find((candidate) => candidate && candidate.botId === botId);
+      return bot ? { member, bot } : null;
+    }
+
+    /**
+     * Fold a reply target into the composer draft. Only the @ token inserted by
+     * a previous reply (`auto`) is replaced or removed; text the user typed is
+     * never touched. Returns the next text/mentions, the new auto marker, and
+     * the caret position when the draft changed.
+     */
+    function applyReplyMention({ text, mentions, entry, auto }) {
+      const currentText = String(text || '');
+      const sourceMentions = Array.isArray(mentions) ? mentions : [];
+      let nextText = currentText;
+      let nextMentions = sourceMentions;
+      let nextAuto = auto && auto.membershipId ? auto : null;
+      let changed = false;
+
+      const dropAuto = () => {
+        if (!nextAuto) return;
+        const token = '@' + nextAuto.name + ' ';
+        if (nextText.startsWith(token)) {
+          nextText = nextText.slice(token.length);
+          changed = true;
+        }
+        // If the user moved the token, keep their edit (and the mention);
+        // only forget it when it is no longer in the draft.
+        if (!nextText.includes('@' + nextAuto.name) && nextMentions.includes(nextAuto.membershipId)) {
+          nextMentions = nextMentions.filter((membershipId) => membershipId !== nextAuto.membershipId);
+        }
+        nextAuto = null;
+      };
+
+      if (!entry || !entry.bot || !entry.member) {
+        dropAuto();
+      } else if (nextAuto && nextAuto.membershipId !== entry.member.membershipId) {
+        dropAuto();
+      }
+
+      if (entry && entry.bot && entry.member) {
+        const token = '@' + entry.bot.name;
+        if (!nextText.includes(token)) {
+          nextText = token + ' ' + nextText;
+          changed = true;
+          nextAuto = { membershipId: entry.member.membershipId, name: entry.bot.name };
+        }
+        if (!nextMentions.includes(entry.member.membershipId)) {
+          nextMentions = nextMentions.concat([entry.member.membershipId]);
+        }
+      }
+
+      return {
+        text: nextText,
+        mentions: nextMentions,
+        auto: nextAuto,
+        caret: changed ? nextText.length : null,
+      };
     }
 
     function authorKeyOf(message) {
@@ -3872,7 +4325,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       );
     }
 
-    function GroupList({
+    function renderGroupList({
       state,
       dispatch,
       onCreate,
@@ -3915,14 +4368,18 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         const last = group.lastMessage;
         if (!last) return group.topic ? `${group.title}\n${cleanPreview(group.topic, 80)}` : group.title;
         const author = String(last.authorName || '').trim();
-        const prefix = author === '用户' ? '我：' : author && author !== '系统' ? `${author}：` : '';
-        return `${group.title}\n${prefix}${cleanPreview(last.text, 80) || '[消息]'}`;
+        const prefix = author === '用户'
+          ? uiT('我：')
+          : author && author !== '系统'
+            ? uiT('{name}：', { name: author })
+            : '';
+        return `${group.title}\n${prefix}${cleanPreview(last.text, 80) || uiT('[消息]')}`;
       };
       const directTooltip = (entry) => {
         const last = entry.group && entry.group.lastMessage;
-        if (!last) return `${entry.bot.name}\n开始单聊`;
-        const prefix = String(last.authorName || '').trim() === '用户' ? '我：' : '';
-        return `${entry.bot.name}（单聊）\n${prefix}${cleanPreview(last.text, 80) || '[消息]'}`;
+        if (!last) return `${entry.bot.name}\n${uiT('开始单聊')}`;
+        const prefix = String(last.authorName || '').trim() === '用户' ? uiT('我：') : '';
+        return `${entry.bot.name}${uiT('（单聊）')}\n${prefix}${cleanPreview(last.text, 80) || uiT('[消息]')}`;
       };
 
       const openMenu = (event, type, id) => {
@@ -4202,9 +4659,17 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         const active = group.groupId === state.activeGroupId;
         const last = group.lastMessage;
         const author = last ? String(last.authorName || '').trim() : '';
-        const prefix = author === '用户' ? '我：' : author && author !== '系统' ? `${author}：` : '';
+        const prefix = author === '用户'
+          ? uiT('我：')
+          : author && author !== '系统'
+            ? uiT('{name}：', { name: author })
+            : '';
         const body = last ? cleanPreview(last.text, 70) : '';
-        const preview = last ? `${prefix}${body || '[消息]'}` : group.topic ? cleanPreview(group.topic, 70) : '暂无消息';
+        const preview = last
+          ? `${prefix}${body || uiT('[消息]')}`
+          : group.topic
+            ? cleanPreview(group.topic, 70)
+            : uiT('暂无消息');
         const memberCount = Array.isArray(group.memberIds) ? group.memberIds.length : 0;
         const isDragging = drag && drag.kind === 'group' && drag.id === group.groupId;
         const edge = drop && drop.type === 'group' && drop.groupId === group.groupId ? drop.edge : null;
@@ -4248,13 +4713,13 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               'div',
               { style: { display: 'flex', alignItems: 'center', gap: 5, minWidth: 0 } },
               group.running ? h('span', { style: { ...S.dot('#22c55e', 'running'), width: 6, height: 6 } }) : null,
-              h('span', { style: S.groupItemPreview }, preview),
+              h('span', { style: S.groupItemPreview, raw: true }, preview),
               !group.running && memberCount > 0
-                ? h('span', { style: { fontSize: 10, color: 'var(--bt-text-3)', flex: '0 0 auto' } }, `${memberCount} 人`)
+                ? h('span', { style: { fontSize: 10, color: 'var(--bt-text-3)', flex: '0 0 auto' } }, uiT('{count} 人', { count: memberCount }))
                 : null,
             ),
           ),
-          rowMenuButton(`${group.title} 操作`, (event) => openMenu(event, 'group', group.groupId)),
+          rowMenuButton(uiT('{name} 操作', { name: group.title }), (event) => openMenu(event, 'group', group.groupId)),
         );
       };
 
@@ -4263,7 +4728,9 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         const last = entry.group && entry.group.lastMessage;
         const mine = last && String(last.authorName || '').trim() === '用户';
         const body = last ? cleanPreview(last.text, 70) : '';
-        const preview = last ? `${mine ? '我：' : ''}${body || '[消息]'}` : '开始单聊';
+        const preview = last
+          ? `${mine ? uiT('我：') : ''}${body || uiT('[消息]')}`
+          : uiT('开始单聊');
         const isDragging = drag && drag.kind === 'group' && entry.group && drag.id === entry.group.groupId;
         const edge = drop && drop.type === 'group' && entry.group && drop.groupId === entry.group.groupId ? drop.edge : null;
         return h(
@@ -4318,7 +4785,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               h('span', { style: { ...S.groupItemPreview }, }, preview),
             ),
           ),
-          rowMenuButton(`${entry.bot.name} 单聊操作`, (event) => openMenu(event, 'direct', entry.bot.botId)),
+          rowMenuButton(uiT('{name} 单聊操作', { name: entry.bot.name }), (event) => openMenu(event, 'direct', entry.bot.botId)),
         );
       };
 
@@ -4558,7 +5025,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                   tabIndex: 0,
                   'data-active': entry.group && entry.group.groupId === state.activeGroupId ? 'true' : 'false',
                   'aria-current': entry.group && entry.group.groupId === state.activeGroupId ? 'true' : undefined,
-                  'aria-label': `${entry.bot.name}（单聊）${entry.group && entry.group.running ? '（回复中）' : ''}`,
+                  'aria-label': `${uiT('{name}（单聊）', { name: entry.bot.name })}${entry.group && entry.group.running ? uiT('（回复中）') : ''}`,
                   title: directTooltip(entry),
                   style: S.railItem(!!(entry.group && entry.group.groupId === state.activeGroupId)),
                   onClick: () => onOpenDirect && onOpenDirect(entry.bot.botId, entry.group),
@@ -4584,7 +5051,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                   role: 'button',
                   tabIndex: 0,
                   'data-active': isActive ? 'true' : 'false',
-                  'aria-label': `${group.title}${group.running ? '（回复中）' : ''}`,
+                  'aria-label': `${group.title}${group.running ? uiT('（回复中）') : ''}`,
                   'aria-current': isActive ? 'true' : undefined,
                   title: groupTooltip(group),
                   style: S.railItem(isActive),
@@ -4703,6 +5170,18 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         menu && menuItems.length > 0 ? h(SidebarMenu, { menu, items: menuItems, onClose: closeMenu }) : null,
       );
     }
+    function GroupList(props) {
+      const state = (props && props.state) || {};
+      const values = [];
+      for (const group of state.groups || []) {
+        values.push(group.title, group.topic);
+        if (group.lastMessage) values.push(group.lastMessage.text, group.lastMessage.authorName);
+      }
+      for (const bot of state.bots || []) values.push(bot.name);
+      for (const folder of state.folders || []) values.push(folder.title);
+      return withContent(values, () => renderGroupList(props));
+    }
+
 
     // ── lightweight Markdown rendering (no third-party deps) ─────────────
     function markdownTheme(options) {
@@ -5325,7 +5804,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       return rows;
     }
 
-    function ApprovalRow({ message, bots, onOpenSession }) {
+    function renderApprovalRow({ message, bots, onOpenSession }) {
       const meta = message.meta || {};
       const state = meta.approvalState || 'pending';
       const colors = APPROVAL_STATE_COLOR[state] || APPROVAL_STATE_COLOR.unavailable;
@@ -5355,6 +5834,93 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               )
             : null,
         ),
+      );
+    }
+    function ApprovalRow(props) {
+      const message = (props && props.message) || {};
+      return withContent([message.text], () => renderApprovalRow(props));
+    }
+
+
+    function FileGlyph({ size = 16, style }) {
+      return h(
+        'svg',
+        {
+          viewBox: '0 0 20 20',
+          width: size,
+          height: size,
+          fill: 'none',
+          stroke: 'currentColor',
+          strokeWidth: 1.5,
+          strokeLinecap: 'round',
+          strokeLinejoin: 'round',
+          'aria-hidden': true,
+          style,
+        },
+        h('path', { d: 'M5 2.5h6l4 4v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-11a2 2 0 0 1 2-2Z' }),
+        h('path', { d: 'M11 2.5v4h4' }),
+      );
+    }
+
+    function SkillGlyph({ size = 16, style }) {
+      return h(
+        'svg',
+        {
+          viewBox: '0 0 20 20',
+          width: size,
+          height: size,
+          fill: 'none',
+          stroke: 'currentColor',
+          strokeWidth: 1.5,
+          strokeLinecap: 'round',
+          strokeLinejoin: 'round',
+          'aria-hidden': true,
+          style,
+        },
+        h('path', { d: 'M10 2.2 11.7 7l4.8 1.7-4.8 1.7L10 15.2 8.3 10.4 3.5 8.7l4.8-1.7L10 2.2Z' }),
+        h('path', { d: 'M15.8 13.2l.7 1.9 1.9.7-1.9.7-.7 1.9-.7-1.9-1.9-.7 1.9-.7.7-1.9Z' }),
+      );
+    }
+
+    /** Small monochrome glyphs for the DSH-style + command menu. */
+    function AddMenuGlyph({ name, size = 14 }) {
+      if (name === 'file') return h(FileGlyph, { size });
+      if (name === 'skill') return h(SkillGlyph, { size });
+      if (name === 'mention') {
+        return h('span', { style: { fontSize: 13, fontWeight: 600, lineHeight: 1 } }, '@');
+      }
+      const paths = {
+        stop: [h('rect', { key: 'r', x: 5, y: 5, width: 10, height: 10, rx: 2 })],
+        download: [
+          h('path', { key: 'p1', d: 'M10 3v9' }),
+          h('path', { key: 'p2', d: 'm6.5 8.5 3.5 3.5 3.5-3.5' }),
+          h('path', { key: 'p3', d: 'M4 15.5h12' }),
+        ],
+        code: [
+          h('path', { key: 'p1', d: 'm7 6-4 4 4 4' }),
+          h('path', { key: 'p2', d: 'm13 6 4 4-4 4' }),
+        ],
+        settings: [
+          h('path', { key: 'p1', d: 'M4 6h12M4 10h12M4 14h12' }),
+          h('circle', { key: 'c1', cx: 7, cy: 6, r: 1.6, fill: 'currentColor', stroke: 'none' }),
+          h('circle', { key: 'c2', cx: 13, cy: 10, r: 1.6, fill: 'currentColor', stroke: 'none' }),
+          h('circle', { key: 'c3', cx: 9, cy: 14, r: 1.6, fill: 'currentColor', stroke: 'none' }),
+        ],
+      };
+      return h(
+        'svg',
+        {
+          viewBox: '0 0 20 20',
+          width: size,
+          height: size,
+          fill: 'none',
+          stroke: 'currentColor',
+          strokeWidth: 1.5,
+          strokeLinecap: 'round',
+          strokeLinejoin: 'round',
+          'aria-hidden': true,
+        },
+        paths[name] || [],
       );
     }
 
@@ -5456,7 +6022,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       }, item.text));
     }
 
-    function MessageRow({
+    function renderMessageRow({
       message,
       groupStart,
       groupEnd,
@@ -5499,6 +6065,9 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       const task = meta.taskId ? (tasks || []).find((candidate) => candidate.taskId === meta.taskId) : null;
       const quoted = replyQuoteOf(message, allMessages);
       const showTyping = streaming && !message.text;
+      const messageAttachments = Array.isArray(message.attachments)
+        ? message.attachments.filter((attachment) => attachment && attachment.name)
+        : [];
       const actions = messageActionList({
         message,
         mine,
@@ -5515,17 +6084,17 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       }).filter((action) => action.hover !== false && !action.disabled);
 
       const footer = [];
-      if (meta.round) footer.push(h('span', { key: 'round', style: badgeStyle('#eef2ff', '#4f46e5') }, `第 ${meta.round} 轮`));
+      if (meta.round) footer.push(h('span', { key: 'round', style: badgeStyle('#eef2ff', '#4f46e5') }, uiT('第 {round} 轮', { round: meta.round })));
       if (meta.summary) footer.push(h('span', { key: 'summary', style: badgeStyle('#ecfdf5', '#047857') }, '总结'));
       if (meta.verdict === 'pass') footer.push(h('span', { key: 'pass', style: badgeStyle('#ecfdf5', '#047857') }, '评审通过'));
       if (meta.verdict === 'changes') footer.push(h('span', { key: 'changes', style: badgeStyle('#fffbeb', '#b45309') }, '需修改'));
-      if (target) footer.push(h('span', { key: 'target', style: badgeStyle('#f3f4f6', '#667085') }, `评审 #${target.seq}`));
+      if (target) footer.push(h('span', { key: 'target', style: badgeStyle('#f3f4f6', '#667085') }, uiT('评审 #{seq}', { seq: target.seq })));
       if (task) {
         footer.push(
           h(
             'span',
             { key: 'task', style: { ...badgeStyle('#eef2ff', '#4f46e5'), maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
-            `任务 · ${task.title} · ${TASK_STATUS_LABEL[task.status] || task.status}`,
+            uiT('任务 · {title} · {status}', { title: task.title, status: uiT(TASK_STATUS_LABEL[task.status] || task.status) }),
           ),
         );
       }
@@ -5536,7 +6105,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           h(
             'div',
             { key: 'error', style: { flexBasis: '100%', fontSize: 10.5, color: 'var(--bt-danger-text)', lineHeight: 1.55, wordBreak: 'break-word' } },
-            `错误：${message.error}`,
+            uiT('错误：{error}', { error: message.error }),
           ),
         );
       }
@@ -5605,20 +6174,59 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                     h('span', { style: S.replyQuoteText }, cleanPreview(quoted.text, 96) || '[消息]'),
                   )
                 : null,
+              messageAttachments.length > 0
+                ? h(
+                    'div',
+                    { style: S.messageAttachments },
+                    messageAttachments.map((attachment, index) =>
+                      h(
+                        'div',
+                        {
+                          key: attachment.attachmentId + ':' + attachment.name + ':' + index,
+                          style: S.messageAttachment(mine),
+                          title: attachment.path || attachment.name,
+                        },
+                        h(FileGlyph, { size: 15, style: { flex: '0 0 auto', opacity: 0.82 } }),
+                        h(
+                          'span',
+                          { style: S.messageAttachmentBody },
+                          h('span', { style: S.messageAttachmentName }, attachment.name),
+                          h(
+                            'span',
+                            { style: S.messageAttachmentMeta },
+                            [formatFileSize(attachment.bytes), '只读附件'].filter(Boolean).join(' · '),
+                          ),
+                        ),
+                      ),
+                    ),
+                  )
+                : null,
               showTyping
                 ? h('div', { style: S.typingBubble }, h(TypingDots))
-                : h(
-                    'div',
-                    { className: 'bt-rich', style: { ...S.msgText, color: message.status === 'error' ? '#b42318' : 'inherit' } },
-                    renderMarkdown(message.text, { own: mine }),
-                    streaming && message.text ? h('span', { className: 'bt-cursor' }) : null,
-                  ),
+                : message.text
+                  ? h(
+                      'div',
+                      { className: 'bt-rich', style: { ...S.msgText, color: message.status === 'error' ? '#b42318' : 'inherit' } },
+                      renderMarkdown(message.text, { own: mine }),
+                      streaming ? h('span', { className: 'bt-cursor' }) : null,
+                    )
+                  : null,
             ),
           ),
           footer.length > 0 ? h('div', { className: 'bt-msg-footer', style: S.msgFooter(mine) }, footer) : null,
         ),
       );
     }
+    function MessageRow(props) {
+      const message = (props && props.message) || {};
+      const values = [message.text, message.error];
+      if (message.author) values.push(message.author.name);
+      if (message.task) values.push(message.task.title);
+      for (const attachment of message.attachments || []) values.push(attachment.name);
+      if (props && props.replyTarget) values.push(props.replyTarget.text);
+      return withContent(values, () => renderMessageRow(props));
+    }
+
 
     function MessageContextMenu({
       menu,
@@ -5791,10 +6399,26 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       );
     }
 
-    function Composer({ state, dispatch, group, members, bots, replyTarget, userProfile, onClearReply, onSent, onResize }) {
+    function renderComposer({
+      state,
+      dispatch,
+      group,
+      members,
+      bots,
+      replyTarget,
+      userProfile,
+      onClearReply,
+      onSent,
+      onResize,
+      onExportMarkdown,
+      onExportHtml,
+      onOpenSettings,
+    }) {
       const isDirect = !!(group && group.kind === 'direct');
       const textareaRef = React.useRef(null);
       const shellRef = React.useRef(null);
+      const fileInputRef = React.useRef(null);
+      const addMenuRef = React.useRef(null);
       const onResizeRef = React.useRef(onResize);
       onResizeRef.current = onResize;
       const [text, setText] = React.useState('');
@@ -5802,25 +6426,91 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       const [picker, setPicker] = React.useState(null);
       const [pickerIndex, setPickerIndex] = React.useState(0);
       const [sending, setSending] = React.useState(false);
+      const [draftAttachments, setDraftAttachments] = React.useState([]);
+      const [addMenuOpen, setAddMenuOpen] = React.useState(false);
+      const [skillCatalog, setSkillCatalog] = React.useState([]);
+      const [skillLoading, setSkillLoading] = React.useState(false);
+      const [skillError, setSkillError] = React.useState(null);
+      const [skillReason, setSkillReason] = React.useState('');
+
+      const groupIdRef = React.useRef(group && group.groupId);
+      groupIdRef.current = group && group.groupId;
+      const skillCatalogRef = React.useRef([]);
+      skillCatalogRef.current = skillCatalog;
+      const skillLoadedGroupRef = React.useRef(null);
+      const skillLoadRef = React.useRef(null);
+      const skillLoadIdRef = React.useRef(0);
+      const skillLoadingRef = React.useRef(false);
+      skillLoadingRef.current = skillLoading;
+      const skillErrorRef = React.useRef(null);
+      skillErrorRef.current = skillError;
+      const skillReasonRef = React.useRef('');
+      skillReasonRef.current = skillReason;
+      const draftCountRef = React.useRef(0);
+      draftCountRef.current = draftAttachments.length;
+      const draftTextRef = React.useRef(text);
+      draftTextRef.current = text;
+      const draftMentionsRef = React.useRef(mentions);
+      draftMentionsRef.current = mentions;
+      // The @ token this composer inserted for the current reply target, so a
+      // new target can replace it without touching anything the user typed.
+      const autoReplyMentionRef = React.useRef(null);
 
       const memberEntries = members
         .map((member) => ({ member, bot: bots.find((candidate) => candidate.botId === member.botId) }))
         .filter((entry) => entry.bot);
+      const readyAttachments = draftAttachments
+        .filter((item) => item.status === 'ready' && item.attachment)
+        .map((item) => item.attachment);
+      const attachmentsPending = draftAttachments.some((item) => item.status !== 'ready');
+      const canSend = !sending && !attachmentsPending && (text.trim() !== '' || readyAttachments.length > 0);
 
       React.useEffect(() => {
         const node = textareaRef.current;
         if (!node) return;
         node.style.height = 'auto';
         const next = Math.min(Math.max(node.scrollHeight, 44), 180);
-        node.style.height = `${next}px`;
+        node.style.height = next + 'px';
         node.style.overflowY = node.scrollHeight > 180 ? 'auto' : 'hidden';
       }, [text]);
 
+      // Replying in a group defaults to @-mentioning the bot that wrote the
+      // quoted message. Group chats only dispatch mentioned bots, so without
+      // this the reply would not reach the bot the user is answering.
       React.useEffect(() => {
         if (!replyTarget) return;
+        if (replyTarget.groupId && group && replyTarget.groupId !== group.groupId) return;
         const node = textareaRef.current;
         if (node) node.focus();
-      }, [replyTarget && replyTarget.messageId]);
+        if (isDirect) return;
+        const result = applyReplyMention({
+          text: draftTextRef.current,
+          mentions: draftMentionsRef.current,
+          entry: replyMentionOf(replyTarget, members, bots),
+          auto: autoReplyMentionRef.current,
+        });
+        autoReplyMentionRef.current = result.auto;
+        if (result.text !== draftTextRef.current) {
+          draftTextRef.current = result.text;
+          setText(result.text);
+          // The inserted prefix shifts any open @ / Skill trigger offsets.
+          setPicker(null);
+          setPickerIndex(0);
+        }
+        if (result.mentions !== draftMentionsRef.current) {
+          draftMentionsRef.current = result.mentions;
+          setMentions(result.mentions);
+        }
+        if (result.caret !== null) {
+          const caret = result.caret;
+          requestAnimationFrame(() => {
+            const target = textareaRef.current;
+            if (!target) return;
+            target.focus();
+            target.setSelectionRange(caret, caret);
+          });
+        }
+      }, [replyTarget && replyTarget.messageId, group && group.groupId, isDirect]);
 
       React.useEffect(() => {
         const node = shellRef.current;
@@ -5839,26 +6529,187 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         };
       }, []);
 
-      const updatePicker = (value, caret) => {
-        // A single chat has one bot and every message targets it; no @ picker.
-        if (isDirect) {
-          setPicker(null);
-          return;
-        }
-        const before = value.slice(0, caret);
-        const match = /@([^\s@]*)$/.exec(before);
-        if (!match) {
-          setPicker(null);
-          return;
-        }
-        const query = match[1].toLowerCase();
-        const options = memberEntries.filter((entry) => entry.bot.name.toLowerCase().includes(query));
-        if (options.length === 0) {
-          setPicker(null);
-          return;
-        }
-        setPicker({ start: match.index, query, options });
+      // Draft files belong to one conversation. Reset them when the user
+      // switches chats so a pending upload cannot leak across.
+      React.useEffect(() => {
+        setDraftAttachments([]);
+        setAddMenuOpen(false);
+        setPicker(null);
         setPickerIndex(0);
+      }, [group && group.groupId]);
+
+      // The skill catalog is workspace-scoped: switching chats, moving the
+      // workspace, or changing the roster invalidates it.
+      React.useEffect(() => {
+        setSkillCatalog([]);
+        setSkillLoading(false);
+        setSkillError(null);
+        setSkillReason('');
+        skillCatalogRef.current = [];
+        skillLoadedGroupRef.current = null;
+        skillLoadRef.current = null;
+        skillLoadIdRef.current += 1;
+        setPicker((current) => (current && current.kind === 'skill' ? null : current));
+      }, [group && group.groupId, group && group.workspaceCwd, members.length]);
+
+      const closeAddMenu = () => {
+        setAddMenuOpen(false);
+        const node = textareaRef.current;
+        if (node) node.focus();
+      };
+
+      const runAddMenuAction = (action) => {
+        if (!action || action.disabled) return;
+        closeAddMenu();
+        action.run();
+      };
+
+      const onAddMenuKeyDown = (event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          closeAddMenu();
+          return;
+        }
+        if (event.key === 'Tab') {
+          event.preventDefault();
+          closeAddMenu();
+          return;
+        }
+        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+        if (typeof document === 'undefined') return;
+        const node = addMenuRef.current;
+        if (!node || typeof node.querySelectorAll !== 'function') return;
+        const items = Array.from(node.querySelectorAll('[role="menuitem"]:not([disabled])'));
+        if (!items.length) return;
+        event.preventDefault();
+        const current = items.indexOf(document.activeElement);
+        const next = event.key === 'ArrowDown' ? (current + 1) % items.length : (current - 1 + items.length) % items.length;
+        if (items[next] && typeof items[next].focus === 'function') items[next].focus();
+      };
+
+      React.useEffect(() => {
+        if (!addMenuOpen) return undefined;
+        const node = addMenuRef.current;
+        const first = node && typeof node.querySelector === 'function'
+          ? node.querySelector('[role="menuitem"]:not([disabled])')
+          : null;
+        if (first && typeof first.focus === 'function') first.focus();
+        const onEscape = (event) => {
+          if (event.key !== 'Escape') return;
+          closeAddMenu();
+        };
+        document.addEventListener('keydown', onEscape);
+        return () => document.removeEventListener('keydown', onEscape);
+      }, [addMenuOpen]);
+
+      const ensureSkills = (force) => {
+        const groupId = group && group.groupId;
+        if (!groupId) return Promise.resolve([]);
+        if (!force && skillLoadedGroupRef.current === groupId && !skillLoadRef.current) {
+          return Promise.resolve(skillCatalogRef.current);
+        }
+        if (!force && skillLoadRef.current) return skillLoadRef.current;
+        const loadId = skillLoadIdRef.current + 1;
+        skillLoadIdRef.current = loadId;
+        if (force) {
+          skillLoadedGroupRef.current = null;
+          skillLoadRef.current = null;
+        }
+        setSkillLoading(true);
+        skillLoadingRef.current = true;
+        setSkillError(null);
+        skillErrorRef.current = null;
+        setSkillReason('');
+        skillReasonRef.current = '';
+        setPicker((current) => (
+          current && current.kind === 'skill'
+            ? { ...current, loading: true, error: null, reason: '' }
+            : current
+        ));
+        const promise = api.skills(groupId)
+          .then((result) => {
+            const list = result && Array.isArray(result.skills) ? result.skills : [];
+            const reason = result && typeof result.reason === 'string' ? result.reason : '';
+            if (groupIdRef.current !== groupId || skillLoadIdRef.current !== loadId) return null;
+            skillCatalogRef.current = list;
+            setSkillCatalog(list);
+            setSkillReason(reason);
+            skillReasonRef.current = reason;
+            skillLoadedGroupRef.current = groupId;
+            setPicker((current) => (
+              current && current.kind === 'skill'
+                ? { ...current, options: rankSkills(list, current.query), loading: false, error: null, reason }
+                : current
+            ));
+            return list;
+          })
+          .catch((error) => {
+            const message = String(error && error.message ? error.message : error);
+            if (groupIdRef.current === groupId && skillLoadIdRef.current === loadId) {
+              setSkillError(message);
+              skillErrorRef.current = message;
+              setPicker((current) => (
+                current && current.kind === 'skill'
+                  ? { ...current, loading: false, error: message }
+                  : current
+              ));
+            }
+            return null;
+          })
+          .finally(() => {
+            if (groupIdRef.current === groupId && skillLoadIdRef.current === loadId) {
+              setSkillLoading(false);
+              skillLoadingRef.current = false;
+            }
+            if (skillLoadRef.current === promise) skillLoadRef.current = null;
+          });
+        skillLoadRef.current = promise;
+        return promise;
+      };
+
+      const refreshSkillPicker = (next) => {
+        if (!next) return;
+        setPicker((current) => (
+          current && current.kind === 'skill'
+            ? { ...current, options: rankSkills(next, current.query), loading: false, error: null }
+            : current
+        ));
+      };
+
+      const updatePicker = (value, caret) => {
+        if (!isDirect) {
+          const before = value.slice(0, caret);
+          const mentionMatch = /@([^\s@]*)$/.exec(before);
+          if (mentionMatch) {
+            const query = mentionMatch[1].toLowerCase();
+            const options = memberEntries.filter((entry) => entry.bot.name.toLowerCase().includes(query));
+            if (options.length > 0) {
+              setPicker({ kind: 'mention', start: mentionMatch.index, query, options });
+              setPickerIndex(0);
+              return;
+            }
+          }
+        }
+        const skillMatch = findSkillTrigger(value, caret);
+        if (!skillMatch) {
+          setPicker(null);
+          return;
+        }
+        const loaded = skillLoadedGroupRef.current === (group && group.groupId);
+        const list = loaded ? skillCatalogRef.current : [];
+        setPicker({
+          kind: 'skill',
+          start: skillMatch.start,
+          query: skillMatch.query,
+          options: rankSkills(list, skillMatch.query),
+          loading: skillLoadingRef.current || !loaded,
+          error: skillErrorRef.current,
+          reason: skillReasonRef.current,
+        });
+        setPickerIndex(0);
+        if (!loaded && !skillLoadRef.current) {
+          void ensureSkills(false).then(refreshSkillPicker);
+        }
       };
 
       const onChange = (event) => {
@@ -5872,10 +6723,30 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         const start = picker ? picker.start : caret;
         const before = text.slice(0, start);
         const after = text.slice(caret);
-        const inserted = `@${entry.bot.name} `;
-        const next = `${before}${inserted}${after}`;
+        const inserted = '@' + entry.bot.name + ' ';
+        const next = before + inserted + after;
         setText(next);
         setMentions((current) => (current.includes(entry.member.membershipId) ? current : current.concat([entry.member.membershipId])));
+        setPicker(null);
+        setPickerIndex(0);
+        const position = before.length + inserted.length;
+        requestAnimationFrame(() => {
+          const node = textareaRef.current;
+          if (!node) return;
+          node.focus();
+          node.setSelectionRange(position, position);
+        });
+      };
+
+      const insertSkill = (skill) => {
+        if (!skill || !skill.name) return;
+        const caret = textareaRef.current ? textareaRef.current.selectionStart : text.length;
+        const start = picker && picker.kind === 'skill' ? picker.start : caret;
+        const before = text.slice(0, start);
+        const after = text.slice(caret);
+        const inserted = '/' + skill.name + ' ';
+        const next = before + inserted + after;
+        setText(next);
         setPicker(null);
         setPickerIndex(0);
         const position = before.length + inserted.length;
@@ -5898,10 +6769,11 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         const before = text.slice(0, caret);
         const needsSpace = before.length > 0 && !/\s$/.test(before);
         const inserted = needsSpace ? ' @' : '@';
-        const next = `${before}${inserted}${text.slice(caret)}`;
+        const next = before + inserted + text.slice(caret);
         const start = before.length + (needsSpace ? 1 : 0);
         setText(next);
-        setPicker({ start, query: '', options: memberEntries });
+        setAddMenuOpen(false);
+        setPicker({ kind: 'mention', start, query: '', options: memberEntries });
         setPickerIndex(0);
         const position = start + 1;
         requestAnimationFrame(() => {
@@ -5912,12 +6784,107 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         });
       };
 
+      const openSkillPicker = () => {
+        const node = textareaRef.current;
+        const caret = node ? node.selectionStart : text.length;
+        const before = text.slice(0, caret);
+        const needsSpace = before.length > 0 && !/\s$/.test(before);
+        const inserted = needsSpace ? ' /' : '/';
+        const next = before + inserted + text.slice(caret);
+        const start = before.length + (needsSpace ? 1 : 0);
+        const loaded = skillLoadedGroupRef.current === (group && group.groupId);
+        setText(next);
+        setAddMenuOpen(false);
+        setPicker({
+          kind: 'skill',
+          start,
+          query: '',
+          options: loaded ? rankSkills(skillCatalogRef.current, '') : [],
+          loading: skillLoadingRef.current || !loaded,
+          error: skillErrorRef.current,
+          reason: skillReasonRef.current,
+        });
+        setPickerIndex(0);
+        if (!loaded) void ensureSkills(false).then(refreshSkillPicker);
+        const position = start + 1;
+        requestAnimationFrame(() => {
+          const target = textareaRef.current;
+          if (!target) return;
+          target.focus();
+          target.setSelectionRange(position, position);
+        });
+      };
+
+      const uploadFile = async (file) => {
+        const groupId = group && group.groupId;
+        const itemId = 'file-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+        setDraftAttachments((current) => current.concat([{
+          id: itemId,
+          name: file.name || 'file',
+          size: file.size || 0,
+          status: 'uploading',
+          attachment: null,
+          error: null,
+        }]));
+        try {
+          const result = await api.upload(groupId, file);
+          const attachment = result && result.attachment ? result.attachment : null;
+          if (!attachment || !attachment.attachmentId) throw new Error('Host 未返回附件引用');
+          if (groupIdRef.current !== groupId) return;
+          setDraftAttachments((current) => current.map((item) => (
+            item.id === itemId ? { ...item, status: 'ready', attachment } : item
+          )));
+        } catch (error) {
+          const message = String(error && error.message ? error.message : error);
+          if (groupIdRef.current !== groupId) return;
+          setDraftAttachments((current) => current.map((item) => (
+            item.id === itemId ? { ...item, status: 'error', error: message } : item
+          )));
+          dispatch({ type: 'error', message: '文件「' + (file.name || 'file') + '」上传失败：' + message });
+        }
+      };
+
+      const onPickFiles = (event) => {
+        const picked = event && event.target && event.target.files ? Array.from(event.target.files) : [];
+        if (event && event.target) event.target.value = '';
+        if (picked.length === 0) return;
+        if (draftCountRef.current + picked.length > MAX_DRAFT_ATTACHMENTS) {
+          dispatch({ type: 'flash', message: '每条消息最多添加 ' + MAX_DRAFT_ATTACHMENTS + ' 个文件' });
+          return;
+        }
+        for (const file of picked) {
+          if (!file || !file.size) {
+            dispatch({ type: 'flash', message: '已跳过空文件「' + ((file && file.name) || '未命名') + '」' });
+            continue;
+          }
+          if (file.size > MAX_ATTACHMENT_BYTES) {
+            dispatch({ type: 'flash', message: '「' + file.name + '」超过 32 MB，已跳过' });
+            continue;
+          }
+          void uploadFile(file);
+        }
+        const node = textareaRef.current;
+        if (node) node.focus();
+      };
+
+      const removeDraftAttachment = (itemId) => {
+        setDraftAttachments((current) => current.filter((item) => item.id !== itemId));
+      };
+
+      const chooseFiles = () => {
+        setAddMenuOpen(false);
+        const node = fileInputRef.current;
+        if (node && typeof node.click === 'function') node.click();
+        else dispatch({ type: 'error', message: '当前浏览器不支持文件选择' });
+      };
+
       const send = async () => {
         const trimmedText = text.trim();
-        if (!trimmedText || sending) return;
+        if (sending || attachmentsPending) return;
+        if (!trimmedText && readyAttachments.length === 0) return;
         const stillMentioned = mentions.filter((membershipId) => {
           const entry = memberEntries.find((candidate) => candidate.member.membershipId === membershipId);
-          return entry && trimmedText.includes(`@${entry.bot.name}`);
+          return entry && trimmedText.includes('@' + entry.bot.name);
         });
         setSending(true);
         try {
@@ -5926,11 +6893,19 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             text: trimmedText,
             mentions: stillMentioned,
             replyTo: replyTarget ? replyTarget.messageId : undefined,
+            attachments: readyAttachments.map((attachment) => ({
+              attachmentId: attachment.attachmentId,
+              name: attachment.name,
+              bytes: attachment.bytes,
+            })),
           });
+          autoReplyMentionRef.current = null;
           setText('');
           setMentions([]);
           setPicker(null);
           setPickerIndex(0);
+          setDraftAttachments([]);
+          setAddMenuOpen(false);
           onClearReply && onClearReply();
           onSent && onSent();
         } catch (error) {
@@ -5941,6 +6916,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       };
 
       const onKeyDown = (event) => {
+        const composing = !!(event.nativeEvent && event.nativeEvent.isComposing);
         if (picker && picker.options.length > 0) {
           if (event.key === 'ArrowDown') {
             event.preventDefault();
@@ -5952,23 +6928,253 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             setPickerIndex((current) => (current - 1 + picker.options.length) % picker.options.length);
             return;
           }
-          if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+          if ((event.key === 'Enter' && !event.shiftKey && !composing) || (event.key === 'Tab' && !event.shiftKey)) {
             event.preventDefault();
-            insertMention(picker.options[pickerIndex] || picker.options[0]);
+            const chosen = picker.options[pickerIndex] || picker.options[0];
+            if (picker.kind === 'skill') insertSkill(chosen);
+            else insertMention(chosen);
             return;
           }
         }
-        if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+        if (picker && picker.kind === 'skill' && event.key === 'Escape') {
+          event.preventDefault();
+          setPicker(null);
+          return;
+        }
+        if (picker && picker.kind === 'skill' && event.key === 'Enter' && !event.shiftKey && !composing) {
+          event.preventDefault();
+          if (!picker.loading) setPicker(null);
+          return;
+        }
+        if (event.key === 'Enter' && !event.shiftKey && !composing) {
           event.preventDefault();
           void send();
         }
         if (event.key === 'Escape') {
           setPicker(null);
+          setAddMenuOpen(false);
         }
       };
 
       const running = members.filter((member) => state.statusByMember[member.membershipId] === 'running');
       const replyName = replyTarget ? displayNameOf(replyTarget, bots, userProfile) : '';
+      const addMenuActions = [];
+      const addMenuAction = (group, item) => addMenuActions.push({ group, ...item });
+      addMenuAction('添加', {
+        key: 'file',
+        label: '文件',
+        alias: 'file',
+        description: '上传本地文件，Bot 可按路径读取',
+        icon: 'file',
+        run: chooseFiles,
+      });
+      addMenuAction('添加', {
+        key: 'skill',
+        label: '技能',
+        alias: 'skill',
+        description: '插入 /技能名，让 Bot 按 Skill 执行',
+        icon: 'skill',
+        run: openSkillPicker,
+      });
+      if (!isDirect && memberEntries.length > 0) {
+        addMenuAction('添加', {
+          key: 'mention',
+          label: '提及成员',
+          alias: 'mention',
+          description: '插入 @ 提及，选中群成员',
+          icon: 'mention',
+          run: openMentionPicker,
+        });
+      }
+      if (running.length > 0) {
+        addMenuAction('指令', {
+          key: 'stop',
+          label: '停止回复',
+          alias: 'stop',
+          description: '中断当前会话进行中的回复',
+          icon: 'stop',
+          run: () => {
+            void api.action('message.stop', { groupId: group.groupId }).then(() => onSent && onSent());
+          },
+        });
+      }
+      if (typeof onExportMarkdown === 'function') {
+        addMenuAction('指令', {
+          key: 'export-markdown',
+          label: '导出 Markdown',
+          alias: 'export',
+          description: '将当前会话导出为 Markdown',
+          icon: 'download',
+          run: onExportMarkdown,
+        });
+      }
+      if (!isDirect && typeof onExportHtml === 'function') {
+        addMenuAction('指令', {
+          key: 'export-html',
+          label: '导出 HTML',
+          alias: 'export-html',
+          description: '将当前会话导出为 HTML',
+          icon: 'code',
+          run: onExportHtml,
+        });
+      }
+      if (typeof onOpenSettings === 'function') {
+        addMenuAction('指令', {
+          key: 'settings',
+          label: '消息设置',
+          alias: 'settings',
+          description: '打开 Bot Team 消息设置',
+          icon: 'settings',
+          run: onOpenSettings,
+        });
+      }
+
+      const hint = isDirect
+        ? 'Enter 发送 · Shift + Enter 换行 · / 选择 Skill'
+        : running.length > 0
+          ? 'Enter 发送 · Shift + Enter 换行 · / 选择 Skill'
+          : 'Enter 发送 · Shift + Enter 换行 · @ 提及成员 · / 选择 Skill';
+
+      const renderPicker = () => {
+        if (!picker) return null;
+        if (picker.kind === 'skill') {
+          return h(
+            'div',
+            {
+              className: 'bt-skill-picker',
+              style: S.skillPicker,
+              role: 'listbox',
+              'aria-label': '选择 Skill',
+              onKeyDown: (event) => {
+                if (event.key !== 'Escape') return;
+                event.preventDefault();
+                setPicker(null);
+                const node = textareaRef.current;
+                if (node) node.focus();
+              },
+            },
+            h(
+              'div',
+              { style: S.pickerHeader },
+              h('span', null, '选择 Skill'),
+              h(
+                'span',
+                { style: { display: 'inline-flex', alignItems: 'center', gap: 8 } },
+                h('span', { style: S.pickerHint }, '↑↓ 选择 · Enter 插入 · Esc 关闭'),
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    style: S.skillRefresh,
+                    title: '重新读取 Skill 列表',
+                    onMouseDown: (event) => event.preventDefault(),
+                    onClick: () => {
+                      void ensureSkills(true);
+                      const node = textareaRef.current;
+                      if (node) node.focus();
+                    },
+                  },
+                  '刷新',
+                ),
+              ),
+            ),
+            picker.loading && picker.options.length === 0
+              ? h('div', { style: S.skillEmpty }, '正在加载 Skill…')
+              : picker.error && picker.options.length === 0
+                ? h(
+                    'div',
+                    { style: S.skillEmpty },
+                    'Skill 加载失败：' + picker.error,
+                    h(
+                      'button',
+                      {
+                        type: 'button',
+                        style: S.skillRetry,
+                        onMouseDown: (event) => event.preventDefault(),
+                        onClick: () => {
+                          void ensureSkills(true).then(refreshSkillPicker);
+                          const node = textareaRef.current;
+                          if (node) node.focus();
+                        },
+                      },
+                      '重试',
+                    ),
+                  )
+                : picker.options.length === 0
+                  ? h(
+                      'div',
+                      { style: S.skillEmpty },
+                      picker.query
+                        ? '没有匹配的 Skill'
+                        : picker.reason === 'no-member'
+                          ? '这个群还没有 Bot；添加 Bot 后即可读取它的工作区 Skill。'
+                          : '当前工作区没有可用的 Skill',
+                      picker.reason === 'no-member'
+                        ? null
+                        : h('div', { style: { marginTop: 4 } }, '把 SKILL.md 放到 .dsh/skills 或 ~/.dsh/skills 后重试。'),
+                    )
+                  : picker.options.map((skill, index) =>
+                      h(
+                        'div',
+                        {
+                          key: skill.name,
+                          className: 'bt-picker-item',
+                          'data-active': index === pickerIndex ? 'true' : 'false',
+                          style: S.pickerItem,
+                          role: 'option',
+                          'aria-selected': index === pickerIndex,
+                          onMouseEnter: () => setPickerIndex(index),
+                          onMouseDown: (event) => {
+                            event.preventDefault();
+                            insertSkill(skill);
+                          },
+                        },
+                        h(SkillGlyph, { size: 18, style: S.skillIcon }),
+                        h(
+                          'div',
+                          { style: S.skillOptionBody },
+                          h('span', { style: S.skillOptionName }, skill.name),
+                          skill.description
+                            ? h('span', { style: S.skillOptionDesc, title: skill.description }, cleanPreview(skill.description, 110))
+                            : null,
+                        ),
+                        skill.modelInvocable === false ? h('span', { style: S.pickerHint }, '仅手动') : null,
+                      ),
+                    ),
+          );
+        }
+        return h(
+          'div',
+          { style: S.picker, role: 'listbox', 'aria-label': '选择要提及的成员' },
+          h(
+            'div',
+            { style: S.pickerHeader },
+            h('span', null, '选择成员'),
+            h('span', { style: S.pickerHint }, '↑↓ 选择 · Enter 确认'),
+          ),
+          picker.options.map((entry, index) =>
+            h(
+              'div',
+              {
+                key: entry.member.membershipId,
+                className: 'bt-picker-item',
+                'data-active': index === pickerIndex ? 'true' : 'false',
+                style: S.pickerItem,
+                role: 'option',
+                'aria-selected': index === pickerIndex,
+                onMouseEnter: () => setPickerIndex(index),
+                onMouseDown: (event) => {
+                  event.preventDefault();
+                  insertMention(entry);
+                },
+              },
+              h(Avatar, { bot: entry.bot, size: 22 }),
+              h('span', { style: S.pickerName }, entry.bot.name),
+              entry.member.running ? h('span', { style: S.pickerHint }, '回复中') : null,
+            ),
+          ),
+        );
+      };
 
       return h(
         'div',
@@ -5976,39 +7182,56 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         h(
           'div',
           { ref: shellRef, className: 'bt-composer', style: S.composerShell },
-          picker
+          addMenuOpen
             ? h(
-                'div',
-                { style: S.picker, role: 'listbox', 'aria-label': '选择要提及的成员' },
+                React.Fragment,
+                null,
+                h('div', { className: 'bt-menu-backdrop', onClick: closeAddMenu }),
                 h(
                   'div',
-                  { style: S.pickerHeader },
-                  h('span', null, '选择成员'),
-                  h('span', { style: S.pickerHint }, '↑↓ 选择 · Enter 确认'),
-                ),
-                picker.options.map((entry, index) =>
-                  h(
-                    'div',
-                    {
-                      key: entry.member.membershipId,
-                      className: 'bt-picker-item',
-                      'data-active': index === pickerIndex ? 'true' : 'false',
-                      style: S.pickerItem,
-                      role: 'option',
-                      'aria-selected': index === pickerIndex,
-                      onMouseEnter: () => setPickerIndex(index),
-                      onMouseDown: (event) => {
-                        event.preventDefault();
-                        insertMention(entry);
-                      },
-                    },
-                    h(Avatar, { bot: entry.bot, size: 22 }),
-                    h('span', { style: S.pickerName }, entry.bot.name),
-                    entry.member.running ? h('span', { style: S.pickerHint }, '回复中') : null,
-                  ),
+                  {
+                    ref: addMenuRef,
+                    className: 'bt-menu bt-add-menu',
+                    style: S.addMenu,
+                    role: 'menu',
+                    'aria-label': '添加文件或执行指令',
+                    onKeyDown: onAddMenuKeyDown,
+                  },
+                  addMenuActions.map((item, index) => {
+                    const previous = addMenuActions[index - 1];
+                    return h(
+                      React.Fragment,
+                      { key: item.key },
+                      !previous || previous.group !== item.group
+                        ? h(
+                            'div',
+                            {
+                              style: index === 0 ? { ...S.addMenuGroup, marginTop: 0 } : S.addMenuGroup,
+                              role: 'presentation',
+                            },
+                            item.group,
+                          )
+                        : null,
+                      h(
+                        'button',
+                        {
+                          type: 'button',
+                          role: 'menuitem',
+                          className: 'bt-add-menu-item',
+                          style: S.addMenuItem,
+                          onClick: () => runAddMenuAction(item),
+                        },
+                        h('span', { style: S.addMenuIcon }, h(AddMenuGlyph, { name: item.icon, size: 14 })),
+                        h('span', { style: S.addMenuName }, item.label),
+                        h('span', { style: S.addMenuAlias }, item.alias),
+                        h('span', { style: S.addMenuDesc }, item.description),
+                      ),
+                    );
+                  }),
                 ),
               )
             : null,
+          renderPicker(),
           replyTarget
             ? h(
                 'div',
@@ -6016,7 +7239,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                 h(
                   'div',
                   { style: S.replyBarBody },
-                  h('div', { style: S.replyBarLabel }, `回复 ${replyName}`),
+                  h('div', { style: S.replyBarLabel }, '回复 ' + replyName),
                   h('div', { style: S.replyBarText }, cleanPreview(replyTarget.text, 120) || '[消息]'),
                 ),
                 h(
@@ -6026,11 +7249,52 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                 ),
               )
             : null,
+          draftAttachments.length > 0
+            ? h(
+                'div',
+                { className: 'bt-draft-attachments', style: S.draftAttachments },
+                draftAttachments.map((item) => {
+                  const meta = item.status === 'uploading'
+                    ? '上传中…'
+                    : item.status === 'error'
+                      ? '上传失败 · 移除后重试'
+                      : formatFileSize(item.size);
+                  return h(
+                    'div',
+                    {
+                      key: item.id,
+                      className: 'bt-draft-file',
+                      style: S.draftAttachment(item.status),
+                      title: item.error || item.name,
+                    },
+                    h(FileGlyph, { size: 14, style: { flex: '0 0 auto', color: 'var(--bt-text-3)' } }),
+                    h(
+                      'span',
+                      { style: S.draftAttachmentBody },
+                      h('span', { style: S.draftAttachmentName }, item.name),
+                      h('span', { style: S.draftAttachmentMeta }, meta),
+                    ),
+                    h(
+                      'button',
+                      {
+                        type: 'button',
+                        className: 'bt-draft-file-remove',
+                        style: S.draftAttachmentRemove,
+                        title: '移除文件',
+                        'aria-label': '移除文件 ' + item.name,
+                        onClick: () => removeDraftAttachment(item.id),
+                      },
+                      '×',
+                    ),
+                  );
+                }),
+              )
+            : null,
           h('textarea', {
             ref: textareaRef,
             style: S.textarea,
             value: text,
-            placeholder: isDirect ? `给 ${group.title} 发消息…` : '输入消息，@ 成员派活…',
+            placeholder: isDirect ? '给 ' + group.title + ' 发消息…' : '输入消息，@ 成员派活…',
             onChange,
             onKeyDown,
             'aria-label': isDirect ? '单聊消息输入框' : '群聊消息输入框',
@@ -6038,6 +7302,36 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           h(
             'div',
             { style: S.composerFoot },
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'bt-add-btn',
+                style: S.addButton,
+                title: '添加文件或执行指令',
+                'aria-label': '添加文件或执行指令',
+                'aria-haspopup': 'menu',
+                'aria-expanded': addMenuOpen,
+                onClick: () => {
+                  setPicker(null);
+                  setAddMenuOpen((open) => !open);
+                },
+              },
+              h(
+                'svg',
+                { viewBox: '0 0 16 16', width: 16, height: 16, fill: 'none', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', 'aria-hidden': true },
+                h('path', { d: 'M8 3v10M3 8h10' }),
+              ),
+            ),
+            h('input', {
+              ref: fileInputRef,
+              type: 'file',
+              multiple: true,
+              style: { display: 'none' },
+              onChange: onPickFiles,
+              tabIndex: -1,
+              'aria-hidden': true,
+            }),
             isDirect
               ? null
               : h(
@@ -6055,36 +7349,41 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                     onClick: () => void api.action('message.stop', { groupId: group.groupId }).then(() => onSent && onSent()),
                   },
                   h('span', { style: { width: 6, height: 6, borderRadius: '50%', background: '#22c55e' } }),
-                  `${running.length} 个 Bot 正在回复 · 停止`,
+                  running.length + ' 个 Bot 正在回复 · 停止',
                 )
               : null,
-            h(
-              'span',
-              { style: S.composerHint },
-              isDirect
-                ? 'Enter 发送 · Shift + Enter 换行'
-                : running.length > 0
-                  ? 'Enter 发送 · Shift + Enter 换行'
-                  : 'Enter 发送 · Shift + Enter 换行 · @ 提及成员',
-            ),
+            h('span', { style: S.composerHint }, hint),
             h(
               'button',
               {
                 type: 'button',
                 className: 'bt-send-btn',
                 style: S.sendButton,
-                disabled: sending || !text.trim(),
+                disabled: !canSend,
                 onClick: () => void send(),
               },
-              sending ? '发送中…' : '发送',
+              sending ? '发送中…' : attachmentsPending ? '上传中…' : '发送',
             ),
           ),
         ),
       );
     }
+    function Composer(props) {
+      const values = [];
+      const group = props && props.group;
+      if (group) values.push(group.title, group.topic);
+      for (const entry of (props && props.members) || []) {
+        if (entry && entry.bot) values.push(entry.bot.name);
+      }
+      for (const bot of (props && props.bots) || []) values.push(bot.name);
+      const reply = props && props.replyTarget;
+      if (reply) values.push(reply.name, reply.text);
+      return withContent(values, () => renderComposer(props));
+    }
+
 
     /** Right rail for a single chat: bot identity + session/persona entry points. */
-    function DirectPanel({ bot, group, member, usage, onEdit, onCollapse, onViewSession }) {
+    function renderDirectPanel({ bot, group, member, usage, onEdit, onCollapse, onViewSession }) {
       const name = (bot && bot.name) || (group && group.title) || 'Bot';
       return h(
         'div',
@@ -6156,8 +7455,15 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         ),
       );
     }
+    function DirectPanel(props) {
+      const bot = props && props.bot;
+      const group = props && props.group;
+      const values = [bot && bot.name, group && group.title, group && group.topic];
+      return withContent(values, () => renderDirectPanel(props));
+    }
 
-    function MembersPanel({ state, group, members, bots, dispatch, onAdd, onCollapse, onEdit, onViewSession, discussion, usage, tasks, onStopDiscussion, onTaskCreate, onTaskAction, onTaskEdit, onTaskStream }) {
+
+    function renderMembersPanel({ state, group, members, bots, dispatch, onAdd, onCollapse, onEdit, onViewSession, discussion, usage, tasks, onStopDiscussion, onTaskCreate, onTaskAction, onTaskEdit, onTaskStream }) {
       const runningMembers = members.filter((member) => state.statusByMember[member.membershipId] === 'running');
       return h(
         'div',
@@ -6165,7 +7471,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         h(
           'div',
           { style: S.rightHeader },
-          h('span', null, `成员 (${members.length})`),
+          h('span', null, uiT('成员 ({count})', { count: members.length })),
           h(
             'div',
             { style: { display: 'flex', alignItems: 'center', gap: 6 } },
@@ -6192,11 +7498,15 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             'div',
             { style: { ...S.memberCard, fontSize: 11, color: 'var(--dsw-alias-label-tertiary, #8a8f98)' } },
             (usage
-              ? `本群 tokens：${usage.totalTokens ?? 0}（in ${usage.inputTokens ?? 0} / out ${usage.outputTokens ?? 0}）`
-              : '本群 tokens：0') +
+              ? uiT('本群 tokens：{total}（in {input} / out {output}）', {
+                  total: usage.totalTokens ?? 0,
+                  input: usage.inputTokens ?? 0,
+                  output: usage.outputTokens ?? 0,
+                })
+              : uiT('本群 tokens：0')) +
               (state.config.schemaVersion ? ` · schema v${state.config.schemaVersion}` : '') +
-              (state.config.maxTurnsPerHour ? ` · 限 ${state.config.maxTurnsPerHour} 轮/小时` : ''),
-            runningMembers.length > 0 ? ` · ${runningMembers.length} 个运行中` : '',
+              (state.config.maxTurnsPerHour ? uiT(' · 限 {count} 轮/小时', { count: state.config.maxTurnsPerHour }) : ''),
+            runningMembers.length > 0 ? uiT(' · {count} 个运行中', { count: runningMembers.length }) : '',
           ),
           h(
             'div',
@@ -6204,7 +7514,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             h(
               'div',
               { style: S.memberTop },
-              h('span', { style: { ...S.memberName, fontSize: 12 } }, '任务 (' + (tasks ? tasks.length : 0) + ')'),
+              h('span', { style: { ...S.memberName, fontSize: 12 } }, uiT('任务 ({count})', { count: tasks ? tasks.length : 0 })),
               h('button', { style: S.smallBtn, onClick: onTaskCreate }, '+ 新建任务'),
             ),
             (tasks || []).length === 0
@@ -6217,11 +7527,11 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                   const canInterrupt = task.status === 'in_progress';
                   const stateHint =
                     task.status === 'in_progress'
-                      ? (queued ? '排队中' : '执行中')
+                      ? (queued ? uiT('排队中') : uiT('执行中'))
                       : task.status === 'delivered'
-                        ? '已交付'
+                        ? uiT('已交付')
                         : task.status === 'cancelled'
-                          ? '已中断'
+                          ? uiT('已中断')
                           : '';
                   return h(
                     'div',
@@ -6239,13 +7549,13 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                     h(
                       'div',
                       { style: { fontSize: 11, color: 'var(--bt-text-3)', marginTop: 3 } },
-                      (assigneeBot ? '指派：' + assigneeBot.name : '指派：未知') + (stateHint ? ' · ' + stateHint : ''),
+                      (assigneeBot ? uiT('指派：{name}', { name: assigneeBot.name }) : uiT('指派：未知')) + (stateHint ? ' · ' + stateHint : ''),
                     ),
                     task.blockedBy && task.blockedBy.length > 0
                       ? h(
                           'div',
                           { style: { fontSize: 11, color: '#b45309', marginTop: 3 } },
-                          '依赖未完成：' + task.blockedBy.map((blocker) => blocker.title).join('、'),
+                          uiT('依赖未完成：{titles}', { titles: task.blockedBy.map((blocker) => blocker.title).join(isEnglishUi() ? ', ' : '、') }),
                         )
                       : null,
                     h(
@@ -6275,12 +7585,15 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                 h(
                   'div',
                   { style: S.memberMeta },
-                  `第 ${Math.min(discussion.currentRound || 1, discussion.rounds)}/${discussion.rounds} 轮`,
+                  uiT('第 {current}/{total} 轮', {
+                    current: Math.min(discussion.currentRound || 1, discussion.rounds),
+                    total: discussion.rounds,
+                  }),
                   discussion.status === 'running' && discussion.currentSpeaker
                     ? ` · ${(() => {
                         const speaker = members.find((member) => member.membershipId === discussion.currentSpeaker);
                         const speakerBot = speaker ? bots.find((bot) => bot.botId === speaker.botId) : null;
-                        return speakerBot ? `${speakerBot.name} 发言中` : '发言中';
+                        return speakerBot ? uiT('{name} 发言中', { name: speakerBot.name }) : uiT('发言中');
                       })()}`
                     : '',
                 ),
@@ -6356,9 +7669,20 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         ),
       );
     }
+    function MembersPanel(props) {
+      const values = [];
+      const group = props && props.group;
+      const discussion = props && props.discussion;
+      if (group) values.push(group.title, group.topic);
+      for (const bot of (props && props.bots) || []) values.push(bot.name);
+      for (const task of (props && props.tasks) || []) values.push(task.title, task.description, task.acceptance);
+      if (discussion) values.push(discussion.topic, discussion.summary);
+      return withContent(values, () => renderMembersPanel(props));
+    }
+
 
     // ── dialogs ───────────────────────────────────────────────────────────
-    function GroupFormDialog({ group, folders, folderId, onClose, onSaved }) {
+    function renderGroupFormDialog({ group, folders, folderId, onClose, onSaved }) {
       const [title, setTitle] = React.useState(group ? group.title : '');
       const [topic, setTopic] = React.useState(group ? group.topic || '' : '');
       const [workspaceCwd, setWorkspaceCwd] = React.useState(group ? group.workspaceCwd || '' : '');
@@ -6501,8 +7825,13 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         ),
       );
     }
+    function GroupFormDialog(props) {
+      const group = props && props.group;
+      return withContent([group && group.title, group && group.topic], () => renderGroupFormDialog(props));
+    }
 
-    function FolderFormDialog({ folder, onClose, onSaved }) {
+
+    function renderFolderFormDialog({ folder, onClose, onSaved }) {
       const [title, setTitle] = React.useState(folder ? folder.title : '');
       const [busy, setBusy] = React.useState(false);
       const [error, setError] = React.useState('');
@@ -6558,8 +7887,13 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         ),
       );
     }
+    function FolderFormDialog(props) {
+      const folder = props && props.folder;
+      return withContent([folder && folder.title], () => renderFolderFormDialog(props));
+    }
 
-    function BotLibraryDialog({ bots, members, groups, onClose, onCreate, onEdit, onChanged }) {
+
+    function renderBotLibraryDialog({ bots, members, groups, onClose, onCreate, onEdit, onChanged }) {
       const [busyId, setBusyId] = React.useState('');
       const [error, setError] = React.useState('');
       const groupChatsOf = (botId) => members
@@ -6574,7 +7908,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         });
         const warning = [
           inGroups.length
-            ? `它正在 ${inGroups.length} 个群中（${inGroups.map((group) => group.title).join('、')}），删除会同时把它移出这些群。`
+            ? uiT('它正在 {count} 个群中（{groups}），删除会同时把它移出这些群。', { count: inGroups.length, groups: inGroups.map((group) => group.title).join(isEnglishUi() ? ', ' : '、') })
             : '',
           hasDirect ? '它的单聊与全部单聊消息也会一并删除。' : '',
         ].filter(Boolean).join('\n');
@@ -6638,8 +7972,15 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             }),
       );
     }
+    function BotLibraryDialog(props) {
+      const values = [];
+      for (const bot of (props && props.bots) || []) values.push(bot.name, bot.provider, bot.model);
+      for (const group of (props && props.groups) || []) values.push(group.title);
+      return withContent(values, () => renderBotLibraryDialog(props));
+    }
 
-    function BotFormDialog({ bot, modelCatalog, onClose, onSaved }) {
+
+    function renderBotFormDialog({ bot, modelCatalog, onClose, onSaved }) {
       const editing = !!bot;
       const groups = modelCatalog.groups || [];
       const defaultProvider = bot ? bot.provider : groups[0] && groups[0].id;
@@ -6731,7 +8072,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         });
         setTemplateMenuOpen(false);
         setTemplateNote(
-          alreadyApplied ? '当前内容已包含该模板，未重复插入。' : `已插入「${template.title}」模板，可按需修改。`,
+          alreadyApplied ? uiT('当前内容已包含该模板，未重复插入。') : uiT('已插入「{title}」模板，可按需修改。', { title: template.title }),
         );
         requestAnimationFrame(() => {
           const node = personaRef.current;
@@ -6795,7 +8136,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
 
       const deleteBot = async () => {
         if (!editing) return;
-        if (!window.confirm(`删除 Bot「${bot.name}」？它会从所有群移除，单聊与单聊消息也会一并删除。`)) return;
+        if (!window.confirm(uiT('删除 Bot「{name}」？它会从所有群移除，单聊与单聊消息也会一并删除。', { name: bot.name }))) return;
         setBusy(true);
         try {
           await api.action('bot.delete', { botId: bot.botId });
@@ -6810,7 +8151,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       return h(
         Modal,
         {
-          title: editing ? `编辑 Bot：${bot.name}` : '新建 Bot',
+          title: editing ? uiT('编辑 Bot：{name}', { name: bot.name }) : uiT('新建 Bot'),
           subtitle: editing
             ? '调整它的模型与人格设定；所有 Bot 默认具备完整工具权限。'
             : '创建一个可复用的 Agent：定好它是谁、用什么模型。',
@@ -7028,7 +8369,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                         'div',
                         { style: S.templateMenuHead },
                         h('span', { style: S.templateMenuTitle }, '人格模板库'),
-                        h('span', { style: S.templateMenuHint }, `${PERSONA_TEMPLATES.length} 个可选`),
+                        h('span', { style: S.templateMenuHint }, uiT('{count} 个可选', { count: PERSONA_TEMPLATES.length })),
                       ),
                       PERSONA_TEMPLATES.map((template) =>
                         h(
@@ -7060,13 +8401,18 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                 : null,
             ),
             h('span', { style: S.personaTip }, templateNote || '支持 Markdown · 留空则只使用默认角色设定'),
-            h('span', { style: S.charCount }, `${botMd.length} 字`),
+            h('span', { style: S.charCount }, uiT('{count} 字', { count: botMd.length })),
           ),
         ),
       );
     }
+    function BotFormDialog(props) {
+      const bot = props && props.bot;
+      return withContent([bot && bot.name, bot && bot.md], () => renderBotFormDialog(props));
+    }
 
-    function AddMemberDialog({ group, bots, members, onClose, onSaved }) {
+
+    function renderAddMemberDialog({ group, bots, members, onClose, onSaved }) {
       const existing = new Set(members.map((member) => member.botId));
       const available = bots.filter((bot) => !existing.has(bot.botId));
       const [botId, setBotId] = React.useState(available[0] ? available[0].botId : '');
@@ -7087,7 +8433,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       return h(
         Modal,
         {
-          title: `添加成员到「${group.title}」`,
+          title: uiT('添加成员到「{title}」', { title: group.title }),
           onClose,
           footer: [
             h('button', { key: 'cancel', style: S.ghostBtn, onClick: onClose }, '取消'),
@@ -7108,8 +8454,16 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             ),
       );
     }
+    function AddMemberDialog(props) {
+      const values = [];
+      const group = props && props.group;
+      if (group) values.push(group.title);
+      for (const bot of (props && props.bots) || []) values.push(bot.name, bot.provider, bot.model);
+      return withContent(values, () => renderAddMemberDialog(props));
+    }
 
-    function TaskDialog({ group, members, bots, onClose, onSaved }) {
+
+    function renderTaskDialog({ group, members, bots, onClose, onSaved }) {
       const candidates = members
         .map((member) => ({ member, bot: bots.find((candidate) => candidate.botId === member.botId) }))
         .filter((entry) => entry.bot);
@@ -7167,8 +8521,19 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         h('div', { style: { fontSize: 11, color: 'var(--bt-text-3)' } }, '创建后点任务卡片「派发」开始执行；执行中可「中断」；点「执行流」查看该 Bot 的完整执行过程。'),
       );
     }
+    function TaskDialog(props) {
+      const values = [];
+      const task = props && props.task;
+      if (task) values.push(task.title, task.description, task.acceptance);
+      for (const member of (props && props.members) || []) {
+        const bot = member && member.bot;
+        if (bot) values.push(bot.name);
+      }
+      return withContent(values, () => renderTaskDialog(props));
+    }
 
-    function ReviewDialog({ target, group, members, bots, onClose, onSaved }) {
+
+    function renderReviewDialog({ target, group, members, bots, onClose, onSaved }) {
       const candidates = members
         .map((member) => ({ member, bot: bots.find((candidate) => candidate.botId === member.botId) }))
         .filter((entry) => entry.bot);
@@ -7208,7 +8573,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           ],
         },
         error ? h('div', { style: { ...S.errorBanner, borderRadius: 8, marginBottom: 10 } }, error) : null,
-        h(Field, { label: `被评审消息 #${target.seq}` }, h('div', { style: { ...S.input, maxHeight: 120, overflow: 'auto', whiteSpace: 'pre-wrap', fontSize: 12, color: 'var(--bt-text-2)' } }, target.text || '（空）')),
+        h(Field, { label: uiT('被评审消息 #{seq}', { seq: target.seq }) }, h('div', { style: { ...S.input, maxHeight: 120, overflow: 'auto', whiteSpace: 'pre-wrap', fontSize: 12, color: 'var(--bt-text-2)' } }, target.text || '（空）')),
         h(
           Field,
           { label: '评审者' },
@@ -7226,8 +8591,19 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         })),
       );
     }
+    function ReviewDialog(props) {
+      const values = [];
+      const target = props && props.target;
+      if (target) values.push(target.text, target.authorName, target.error);
+      for (const member of (props && props.members) || []) {
+        const bot = member && member.bot;
+        if (bot) values.push(bot.name);
+      }
+      return withContent(values, () => renderReviewDialog(props));
+    }
 
-    function DiscussionDialog({ group, members, bots, defaultTopic, onClose, onSaved }) {
+
+    function renderDiscussionDialog({ group, members, bots, defaultTopic, onClose, onSaved }) {
       const candidates = members
         .map((member) => ({ member, bot: bots.find((candidate) => candidate.botId === member.botId) }))
         .filter((entry) => entry.bot);
@@ -7324,6 +8700,28 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         ),
       );
     }
+    function DiscussionDialog(props) {
+      const values = [];
+      const group = props && props.group;
+      if (group) values.push(group.title, group.topic);
+      for (const member of (props && props.members) || []) {
+        const bot = member && member.bot;
+        if (bot) values.push(bot.name);
+      }
+      return withContent(values, () => renderDiscussionDialog(props));
+    }
+
+
+    /** Re-render the page when DSH switches the UI language. */
+    function useLocaleRevision() {
+      const [revision, setRevision] = React.useState(0);
+      React.useEffect(() => {
+        const locale = appCtx && appCtx.locale;
+        if (!locale || typeof locale.subscribe !== 'function') return undefined;
+        return locale.subscribe(() => setRevision((value) => value + 1));
+      }, []);
+      return revision;
+    }
 
     // ── page ──────────────────────────────────────────────────────────────
     function BotTeamPage() {
@@ -7335,6 +8733,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         rightPanelCollapsed: readRightPanelCollapsed(),
         sectionsCollapsed: readSectionsCollapsed(),
       }));
+      useLocaleRevision();
       const refresh = useBootstrap(dispatch);
       const [userProfile, setUserProfile] = React.useState(null);
 
@@ -7763,7 +9162,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
 
       const deleteGroup = async (group) => {
         if (!group || isDirectGroup(group)) return;
-        if (!window.confirm(`删除群「${group.title}」及其全部消息？`)) return;
+        if (!window.confirm(uiT('删除群「{title}」及其全部消息？', { title: group.title }))) return;
         try {
           await api.action('group.delete', { groupId: group.groupId });
           dispatch({ type: 'refreshTick' });
@@ -7777,8 +9176,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         if (!folder) return;
         const count = state.groups.filter((group) => !isDirectGroup(group) && group.folderId === folder.folderId).length;
         const warning = count > 0
-          ? `删除分组「${folder.title}」？其中 ${count} 个群会移到「未分组」，不会被删除。`
-          : `删除分组「${folder.title}」？`;
+          ? uiT('删除分组「{title}」？其中 {count} 个群会移到「未分组」，不会被删除。', { title: folder.title, count })
+          : uiT('删除分组「{title}」？', { title: folder.title });
         if (!window.confirm(warning)) return;
         try {
           await api.action('folder.delete', { folderId: folder.folderId });
@@ -7799,7 +9198,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             activeGroup && activeGroup.topic ? activeGroup.topic : '',
           ].filter(Boolean).join(' · ')
         : [
-            `${members.length} 位成员${botMembers.length ? ` · ${botMembers.length} 个 Bot` : ''}`,
+            `${uiT('{count} 位成员', { count: members.length })}${botMembers.length ? uiT(' · {count} 个 Bot', { count: botMembers.length }) : ''}`,
             activeGroup && activeGroup.topic ? activeGroup.topic : '',
           ]
             .filter(Boolean)
@@ -7857,7 +9256,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           ? h(
               'div',
               { className: 'bt-root', style: S.errorBanner, onClick: () => dispatch({ type: 'error', message: '' }) },
-              `${state.error}（点击关闭）`,
+              uiT('{error}（点击关闭）', { error: uiT(state.error) }),
             )
           : null,
         h('style', { key: 'bt-global-css' }, GLOBAL_CSS),
@@ -7906,7 +9305,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                               'span',
                               { style: S.headerLive },
                               h('span', { style: S.headerLiveDot }),
-                              `${runningMembers.length} 个回复中`,
+                              uiT('{count} 个回复中', { count: runningMembers.length }),
                             )
                           : null,
                       ),
@@ -8069,7 +9468,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                                 'div',
                                 { style: S.emptyState },
                                 h('div', { style: S.emptyIcon }, '1:1'),
-                                h('div', { style: S.emptyTitle }, `和 ${activeGroup.title} 打个招呼吧`),
+                                h('div', { style: S.emptyTitle }, uiT('和 {title} 打个招呼吧', { title: activeGroup.title })),
                                 h(
                                   'div',
                                   { style: S.emptyHint },
@@ -8133,6 +9532,15 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                     replyTarget,
                     userProfile,
                     onClearReply: () => setReplyTarget(null),
+                    onExportMarkdown: () => {
+                      void exportMarkdown();
+                    },
+                    onExportHtml: activeIsDirect
+                      ? undefined
+                      : () => {
+                          void exportHtml();
+                        },
+                    onOpenSettings: () => dispatch({ type: 'dialog', dialog: { kind: 'settings' } }),
                     onResize: () => {
                       if (!scrollStateRef.current.stick) return;
                       const node = timelineRef.current;
@@ -8191,7 +9599,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                 })
             : h('div', { id: 'bt-right-panel', style: S.right }, h('div', { style: S.rightHeader }, 'Bot 库'), h('div', { style: { padding: '0 12px 12px', display: 'flex', flexDirection: 'column', gap: 8 } },
                 h('button', { style: S.ghostBtn, onClick: openBotCreate }, '+ 新建 Bot'),
-                h('div', { style: { fontSize: 12, color: 'var(--bt-text-3)', lineHeight: 1.7 } }, `已有 ${state.bots.length} 个 Bot。每个 Bot 都有自己的单聊；也可以在群里加入它们。`),
+                h('div', { style: { fontSize: 12, color: 'var(--bt-text-3)', lineHeight: 1.7 } }, uiT('已有 {count} 个 Bot。每个 Bot 都有自己的单聊；也可以在群里加入它们。', { count: state.bots.length })),
                 state.bots.map((bot) => h('div', { key: bot.botId, style: { ...S.memberCard, cursor: 'pointer' }, onClick: () => openBotEdit(bot) },
                   h('div', { style: S.memberTop }, h(Avatar, { bot, size: 24 }), h('span', { style: S.memberName }, bot.name)),
                   h('div', { style: S.memberMeta }, `${bot.model}`),
@@ -8301,10 +9709,15 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
     }
 
     return {
-      inject: ['slots', 'uiWorkspace', 'remote', 'remote.account'],
+      inject: ['slots', 'locale', 'uiWorkspace', 'remote', 'remote.account'],
       apply(ctx) {
         appCtx = ctx;
-        ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: PAGE_KEY }, BotTeamPage));
+        ctx.effect(() => ctx.locale.register(LOCALE_NS, { zh: UI_ZH, en: UI_EN }), 'bot-team: dictionaries');
+        localeRuntime = {
+          t: ctx.locale.bind(LOCALE_NS),
+          getLocale: () => (ctx.locale.getSnapshot ? ctx.locale.getSnapshot().active : 'zh'),
+        };
+        ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: PAGE_KEY, locale: LOCALE_NS }, BotTeamPage));
         ctx.slots.inject('sidebar.panellist', () =>
           ctx.slots.register({ name: 'sidebar.panellist', id: PAGE_KEY, order: 40, label: 'Bot Team' }, PanelIcon),
         );

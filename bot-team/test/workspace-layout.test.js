@@ -74,7 +74,7 @@ function fakeRepo(groups) {
   };
 }
 
-test('migrateLegacyLayout folds legacy, v1.8.0 direct, and current layouts, and is idempotent', async () => {
+test('migrateLegacyLayout folds legacy, v0.8.0 direct, and current layouts, and is idempotent', async () => {
   await withDshHome(async (home) => {
     const legacy = path.join(home, 'bot-team');
     const dataDir = path.join(home, 'dsh-bot-team');
@@ -82,7 +82,7 @@ test('migrateLegacyLayout folds legacy, v1.8.0 direct, and current layouts, and 
     await writeFile(path.join(legacy, 'bots', 'bot-a', 'BOT.md'), 'persona-a', 'utf8');
     await mkdir(path.join(legacy, 'group1', 'docs'), { recursive: true });
     await writeFile(path.join(legacy, 'group1', 'docs', 'note.md'), 'group-doc', 'utf8');
-    // v1.8.0 kept direct workspaces directly under dataDir.
+    // v0.8.0 kept direct workspaces directly under dataDir.
     await mkdir(path.join(dataDir, 'bot-old'), { recursive: true });
     await writeFile(path.join(dataDir, 'bot-old', 'note.txt'), 'old-direct', 'utf8');
 

@@ -35,7 +35,7 @@
       config:
         id: bot-team-tools
         name: 'Bot Team · 全能'
-        description: 'Bot Team bot：文件读写、搜索、联网、命令执行，workspace-write 沙箱。'
+        description: 'Bot Team bot：文件读写、搜索、联网、命令执行、Skill，workspace-write 沙箱。'
         order: 40
         plugins:
           - id: tool-fs
@@ -49,6 +49,13 @@
             config:
               fetch: true
               searchTimeoutMs: 60000
+          # The skill registry itself is host-plane (dsh-base); the preset owns
+          # local discovery and the model-facing catalog/loader. Both are needed
+          # so a user-picked /skill-name gesture resolves inside a bot turn.
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
           - id: tool-bash
             name: '@deepseek-ai/dsh-tool-bash'
             disabled: !!js process.platform === 'win32'

@@ -51,7 +51,20 @@ test('the real service boots, registers its routes/tools, and drives direct chat
   );
   try {
     await service.ready;
-    assert.equal(routes.length, 6, 'bootstrap/messages/events/action/health/file routes');
+    assert.equal(routes.length, 8, 'bootstrap/messages/events/action/health/file/upload/skills routes');
+    assert.deepEqual(
+      routes.map((route) => route.path).sort(),
+      [
+        '/api/bot-team.action',
+        '/api/bot-team.bootstrap',
+        '/api/bot-team.events',
+        '/api/bot-team.file',
+        '/api/bot-team.health',
+        '/api/bot-team.messages',
+        '/api/bot-team.skills',
+        '/api/bot-team.upload',
+      ],
+    );
     assert.equal(tools.length, 8, 'all model tools registered');
 
     const health = service.healthPayload();

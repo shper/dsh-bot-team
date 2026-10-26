@@ -4,7 +4,7 @@
 
 `版本 1.0.0` · `MIT` · `DSH 0.2.1-rc.x` · `npm dsh-bot-team`
 
-![群聊：@ 派活、任务板、评审与审批卡片](docs/assets/v1.6-feed.png)
+![群聊：@ 派活、任务板、评审与审批卡片](docs/assets/v0.6-feed.png)
 
 ## 这是什么
 
@@ -13,7 +13,7 @@ Bot Team 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
 - 每个 Bot 有名字、头像、独立的 provider / model / reasoning effort / maxTokens，以及独立 Session 记忆；
 - 人格与工作规范写在 `BOT.md`，改完下一轮生效；
 - 单聊是它的工位，群聊是会议室，任务板是工单系统，评审和讨论是流程；
-- 所有 Bot 默认全能力：读写文件、搜索、联网、执行命令（`workspace-write` 沙箱，范围受群/单聊工作目录限制）；
+- 所有 Bot 默认全能力：读写文件、搜索、联网、执行命令、Skill（`workspace-write` 沙箱，范围受群/单聊工作目录限制）；
 - Bot 本身就是普通的 DSH 会话，随时可以点「查看会话」跳进它的执行流。
 
 ## 功能
@@ -25,7 +25,8 @@ Bot Team 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
 | 单聊 | 每个 Bot 自动拥有一个单聊窗口，不需要 `@`，记忆与群聊相互独立 |
 | 群聊 | 群 / 话题、成员管理、`@` 派活、多 `@` 并行回复 |
 | 流式 | 实时流式输出、停止、失败重试、断线补齐 |
-| 消息 | 引用回复、右键菜单、同作者消息合并、时间分隔、新消息分隔线、回到底部 |
+| 消息 | 引用回复（群聊回复 Bot 时自动 `@` 原作者）、右键菜单、同作者消息合并、时间分隔、新消息分隔线、回到底部 |
+| 输入 | 左下角 **+** 打开 DSH 风格分组命令菜单（文件 / 技能 / 提及 / 停止 / 导出 / 设置）；键入 `/` 选择 Skill；文件存入 DSH 附件库，Bot 拿到只读路径 |
 | 导出 | 群聊导出 Markdown / HTML |
 
 ### 组织与界面
@@ -90,12 +91,12 @@ git clone https://github.com/shper/dsh-bot-team.git
 4. 在输入框用 `@Bot名` 派活，多个 `@` 会并行回复并实时流式显示；
 5. 右栏「+ 新建任务」→ 派发 → 请评审 → 验收。
 
-![单聊、分组与折叠侧栏](docs/assets/v1.7-single-chat-grouping-light.png)
+![单聊、分组与折叠侧栏](docs/assets/v0.7-single-chat-grouping-light.png)
 
 <details>
 <summary>深色主题</summary>
 
-![深色主题下的群聊、讨论与审批](docs/assets/v1.6.2-theme-dark.png)
+![深色主题下的群聊、讨论与审批](docs/assets/v0.6.2-theme-dark.png)
 
 </details>
 
@@ -149,9 +150,10 @@ git clone https://github.com/shper/dsh-bot-team.git
 bot-team/     npm 包 dsh-bot-team：Host 半 index.js + host/*.js，Client 半 client.js
 docs/         使用指南、逐版本变更记录、验收报告、发布指南、截图
 research/     DSH runtime / persistence / UI 的调研笔记
-spike/        最早的插件原型
 tools/        开发辅助（asar 读取）
 ```
+
+> 仓库根目录不是 npm 包：这里没有根 `package.json`，插件清单位于 `bot-team/package.json`。`npm run check` / `npm test` / `npm pack` 请在 `bot-team/` 下执行。
 
 ## 开发
 
@@ -160,7 +162,7 @@ tools/        开发辅助（asar 读取）
 ```sh
 cd bot-team
 npm run check        # node --check：index.js / client.js / host/*.js
-npm test             # 111 条隔离测试
+npm test             # 125 条隔离测试
 npm pack --dry-run   # 查看真正会被发布的文件
 ```
 
@@ -181,7 +183,9 @@ npm pack --dry-run   # 查看真正会被发布的文件
 - [使用指南](docs/使用指南.md)
 - [发布指南](docs/发布指南.md)
 - [升级检查清单](docs/升级检查清单.md)
-- [最新变更记录：v1.8.1 单聊目录分层](docs/v1.8.1-单聊目录分层-变更记录.md)
+- [最新变更记录：v0.8.1 单聊目录分层](docs/v0.8.1-单聊目录分层-变更记录.md)
+- 当前版本 `1.0.0`，也是首个 npm 公开发行版；`docs/` 的 v0.5–v0.8.1 是发布前的 0.x 内部迭代记录，公开版本从 `1.0.0` 开始。
+- 历史验证报告中的 `.bot-team/`、`.bot-team-spike/`、`tmp/` 证据文件已在发布前清理，报告保留为历史记录。
 
 ## License
 
