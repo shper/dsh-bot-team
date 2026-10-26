@@ -65,7 +65,7 @@ test('the real service boots, registers its routes/tools, and drives direct chat
     });
     assert.ok(bot.directGroupId);
     const direct = service.repo.getGroup(bot.directGroupId);
-    assert.equal(direct.workspaceCwd, path.join(home, 'data', bot.botId));
+    assert.equal(direct.workspaceCwd, path.join(home, 'data', 'direct', bot.botId));
     assert.equal((await stat(direct.workspaceCwd)).isDirectory(), true);
     const boot = await service.bootstrapPayload();
     assert.equal(boot.folders.length, 0);

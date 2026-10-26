@@ -3641,7 +3641,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         h(
           'div',
           { style: S.aboutNote },
-          '数据保存在 $DSH_HOME/storages/bot_team；Bot 会话是真实 DSH session。人格文件在 $DSH_HOME/dsh-bot-team/bots/<botId>/BOT.md；单聊工作目录 $DSH_HOME/dsh-bot-team/<botId>/，群聊工作目录 $DSH_HOME/dsh-bot-team/groups/<groupId>/。',
+          '数据保存在 $DSH_HOME/storages/bot_team；Bot 会话是真实 DSH session。人格文件在 $DSH_HOME/dsh-bot-team/bots/<botId>/BOT.md；单聊工作目录 $DSH_HOME/dsh-bot-team/direct/<botId>/，群聊工作目录 $DSH_HOME/dsh-bot-team/groups/<groupId>/。',
         ),
       );
 
@@ -6495,7 +6495,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           Field,
           {
             label: '工作目录（可选，绝对路径）',
-            hint: '留空使用默认：$DSH_HOME/dsh-bot-team/groups/<群 id>；单聊默认 $DSH_HOME/dsh-bot-team/<botId>。修改后 Bot 下一轮会重建 DSH 会话（群消息保留）。',
+            hint: '留空使用默认：$DSH_HOME/dsh-bot-team/groups/<群 id>；单聊默认 $DSH_HOME/dsh-bot-team/direct/<botId>。修改后 Bot 下一轮会重建 DSH 会话（群消息保留）。',
           },
           h('input', { style: S.input, value: workspaceCwd, onChange: (event) => setWorkspaceCwd(event.target.value), placeholder: '留空使用插件默认目录，或填 /Users/you/project' }),
         ),

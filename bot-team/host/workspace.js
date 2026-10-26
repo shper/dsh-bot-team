@@ -5,14 +5,16 @@
  * `$DSH_HOME/dsh-bot-team`):
  *
  *   <dataDir>/bots/<botId>/BOT.md        persona + working rules
- *   <dataDir>/<botId>/                   direct-chat workspace
+ *   <dataDir>/direct/<botId>/            direct-chat workspace
  *   <dataDir>/groups/<groupId>/          group-chat workspace
  *
  * Older builds used `$DSH_HOME/bot-team/bots` for personas and let groups
- * default to the Host process cwd. `migrateLegacyLayout` moves that data once
- * on startup: persona directories, workspace directories under the old root,
- * and the persisted `workspaceCwd` of groups that still pointed there. It is
- * idempotent and only runs for the default layout (see `isStandardLayout`).
+ * default to the Host process cwd. The first `dsh-bot-team` build also kept
+ * direct workspaces directly under `<dataDir>/<botId>`. `migrateLegacyLayout`
+ * folds both layouts into the one above on startup: persona directories,
+ * plugin-owned workspace directories, and the persisted `workspaceCwd` of the
+ * groups that pointed there. It is idempotent and only runs for the default
+ * layout (see `isStandardLayout`).
  */
 import os from 'node:os';
 import path from 'node:path';
@@ -27,10 +29,10 @@ export function legacyDataDir() {
   return path.join(dshHomeDir(), 'bot-team');
 }
 
-/** Direct chats live at <dataDir>/<botId>; groups at <dataDir>/groups/<groupId>. */
+/** Direct chats live at <dataDir>/direct/<botId>; groups at <dataDir>/groups/<groupId>. */
 export function defaultWorkspaceDir(config, group) {
   if (group && group.kind === 'direct' && group.botId) {
-    return path.join(config.dataDir, group.botId);
+    return path.join(config.dataDir, 'direct', group.botId);
   }
   if (group && group.groupId) {
     return path.join(config.dataDir, 'groups', group.groupId);
@@ -75,6 +77,12 @@ async function isDirectory(target) {
     if (error && error.code === 'ENOENT') return false;
     throw error;
   }
+}
+
+/** The first dsh-bot-team build stored direct workspaces at <dataDir>/<botId>. */
+function isPreviousDirectWorkspace(config, group, dir) {
+  if (!group || group.kind !== 'direct' || !group.botId) return false;
+  return path.resolve(dir) === path.resolve(path.join(config.dataDir, group.botId));
 }
 
 function isInside(child, parent) {
@@ -141,9 +149,9 @@ async function moveWorkspace(from, to, logger, summary) {
 }
 
 /**
- * Move legacy personas and plugin-owned workspaces to the new root and rewrite
- * group records that still point at the old root. Explicit workspaces outside
- * `$DSH_HOME/bot-team` are never touched. Idempotent.
+ * Move legacy personas and plugin-owned workspaces to the current layout and
+ * rewrite group records that still point at an older plugin-owned path.
+ * Explicit workspaces outside both layouts are never touched. Idempotent.
  */
 export async function migrateLegacyLayout({ repo, config, logger }) {
   const legacyRoot = legacyDataDir();
@@ -155,8 +163,10 @@ export async function migrateLegacyLayout({ repo, config, logger }) {
   for (const group of [...repo.groups.values()]) {
     const target = defaultWorkspaceDir(config, group);
     const current = typeof group.workspaceCwd === 'string' ? group.workspaceCwd.trim() : '';
-    // An explicit workspace outside the old plugin root is the user's choice.
-    if (current && !isInside(current, legacyRoot)) {
+    // Explicit workspaces outside both plugin-owned layouts are the user's choice.
+    const legacyWorkspace = current ? isInside(current, legacyRoot) : false;
+    const previousDirectWorkspace = current ? isPreviousDirectWorkspace(config, group, current) : false;
+    if (current && !legacyWorkspace && !previousDirectWorkspace) {
       await ensureWorkspaceDir(current, logger);
       continue;
     }
@@ -177,7 +187,7 @@ export async function migrateLegacyLayout({ repo, config, logger }) {
 
   if (summary.personas || summary.workspaces || summary.groups) {
     logger?.info?.(
-      `bot-team: layout migration v2 done (personas=${summary.personas}, workspaces=${summary.workspaces}, groups=${summary.groups})`,
+      `bot-team: layout migration done (personas=${summary.personas}, workspaces=${summary.workspaces}, groups=${summary.groups})`,
     );
   }
   return summary;

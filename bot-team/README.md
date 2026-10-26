@@ -16,10 +16,10 @@
 | 路径 | 用途 |
 |---|---|
 | `bots/<botId>/BOT.md` | Bot 人格与工作规范（旧版 SOUL.md/AGENT.md 仍兼容读取） |
-| `<botId>/` | 该 Bot 单聊的工作目录 |
+| `direct/<botId>/` | 该 Bot 单聊的工作目录 |
 | `groups/<groupId>/` | 该群聊的工作目录 |
 
-群/单聊记录里的 `workspaceCwd` 可以覆盖默认值；留空即使用上表目录。从旧版本升级时，Host 首次启动会把 `$DSH_HOME/bot-team/bots` 和仍指向 `$DSH_HOME/bot-team/` 的工作目录迁到新位置，并改写对应群记录；用户自己指定的外部工作目录不动。迁移后 Bot 的旧 session cwd 与新工作目录不一致，首次回复时会为该成员新建 session（群消息历史保留，旧 session 文件不删除）。
+群/单聊记录里的 `workspaceCwd` 可以覆盖默认值；留空即使用上表目录。从旧版本升级时，Host 首次启动会把 `$DSH_HOME/bot-team/bots` 和仍指向 `$DSH_HOME/bot-team/` 的工作目录迁到新位置；v1.8.0 短暂使用的 `<dataDir>/<botId>` 单聊目录也会被折进 `direct/<botId>`。对应群记录会一并改写，用户自己指定的外部工作目录不动。迁移后 Bot 的旧 session cwd 与新工作目录不一致，首次回复时会为该成员新建 session（群消息历史保留，旧 session 文件不删除）。
 
 ## 使用
 

@@ -39,17 +39,17 @@ test('resolveConfig defaults to $DSH_HOME/dsh-bot-team and its bots subdirectory
 });
 
 test('sessionCwdMatches only accepts a session created for the same workspace', () => {
-  assert.equal(sessionCwdMatches('/data/dsh-bot-team/bot-a', '/data/dsh-bot-team/bot-a'), true);
-  assert.equal(sessionCwdMatches('/data/dsh-bot-team/bot-a/', '/data/dsh-bot-team/bot-a'), true);
-  assert.equal(sessionCwdMatches('/data/old-workspace', '/data/dsh-bot-team/bot-a'), false);
-  assert.equal(sessionCwdMatches(undefined, '/data/dsh-bot-team/bot-a'), false);
+  assert.equal(sessionCwdMatches('/data/dsh-bot-team/direct/bot-a', '/data/dsh-bot-team/direct/bot-a'), true);
+  assert.equal(sessionCwdMatches('/data/dsh-bot-team/direct/bot-a/', '/data/dsh-bot-team/direct/bot-a'), true);
+  assert.equal(sessionCwdMatches('/data/old-workspace', '/data/dsh-bot-team/direct/bot-a'), false);
+  assert.equal(sessionCwdMatches(undefined, '/data/dsh-bot-team/direct/bot-a'), false);
 });
 
 test('defaultWorkspaceDir gives each direct chat its bot id and each group its group id', () => {
   const config = { dataDir: '/data/dsh-bot-team' };
   assert.equal(
     defaultWorkspaceDir(config, { groupId: 'grp-dm-bot-a', kind: 'direct', botId: 'bot-a' }),
-    '/data/dsh-bot-team/bot-a',
+    '/data/dsh-bot-team/direct/bot-a',
   );
   assert.equal(
     defaultWorkspaceDir(config, { groupId: 'grp-1', kind: 'group' }),
@@ -74,18 +74,23 @@ function fakeRepo(groups) {
   };
 }
 
-test('migrateLegacyLayout moves personas and plugin workspaces, rewrites legacy cwd, and is idempotent', async () => {
+test('migrateLegacyLayout folds legacy, v1.8.0 direct, and current layouts, and is idempotent', async () => {
   await withDshHome(async (home) => {
     const legacy = path.join(home, 'bot-team');
+    const dataDir = path.join(home, 'dsh-bot-team');
     await mkdir(path.join(legacy, 'bots', 'bot-a'), { recursive: true });
     await writeFile(path.join(legacy, 'bots', 'bot-a', 'BOT.md'), 'persona-a', 'utf8');
     await mkdir(path.join(legacy, 'group1', 'docs'), { recursive: true });
     await writeFile(path.join(legacy, 'group1', 'docs', 'note.md'), 'group-doc', 'utf8');
+    // v1.8.0 kept direct workspaces directly under dataDir.
+    await mkdir(path.join(dataDir, 'bot-old'), { recursive: true });
+    await writeFile(path.join(dataDir, 'bot-old', 'note.txt'), 'old-direct', 'utf8');
 
     const config = resolveConfig({});
     const repo = fakeRepo([
       { groupId: 'grp-1', kind: 'group', workspaceCwd: path.join(legacy, 'group1') },
       { groupId: 'grp-dm-bot-b', kind: 'direct', botId: 'bot-b', workspaceCwd: '' },
+      { groupId: 'grp-dm-bot-old', kind: 'direct', botId: 'bot-old', workspaceCwd: path.join(dataDir, 'bot-old') },
       { groupId: 'grp-external', kind: 'group', workspaceCwd: '/tmp/external-workspace' },
     ]);
     const summary = await migrateLegacyLayout({ repo, config, logger: null });
@@ -99,12 +104,18 @@ test('migrateLegacyLayout moves personas and plugin workspaces, rewrites legacy 
       'group-doc',
     );
     assert.equal(repo.groups.get('grp-1').workspaceCwd, path.join(home, 'dsh-bot-team', 'groups', 'grp-1'));
-    assert.equal(repo.groups.get('grp-dm-bot-b').workspaceCwd, path.join(home, 'dsh-bot-team', 'bot-b'));
-    assert.equal((await stat(path.join(home, 'dsh-bot-team', 'bot-b'))).isDirectory(), true);
+    assert.equal(repo.groups.get('grp-dm-bot-b').workspaceCwd, path.join(home, 'dsh-bot-team', 'direct', 'bot-b'));
+    assert.equal((await stat(path.join(home, 'dsh-bot-team', 'direct', 'bot-b'))).isDirectory(), true);
+    assert.equal(repo.groups.get('grp-dm-bot-old').workspaceCwd, path.join(home, 'dsh-bot-team', 'direct', 'bot-old'));
+    assert.equal(
+      await readFile(path.join(home, 'dsh-bot-team', 'direct', 'bot-old', 'note.txt'), 'utf8'),
+      'old-direct',
+    );
+    await assert.rejects(stat(path.join(home, 'dsh-bot-team', 'bot-old')), { code: 'ENOENT' });
     assert.equal(repo.groups.get('grp-external').workspaceCwd, '/tmp/external-workspace');
     assert.equal(summary.personas, 1);
-    assert.equal(summary.workspaces, 1);
-    assert.equal(summary.groups, 2);
+    assert.equal(summary.workspaces, 2);
+    assert.equal(summary.groups, 3);
     assert.equal(summary.legacyRootRemoved, true);
     assert.equal(repo.persisted.filter(([, key]) => key === 'grp-external').length, 0);
 

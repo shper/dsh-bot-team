@@ -95,7 +95,7 @@ test('creating a bot creates exactly one direct chat with one member and opens i
   assert.equal(direct.kind, 'direct');
   assert.equal(direct.botId, bot.botId);
   assert.equal(direct.title, 'Timi');
-  assert.equal(direct.workspaceCwd, path.join(service.config.dataDir, bot.botId));
+  assert.equal(direct.workspaceCwd, path.join(service.config.dataDir, 'direct', bot.botId));
   assert.equal((await stat(direct.workspaceCwd)).isDirectory(), true);
   assert.equal(direct.groupId, directGroupIdFor(bot.botId));
   const members = repo.membersOf(direct.groupId);
