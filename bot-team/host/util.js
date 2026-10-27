@@ -34,7 +34,6 @@ export function resolveConfig(raw = {}) {
     botSandbox: raw.botSandbox !== false,
     botApprovalPolicy: raw.botApprovalPolicy === 'never' ? 'never' : 'ask',
     autoDispatchReady: raw.autoDispatchReady === true,
-    maxTurnsPerHour: positiveInt(raw.maxTurnsPerHour, 120, 1, 10000),
     dailyTokenBudget: positiveInt(raw.dailyTokenBudget, 5000000, 1000, 100000000),
     toolWaitTimeoutMs: positiveInt(raw.toolWaitTimeoutMs, 180000, 10000, 900000),
     maxMembersPerGroup: positiveInt(raw.maxMembersPerGroup, 12, 1, 50),

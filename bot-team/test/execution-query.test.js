@@ -334,14 +334,22 @@ test('a replaced execution reference during observation is never mixed with the 
   assert.equal(f.state.disposed, 1);
 });
 
-test('supports optional ctx.get service and reports an absent service without resuming an agent', async () => {
+test('reads optional services through Cordis ctx.get without touching an uninjected property', async () => {
   const f = fixture();
-  f.ctx.sessionQuery = undefined;
-  f.ctx.get = (name) => { assert.equal(name, 'sessionQuery'); return f.query; };
-  assert.equal((await f.read()).availability, 'available');
+  let propertyReads = 0;
+  Object.defineProperty(f.ctx, 'sessionQuery', { get() {
+    propertyReads += 1;
+    throw new Error('cannot get property "sessionQuery" without inject');
+  } });
+  f.ctx.get = function (name) { assert.equal(this, f.ctx); assert.equal(name, 'sessionQuery'); return f.query; };
+  const result = await f.read();
+  assert.equal(result.availability, 'available');
+  assert.ok(result.events.some((event) => event.type === 'assistant/message'));
+  assert.equal(f.state.disposed, 1);
   f.ctx.get = () => undefined;
   assert.equal((await f.read()).reason, 'session-query-unavailable');
   assert.equal(f.state.calls.length, 1);
+  assert.equal(propertyReads, 0, 'a missing optional service must not fall back to the guarded property');
 });
 
 test('missing/corrupt/failed logs return useful reasons without private SDK exception text', async () => {

@@ -139,9 +139,9 @@ export class Engine {
   }
 
   // ── public dispatch ──────────────────────────────────────────────────────
-  assertQuota(groupId, turns = 1) {
+  assertQuota(groupId) {
     this.workspaceGuard(groupId);
-    const result = this.quotaGuard(groupId, turns);
+    const result = this.quotaGuard(groupId);
     if (!result || result.ok) return;
     const error = new Error(result.reason || '本群额度已用完，请稍后再试');
     error.code = 'quota';
@@ -178,7 +178,7 @@ export class Engine {
       if (!this.repo.getBot(member.botId)) continue;
       if (!targets.some((candidate) => candidate.membershipId === member.membershipId)) targets.push(member);
     }
-    if (targets.length > 0) this.assertQuota(groupId, targets.length);
+    if (targets.length > 0) this.assertQuota(groupId);
     for (const member of targets) {
       this.queue.push({
         jobId: newId('job'),
@@ -360,6 +360,7 @@ export class Engine {
     this.bus.emit(job.groupId, {
       type: 'execution.updated',
       messageId: job.placeholderId,
+      sessionId: job.execution.sessionId,
       seq: executionSeq(seq) ? seq : null,
       ...(includeExecution ? { execution: { ...job.execution } } : {}),
     });
@@ -723,7 +724,7 @@ export class Engine {
     if (!member || member.groupId !== groupId) throw Object.assign(new Error('评审者不在群里'), { code: 'invalid-input' });
     const reviewer = this.repo.getBot(member.botId);
     if (!reviewer) throw Object.assign(new Error('评审者 Bot 不存在'), { code: 'not-found' });
-    this.assertQuota(groupId, 1);
+    this.assertQuota(groupId);
     const requestMessage = this.createMessage({
       groupId,
       author: { type: 'system', name: '系统' },
@@ -762,7 +763,7 @@ export class Engine {
     const member = this.repo.getMember(membershipId);
     const bot = member ? this.repo.getBot(member.botId) : undefined;
     if (!member || !bot) throw Object.assign(new Error('原消息作者已不在群里'), { code: 'not-found' });
-    this.assertQuota(groupId, 1);
+    this.assertQuota(groupId);
     const reviewerName = this.authorNameOf(review);
     const requestMessage = this.createMessage({
       groupId,
@@ -794,7 +795,7 @@ export class Engine {
     if (message.author?.type !== 'bot') throw Object.assign(new Error('只能重试 Bot 的回复'), { code: 'invalid-input' });
     const member = this.repo.getMember(message.author.membershipId);
     if (!member) throw Object.assign(new Error('该 Bot 已不在群里'), { code: 'not-found' });
-    this.assertQuota(message.groupId, 1);
+    this.assertQuota(message.groupId);
     const meta = message.meta || {};
     if (message.kind === 'discussion') {
       throw Object.assign(new Error('讨论消息不支持单条重试，请重新发起讨论'), { code: 'invalid-input' });
@@ -850,7 +851,7 @@ export class Engine {
       }
     }
     if (members.length === 0) throw Object.assign(new Error('请选择至少一个讨论成员'), { code: 'invalid-input' });
-    this.assertQuota(groupId, members.length);
+    this.assertQuota(groupId);
     const discussion = {
       discussionId: newId('dsc'),
       groupId,
@@ -890,7 +891,7 @@ export class Engine {
     const discussion = this.repo.getDiscussion(discussionId);
     if (!discussion || discussion.status !== 'running') return;
     try {
-      this.assertQuota(discussion.groupId, 1);
+      this.assertQuota(discussion.groupId);
     } catch (error) {
       this.stopDiscussionInternal(discussion, 'quota', String(error && error.message ? error.message : error));
       return;

@@ -57,7 +57,6 @@ async function fixture(options = {}) {
       maxGroups: 50,
       maxMembersPerGroup: 12,
       maxMessageChars: 40000,
-      maxTurnsPerHour: 120,
       dailyTokenBudget: 5000000,
       maxParallelTurns: 3,
       botsDir: path.join(dataDir, 'bots'),

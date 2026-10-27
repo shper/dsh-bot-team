@@ -458,7 +458,7 @@ test('execution English copy translates labels and dynamic templates while prese
     event(5, 'tool/ptc-dispatch', { rootCallId: 'outer', parentCallId: 'outer', subCallId: 'inner', isError: true, content: '执行过程' }),
     event(6, 'future/safe-event'),
   ] }), loading: false };
-  const tree = en.render(en.ExecutionDrawer, { target: { groupId: 'g1', message: source }, state, onClose() {}, onRefresh() {} });
+  const tree = en.render(en.ExecutionDrawer, { target: { groupId: 'g1', message: source }, state, onClose() {}, onRefresh() {}, onOpenSession() {} });
   const visible = text(tree);
   for (const label of ['Execution details', '执行过程 · Message #7', 'Running', 'Trigger input', 'Full input', 'Unfinished model output', 'Tool · run_code', 'Nested tool · 执行过程', 'Call arguments', 'Tool result · ', 'Other record · future/safe-event', 'Failed', 'Awaiting result', 'Some execution records are missing.', 'Refresh records', 'Open full session']) assert.ok(visible.includes(label), label);
   const dialog = walk(tree).find(node => node.props?.role === 'dialog');
@@ -477,7 +477,7 @@ test('execution English copy translates labels and dynamic templates while prese
 
 test('English execution states and reason messages contain readable fallback and retry instructions', () => {
   const en = localizedExecution('en');
-  const props = { target: target(), onClose() {}, onRefresh() {} };
+  const props = { target: target(), onClose() {}, onRefresh() {}, onOpenSession() {} };
   for (const [state, expected] of [
     [{ loading: true }, 'Loading execution details…'],
     [{ loading: true, events: [event(1, 'turn/start')] }, 'Loading more records…'],

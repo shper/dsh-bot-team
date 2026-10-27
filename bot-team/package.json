@@ -1,6 +1,6 @@
 {
   "name": "dsh-bot-team",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Bot Team: single chats and multi-agent group chat for DeepSeek Harness. Every bot gets a direct chat; create groups/topics, organize them into collapsible custom folders with drag ordering, add full-capability bot agents (files, search, web, workspace, commands, skills) with their own model and BOT.md persona/working rules, attach files or pick skills with + or / in the composer, @mention them to assign tasks, review each other's work, and run multi-round discussions and tasks. The UI follows DSH zh/en, and group timelines export to Markdown, HTML or a paginated PDF with selectable text.",
   "type": "module",
   "exports": {

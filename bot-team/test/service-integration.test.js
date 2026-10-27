@@ -42,6 +42,45 @@ function fakeCtx(storageRoot) {
   return { ctx, routes, tools };
 }
 
+test('bootstrap and health omit hourly quotas while the real engine enforces the daily budget', async (t) => {
+  t.mock.method(Date, 'now', () => new Date(2026, 9, 27, 12).getTime());
+  const home = await mkdtemp(path.join(os.tmpdir(), 'bot-team-quota-'));
+  const { ctx } = fakeCtx(path.join(home, 'storages'));
+  const service = new BotTeamService(ctx, resolveConfig({
+    dataDir: path.join(home, 'data'),
+    defaultCwd: home,
+    migrateLegacyLayout: false,
+    maxTurnsPerHour: 120,
+    dailyTokenBudget: 1000,
+  }));
+  t.after(async () => {
+    await service.dispose();
+    await rm(home, { recursive: true, force: true });
+  });
+  await service.ready;
+  const group = await service.createGroup({ title: 'Quota test' });
+  const boot = await service.bootstrapPayload();
+  for (const config of [service.config, boot.config, boot.health.config, service.healthPayload().config]) {
+    assert.equal(Object.hasOwn(config, 'maxTurnsPerHour'), false);
+    assert.equal(config.dailyTokenBudget, 1000);
+  }
+  assert.deepEqual(boot.health.quotas[group.groupId], { ok: true, tokensToday: 0, tokenLimit: 1000 });
+  assert.doesNotThrow(() => service.engine.assertQuota(group.groupId));
+
+  const reply = service.engine.createMessage({ groupId: group.groupId, author: { type: 'bot' }, text: 'used budget' });
+  reply.usage = { inputTokens: 600, outputTokens: 400 };
+  await service.repo.putMessage(reply);
+  assert.throws(() => service.engine.assertQuota(group.groupId), (error) => error.code === 'quota' && /今日 token/.test(error.message));
+  const health = await (await service.handleHealth()).json();
+  assert.deepEqual(health.quotas[group.groupId], {
+    ok: false,
+    reason: '本群今日 token 用量已达上限（1000 / 1000），请明天再试或调整配额',
+    tokensToday: 1000,
+    limit: 1000,
+  });
+  assert.equal(Object.hasOwn(health.config, 'maxTurnsPerHour'), false);
+});
+
 test('the real service boots, registers its routes/tools, and drives direct chats + folders end to end', async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'bot-team-service-'));
   const { ctx, routes, tools } = fakeCtx(path.join(home, 'storages'));
@@ -57,7 +96,7 @@ test('the real service boots, registers its routes/tools, and drives direct chat
   );
   try {
     await service.ready;
-    assert.equal(routes.length, 10, 'bootstrap/messages/execution/events/action/health/file/upload/skills/export-pdf routes');
+    assert.equal(routes.length, 11, 'bootstrap/messages/execution/session-history/events/action/health/file/upload/skills/export-pdf routes');
     assert.deepEqual(
       routes.map((route) => route.path).sort(),
       [
@@ -69,6 +108,7 @@ test('the real service boots, registers its routes/tools, and drives direct chat
         '/api/bot-team.health',
         '/api/bot-team.message-execution',
         '/api/bot-team.messages',
+        '/api/bot-team.session-history',
         '/api/bot-team.skills',
         '/api/bot-team.upload',
       ],
@@ -92,9 +132,9 @@ test('the real service boots, registers its routes/tools, and drives direct chat
     assert.equal(boot.folders.length, 0);
     assert.equal(boot.groups.filter((group) => group.kind === 'direct').length, 1);
     assert.equal(boot.plugin.packageName, 'dsh-bot-team');
-    assert.equal(boot.plugin.version, '1.2.0');
+    assert.equal(boot.plugin.version, '1.2.1');
     assert.equal(boot.plugin.author, 'shper');
-    assert.equal(service.healthPayload().pluginVersion, '1.2.0');
+    assert.equal(service.healthPayload().pluginVersion, '1.2.1');
 
     const folder = await service.dispatch('folder.create', { title: '工作' });
     const group = await service.dispatch('group.create', { title: '集成群', folderId: folder.folderId });

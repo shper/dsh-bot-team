@@ -28,7 +28,6 @@
         # PDF export discovers a system CJK TrueType font. Set pdfFontPath to
         # override it with an explicit .ttf/.ttc file.
         pdfFontPath: ''
-        maxTurnsPerHour: 120
         dailyTokenBudget: 5000000
         # smokeResultsDir is intentionally unset: it defaults to <cwd>/.bot-team.
         # Set it per profile only when re-running the smoke checks.

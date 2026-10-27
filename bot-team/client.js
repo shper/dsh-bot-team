@@ -144,6 +144,7 @@ window.__ModuleLoader__.load({
       bootstrap: '/api/bot-team.bootstrap',
       messages: '/api/bot-team.messages',
       execution: '/api/bot-team.message-execution',
+      sessionHistory: '/api/bot-team.session-history',
       events: '/api/bot-team.events',
       action: '/api/bot-team.action',
       file: '/api/bot-team.file',
@@ -342,7 +343,7 @@ window.__ModuleLoader__.load({
     }
 
     const api = {
-      bootstrap: () => request(ROUTES.bootstrap, { method: 'GET' }),
+      bootstrap: (signal) => request(ROUTES.bootstrap, { method: 'GET', signal }),
       messages: (groupId, beforeSeq) =>
         request(
           `${ROUTES.messages}?groupId=${encodeURIComponent(groupId)}&limit=120${
@@ -359,6 +360,17 @@ window.__ModuleLoader__.load({
           if (error.code === 'route-not-found') {
             error.message = uiT('执行过程接口尚未加载。请完全退出并重新启动 DSH，再打开此面板；仅刷新页面无法加载后端更新。');
             error.code = 'execution-api-unavailable';
+          }
+          throw error;
+        }
+      },
+      sessionHistory: async (groupId, sessionId, afterSeq, signal) => {
+        try {
+          return await request(`${ROUTES.sessionHistory}?groupId=${encodeURIComponent(groupId)}&sessionId=${encodeURIComponent(sessionId)}&afterSeq=${afterSeq}&limit=100`, { method: 'GET', signal });
+        } catch (error) {
+          if (error.code === 'route-not-found') {
+            error.message = uiT('完整会话接口尚未加载。请完全退出并重新启动 DSH，再打开此面板。');
+            error.code = 'session-history-api-unavailable';
           }
           throw error;
         }
@@ -464,19 +476,6 @@ window.__ModuleLoader__.load({
         void api.action('ui.report', payload).catch(() => {});
       } catch {
         /* best effort */
-      }
-    }
-
-    /** Open a bot member's own DSH session in the main conversation view. */
-    function openBotSession(sessionId, onError) {
-      try {
-        const workspace = appCtx && appCtx.uiWorkspace;
-        if (!workspace || typeof workspace.openSession !== 'function') {
-          throw new Error('会话视图服务不可用');
-        }
-        workspace.openSession(sessionId);
-      } catch (error) {
-        if (onError) onError(String(error && error.message ? error.message : error));
       }
     }
 
@@ -905,7 +904,10 @@ window.__ModuleLoader__.load({
       "保存": "Save",
       "保存设置": "Save settings",
       "保存中…": "Saving…",
-      "本群 tokens：0": "Group tokens: 0",
+      "本群累计 Token": "Group token usage",
+      "输入": "Input",
+      "输出": "Output",
+      "累计 {count} Token": "{count} tokens in total",
       "编辑": "Edit",
       "编辑 Bot": "Edit Bot",
       "编辑群信息": "Edit group info",
@@ -1292,12 +1294,10 @@ window.__ModuleLoader__.load({
       "成员 ({count})": "Members ({count})",
       "{count} 位成员 · {bots} 个 Bot": "{count} members · {bots} bots",
       "{count} 个运行中": "{count} running",
-      " · 限 {count} 轮/小时": " · Max {count} turns/hour",
       "{count} 人": "{count} member(s)",
       "{count} 个可选": "{count} available",
       "{count} 字": "{count} chars",
       "{count} 轮": "{count} rounds",
-      "本群 tokens：{total}（in {input} / out {output}）": "Group tokens: {total} (in {input} / out {output})",
       "{name} 操作": "{name} actions",
       "{name} 单聊操作": "{name} direct chat actions",
       "{name}（单聊）": "{name} (direct chat)",
@@ -1338,7 +1338,6 @@ window.__ModuleLoader__.load({
       "{name}：": "{name}: ",
       "{count} 位成员": "{count} members",
       " · {count} 个 Bot": " · {count} bots",
-      " · {count} 个运行中": " · {count} running",
       "{error}（点击关闭）": "{error} (click to close)",
       "附件": "Attachment",
       "成员：": "Members:",
@@ -1440,6 +1439,18 @@ window.__ModuleLoader__.load({
       "按时间排序的执行记录": "Execution records in chronological order",
       "刷新记录": "Refresh records",
       "打开完整会话": "Open full session",
+      "完整会话": "Full session",
+      "返回执行过程": "Back to execution details",
+      "返回聊天": "Back to chat",
+      "全部轮次 · 只读历史": "All turns · Read-only history",
+      "关闭完整会话": "Close full session",
+      "{bot} · 全部历史": "{bot} · Full history",
+      "会话历史与所选会话不匹配": "The history does not match the selected session",
+      "正在加载会话历史…": "Loading session history…",
+      "会话历史不可用。": "Session history is unavailable. ",
+      "尚无可显示的会话记录。": "There are no session records to display yet.",
+      "按时间排序的会话记录": "Session records in chronological order",
+      "完整会话接口尚未加载。请完全退出并重新启动 DSH，再打开此面板。": "The full session endpoint is not loaded. Fully quit and restart DSH, then reopen this panel.",
       "查看成员当前会话": "View member's current session"
     })) {
       if (!(key in UI_EN)) UI_EN[key] = value;
@@ -1882,8 +1893,12 @@ window.__ModuleLoader__.load({
           const active = state.activeGroupId;
           if (frame.type === 'message.added' || frame.type === 'message.updated') {
             if (frame.message.groupId !== active) return state;
+            const settledBot = frame.message.author?.type === 'bot' && ['done', 'error', 'stopped'].includes(frame.message.status);
             return {
               ...state,
+              // Group totals cover the entire history, including unloaded pages.
+              // Reload the authoritative aggregate rather than adding SSE samples.
+              refreshTick: state.refreshTick + (settledBot ? 1 : 0),
               messagesByGroup: {
                 ...state.messagesByGroup,
                 [active]: upsertMessage(state.messagesByGroup[active] || [], frame.message),
@@ -2339,6 +2354,13 @@ window.__ModuleLoader__.load({
         marginBottom: 10,
         boxShadow: '0 1px 2px rgba(16,24,40,0.04)',
       },
+      usageHeader: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6 },
+      usageLabel: { margin: 0, fontSize: 11.5, fontWeight: 500, color: 'var(--bt-text-3)' },
+      usageRunning: { display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10.5, color: 'var(--bt-text-2)', whiteSpace: 'nowrap' },
+      usageTotal: { margin: '5px 0 9px', fontSize: 24, fontWeight: 600, lineHeight: 1.25, letterSpacing: '-0.03em', fontVariantNumeric: 'tabular-nums', color: 'var(--bt-text-strong)', overflowWrap: 'anywhere' },
+      usageBreakdown: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 12, margin: 0, paddingTop: 9, borderTop: '1px solid var(--bt-border)' },
+      usageMetric: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', flexWrap: 'wrap', gap: '2px 6px', minWidth: 0 },
+      usageValue: { margin: 0, fontSize: 12, fontWeight: 500, fontVariantNumeric: 'tabular-nums', color: 'var(--bt-text-2)', overflowWrap: 'anywhere' },
       avatarRow: { display: 'flex', alignItems: 'flex-start', gap: 14, marginBottom: 14 },
       avatarPreview: {
         width: 60,
@@ -2717,6 +2739,21 @@ window.__ModuleLoader__.load({
         borderBottom: '1px solid var(--bt-danger-border)',
       },
     });
+
+    // Native selects keep keyboard/picker behavior, with consistent arrow spacing.
+    S.select = {
+      ...S.input,
+      appearance: 'none',
+      WebkitAppearance: 'none',
+      minWidth: 0,
+      paddingRight: 40,
+      backgroundImage: 'var(--bt-select-arrow)',
+      backgroundRepeat: 'no-repeat',
+      backgroundPosition: 'right 12px center',
+      backgroundSize: '16px 16px',
+      textOverflow: 'ellipsis',
+      cursor: 'pointer',
+    };
 
     // ── v0.6 group-chat feed ──────────────────────────────────────────────
     Object.assign(S, {
@@ -3784,9 +3821,6 @@ body[data-ds-dark-theme] .bt-root { --bt-home-sidebar:#15171c; --bt-home-bg:#101
 .bt-page { position:relative; min-width:0; container:bot-team / inline-size; }
 .bt-main-panel { container:bot-main / inline-size; }
 .bt-sidebar { flex-shrink:0; }
-.bt-brand { display:flex; align-items:center; gap:11px; color:var(--bt-text-strong); font-size:17px; font-weight:650; letter-spacing:-.3px; }
-.bt-brand-mark { width:32px; height:32px; flex-shrink:0; display:grid; place-items:center; border-radius:10px; background:var(--bt-home-button); color:var(--bt-home-button-text); }
-.bt-brand-mark .bt-welcome-icon { width:23px; height:23px; }
 .bt-welcome-icon { display:block; flex-shrink:0; pointer-events:none; }
 .bt-welcome-nav { display:flex; align-items:center; gap:11px; flex-shrink:0; margin:0 16px 8px; padding:12px 13px; border:1px solid transparent; border-radius:9px; background:transparent; color:var(--bt-text-2); font:inherit; font-size:13px; font-weight:550; text-align:left; cursor:pointer; }
 .bt-welcome-nav[data-active=true] { color:var(--bt-home-blue); border-color:var(--bt-accent-border); background:var(--bt-accent-soft); }
@@ -3926,6 +3960,7 @@ ${WELCOME_CSS}
   --bt-text-strong: #111827;
   --bt-text-2: #4b5563;
   --bt-text-3: #8a919c;
+  --bt-select-arrow: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2216%22%20height%3D%2216%22%20viewBox%3D%220%200%2016%2016%22%3E%3Cpath%20d%3D%22m4%206%204%204%204-4%22%20fill%3D%22none%22%20stroke%3D%22%234b5563%22%20stroke-width%3D%221.5%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%2F%3E%3C%2Fsvg%3E");
   --bt-border: #ebedf1;
   --bt-border-strong: #e1e5eb;
   --bt-accent: #3370ff;
@@ -3956,6 +3991,7 @@ body[data-ds-dark-theme] .bt-root {
   --bt-text-strong: #f4f6fa;
   --bt-text-2: #b6bdc9;
   --bt-text-3: #8b93a2;
+  --bt-select-arrow: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2216%22%20height%3D%2216%22%20viewBox%3D%220%200%2016%2016%22%3E%3Cpath%20d%3D%22m4%206%204%204%204-4%22%20fill%3D%22none%22%20stroke%3D%22%23b6bdc9%22%20stroke-width%3D%221.5%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%2F%3E%3C%2Fsvg%3E");
   --bt-border: #262c36;
   --bt-border-strong: #343c49;
   --bt-accent: #7aa7ff;
@@ -3991,6 +4027,14 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb { background: rgba(2
 body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.28); border: 3px solid transparent; background-clip: content-box; }
 
 /* Execution drawer overlays this page without unmounting its conversation. */
+.bt-session-page { height: 100%; min-height: 0; min-width: 0; width: 100%; display: flex; flex-direction: column; color: var(--bt-text); background: var(--bt-surface); }
+.bt-session-header { flex: none; display: flex; align-items: center; flex-wrap: wrap; gap: 14px; padding: 20px 28px; border-bottom: 1px solid var(--bt-border); }
+.bt-session-heading { flex: 1; min-width: 160px; }
+.bt-session-heading h1 { margin: 0 0 6px; font-size: 22px; color: var(--bt-text-strong); }
+.bt-session-source { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 12px; color: var(--bt-text-2); overflow-wrap: anywhere; }
+.bt-session-body { flex: 1; min-height: 0; overflow: auto; padding: 28px; }
+.bt-session-content { max-width: 1080px; margin: 0 auto; font-size: 13px; line-height: 1.7; }
+@media (max-width: 700px) { .bt-session-header, .bt-session-body { padding: 16px; } .bt-session-heading h1 { font-size: 19px; } }
 .bt-execution-layer { position: absolute; inset: 0; z-index: 70; display: flex; justify-content: flex-end; background: rgba(16,24,40,.24); }
 .bt-execution-drawer { width: min(580px, 100%); height: 100%; min-width: 0; display: flex; flex-direction: column; background: var(--bt-surface); color: var(--bt-text); border-left: 1px solid var(--bt-border); box-shadow: -8px 0 28px rgba(0,0,0,.16); }
 .bt-execution-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 18px 20px; border-bottom: 1px solid var(--bt-border); font-size: 12px; line-height: 1.6; }
@@ -4253,19 +4297,68 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
 `;
 
     // ── helpers ───────────────────────────────────────────────────────────
-    function useBootstrap(dispatch) {
-      const load = React.useCallback(async () => {
+    function createBootstrapController({ load = api.bootstrap, onData, onError }) {
+      let disposed = false;
+      let revision = 0;
+      let timer = null;
+      let inFlight = null;
+      const schedule = () => {
+        if (disposed || inFlight || timer !== null) return;
+        // Coalesce parallel bot completions and reconnect invalidations.
+        timer = setTimeout(() => { timer = null; void run(); }, 100);
+      };
+      const run = async () => {
+        const requestedRevision = revision;
+        const request = new AbortController();
+        inFlight = request;
         try {
-          const data = await api.bootstrap();
-          dispatch({ type: 'bootstrap', data });
+          const data = await load(request.signal);
+          if (!disposed && requestedRevision === revision) onData(data);
         } catch (error) {
-          dispatch({ type: 'error', message: String(error && error.message ? error.message : error) });
+          if (!disposed && requestedRevision === revision) onError(error);
+        } finally {
+          inFlight = null;
+          // A completion during the GET invalidates its snapshot. Only the next
+          // request may publish, so an older response cannot restore stale totals.
+          if (!disposed && requestedRevision !== revision) schedule();
         }
-      }, [dispatch]);
+      };
+      return {
+        refresh(immediate = false) {
+          if (disposed) return;
+          revision += 1;
+          if (inFlight) return;
+          if (immediate) {
+            if (timer !== null) clearTimeout(timer);
+            timer = null;
+            void run();
+          } else schedule();
+        },
+        dispose() {
+          disposed = true;
+          if (timer !== null) clearTimeout(timer);
+          timer = null;
+          inFlight?.abort();
+        },
+      };
+    }
+
+    function useBootstrap(dispatch) {
+      const controller = React.useRef(null);
+      const refresh = React.useCallback(() => controller.current?.refresh(), []);
       React.useEffect(() => {
-        void load();
-      }, [load]);
-      return load;
+        const current = createBootstrapController({
+          onData: data => dispatch({ type: 'bootstrap', data }),
+          onError: error => dispatch({ type: 'error', message: String(error && error.message ? error.message : error) }),
+        });
+        controller.current = current;
+        current.refresh(true);
+        return () => {
+          current.dispose();
+          if (controller.current === current) controller.current = null;
+        };
+      }, [dispatch]);
+      return refresh;
     }
 
     function useSse(groupId, dispatch, onExecutionUpdate) {
@@ -4283,6 +4376,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               uiReport({ kind: 'sse-hello', groupId, seq: frame.seq, running: frame.running });
               // Resync after a reconnect: SSE only guarantees frames after connect.
               dispatch({ type: 'messagesTick' });
+              dispatch({ type: 'refreshTick' });
             }
             if ((type === 'hello' || type === 'execution.updated') && executionListener.current) {
               executionListener.current({ ...frame, groupId });
@@ -4333,8 +4427,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       return [...bySeq.values()].sort((a, b) => a.seq - b.seq);
     }
 
-    function emptyExecutionState(groupId, messageId) {
-      return { groupId, messageId, events: [], nextSeq: -1, hasMore: false, availability: null, execution: null, status: null, error: null, loading: true, loadError: '' };
+    function emptyExecutionState(groupId, messageId, sessionId) {
+      return { groupId, messageId, ...(sessionId ? { sessionId, scope: 'session' } : {}), events: [], nextSeq: -1, hasMore: false, availability: null, execution: null, status: null, error: null, loading: true, loadError: '' };
     }
 
     function mergeExecutionPage(current, page) {
@@ -4443,10 +4537,10 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       return roots.sort((a, b) => a.seq - b.seq);
     }
 
-    /** One disposable loader per selected message; invalidations during I/O queue
-     * another pass, and all pages are drained before waiting for the next SSE. */
-    function createExecutionController({ groupId, messageId, onChange, fetchPage = api.execution }) {
-      let state = emptyExecutionState(groupId, messageId);
+    /** One disposable loader per message or full session; invalidations during I/O
+     * queue another pass, and all pages drain before waiting for the next SSE. */
+    function createExecutionController({ groupId, messageId, sessionId, onChange, fetchPage = sessionId ? api.sessionHistory : api.execution }) {
+      let state = emptyExecutionState(groupId, messageId, sessionId);
       let disposed = false;
       let dirty = false;
       let pending = null;
@@ -4466,9 +4560,11 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               dirty = false;
               const afterSeq = state.nextSeq;
               requestController = new AbortController();
-              const page = await fetchPage(groupId, messageId, afterSeq, requestController.signal);
+              const page = await fetchPage(groupId, sessionId || messageId, afterSeq, requestController.signal);
               if (disposed) return;
-              if (page.groupId !== groupId || page.messageId !== messageId) throw new Error(uiT('执行记录与所选消息不匹配'));
+              if (page.groupId !== groupId || (sessionId ? page.sessionId !== sessionId : page.messageId !== messageId)) {
+                throw new Error(uiT(sessionId ? '会话历史与所选会话不匹配' : '执行记录与所选消息不匹配'));
+              }
               const next = mergeExecutionPage(state, page);
               if (next.hasMore && next.nextSeq <= afterSeq) throw new Error(uiT('执行记录分页未前进，请重试'));
               publish(next);
@@ -4490,7 +4586,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         refresh,
         getState: () => state,
         notify(frame) {
-          if (disposed || frame.groupId !== groupId || (frame.type !== 'hello' && frame.messageId !== messageId)) return;
+          if (disposed || frame.groupId !== groupId) return;
+          if (frame.type !== 'hello' && (sessionId ? (frame.sessionId || frame.execution?.sessionId) !== sessionId : frame.messageId !== messageId)) return;
           if (frame.type !== 'hello' && Number.isSafeInteger(frame.seq)) {
             if (frame.seq <= lastNotice && !(!state.execution && frame.execution)) return;
             lastNotice = Math.max(lastNotice, frame.seq);
@@ -4503,18 +4600,20 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
 
     function useMessageExecution(target) {
       const groupId = target?.groupId;
-      const messageId = target?.message.messageId;
-      const [state, setState] = React.useState(() => emptyExecutionState(groupId, messageId));
+      const messageId = target?.message?.messageId;
+      const sessionId = target?.mode === 'session' ? target.sessionId : undefined;
+      const [state, setState] = React.useState(() => emptyExecutionState(groupId, messageId, sessionId));
       const controller = React.useRef(null);
       React.useEffect(() => {
-        if (!groupId || !messageId) return undefined;
-        const current = createExecutionController({ groupId, messageId, onChange: setState });
+        if (!groupId || !(messageId || sessionId)) return undefined;
+        const current = createExecutionController({ groupId, messageId, sessionId, onChange: setState });
         controller.current = current;
         void current.refresh();
         return () => { current.dispose(); if (controller.current === current) controller.current = null; };
-      }, [groupId, messageId]);
+      }, [groupId, messageId, sessionId]);
       // A selection change renders before its effect runs. Never show A's records in B.
-      return { state: state.groupId === groupId && state.messageId === messageId ? state : emptyExecutionState(groupId, messageId), controller };
+      const selected = state.groupId === groupId && (sessionId ? state.scope === 'session' && state.sessionId === sessionId : state.scope !== 'session' && state.messageId === messageId);
+      return { state: selected ? state : emptyExecutionState(groupId, messageId, sessionId), controller };
     }
 
     function ExecutionPayload({ label, value }) {
@@ -4566,7 +4665,46 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       return '请稍后刷新记录重试。';
     }
 
-    function ExecutionDrawer({ target, state, onClose, onRefresh, onOpenSession = openBotSession }) {
+    function renderExecutionRecords({ state, history = false, onRefresh }) {
+      const records = projectExecutionEvents(state.events);
+      const available = state.availability === 'available';
+      const reason = state.reason ? executionReasonText(state.reason) : '';
+      return h(React.Fragment, null,
+        state.loadError ? h('div', { role: 'alert', className: 'bt-execution-failed' }, '加载失败：', withRaw(() => h('span', null, state.loadError)), h('button', { type: 'button', style: S.ghostBtn, disabled: state.loading, onClick: onRefresh }, '重试')) : null,
+        state.loading ? h('p', { role: 'status' }, state.events.length ? '正在加载后续记录…' : history ? '正在加载会话历史…' : '正在加载执行过程…') : null,
+        state.availability === 'preparing' ? h('p', { role: 'status' }, '执行记录正在准备，稍后会自动更新。') : null,
+        state.availability === 'legacy-unlinked' ? h('p', { role: 'status' }, '这条历史消息没有关联执行记录，无法定位当时的执行过程。') : null,
+        state.availability === 'unavailable' ? h('p', { role: 'status' }, history ? '会话历史不可用。' : '执行记录不可用。', reason) : null,
+        available && reason ? h('p', { role: 'status' }, reason) : null,
+        state.error ? withRaw(() => h('div', { role: 'alert', className: 'bt-execution-failed' }, executionPayload(state.error))) : null,
+        available && !records.length && !state.loading ? h('p', { role: 'status' }, history ? '尚无可显示的会话记录。' : '尚无可显示的执行记录。') : null,
+        records.length ? h('ol', { className: 'bt-execution-events', 'aria-label': history ? '按时间排序的会话记录' : '按时间排序的执行记录' }, records.map(node => h(ExecutionEvent, { key: node.key, node }))) : null,
+      );
+    }
+
+    /** A separate page with an explicit return path, never a mode of the drawer. */
+    function SessionHistoryPage({ target, state, onBack, onRefresh, returnToExecution = false }) {
+      const backRef = React.useRef(null);
+      React.useEffect(() => { backRef.current?.focus({ preventScroll: true }); }, [target.groupId, target.sessionId]);
+      return h('section', { className: 'bt-root bt-session-page', role: 'region', 'aria-labelledby': 'bt-session-title', 'data-view': 'full-session' },
+        h('header', { className: 'bt-session-header' },
+          h('button', { ref: backRef, type: 'button', style: S.ghostBtn, onClick: onBack }, h('span', { 'aria-hidden': true }, '← '), returnToExecution ? '返回执行过程' : '返回聊天'),
+          h('div', { className: 'bt-session-heading' },
+            h('h1', { id: 'bt-session-title' }, '完整会话'),
+            h('div', { className: 'bt-session-source' },
+              withRaw(() => h('span', null, [target.groupTitle, target.botName || 'Bot'].filter(Boolean).join(' / '))),
+              h('span', null, '全部轮次 · 只读历史'),
+            ),
+          ),
+          h('button', { type: 'button', style: S.ghostBtn, disabled: state.loading, onClick: onRefresh }, '刷新记录'),
+        ),
+        h('div', { className: 'bt-session-body', 'aria-busy': state.loading },
+          h('div', { className: 'bt-session-content' }, renderExecutionRecords({ state, history: true, onRefresh })),
+        ),
+      );
+    }
+
+    function ExecutionDrawer({ target, state, onClose, onRefresh, onOpenSession }) {
       const dialogRef = React.useRef(null);
       const [sessionError, setSessionError] = React.useState('');
       React.useEffect(() => {
@@ -4581,14 +4719,11 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           if (release) release();
           if (target.returnFocus?.isConnected) target.returnFocus.focus({ preventScroll: true });
         };
-      }, [target.groupId, target.message.messageId, onClose]);
-      const status = state.status || target.message.status;
+      }, [target.groupId, target.message?.messageId, target.sessionId, onClose]);
+      const status = state.status || target.message?.status;
       const statusLabel = { pending: '等待执行', streaming: '执行中', running: '执行中', done: '已完成', error: '失败', stopped: '已停止' }[status] || status || '状态未知';
       const sessionId = state.execution?.sessionId || state.sessionId;
       const legacy = state.availability === 'legacy-unlinked';
-      const available = state.availability === 'available';
-      const records = projectExecutionEvents(state.events);
-      const reason = state.reason ? executionReasonText(state.reason) : '';
       return h('div', { className: 'bt-root bt-execution-layer', onMouseDown: event => { if (event.target === event.currentTarget) onClose(); } },
         h('aside', { ref: dialogRef, className: 'bt-execution-drawer', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'bt-execution-title', tabIndex: -1 },
           h('header', { className: 'bt-execution-header' },
@@ -4600,20 +4735,12 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             h('button', { type: 'button', style: S.ghostBtn, onClick: onClose, 'aria-label': '关闭执行过程' }, '×'),
           ),
           h('div', { className: 'bt-execution-body', 'aria-busy': state.loading },
-            state.loadError ? h('div', { role: 'alert', className: 'bt-execution-failed' }, '加载失败：', withRaw(() => h('span', null, state.loadError)), h('button', { type: 'button', style: S.ghostBtn, disabled: state.loading, onClick: onRefresh }, '重试')) : null,
-            state.loading ? h('p', { role: 'status' }, state.events.length ? '正在加载后续记录…' : '正在加载执行过程…') : null,
-            state.availability === 'preparing' ? h('p', { role: 'status' }, '执行记录正在准备，稍后会自动更新。') : null,
-            legacy ? h('p', { role: 'status' }, '这条历史消息没有关联执行记录，无法定位当时的执行过程。') : null,
-            state.availability === 'unavailable' ? h('p', { role: 'status' }, '执行记录不可用。', reason) : null,
-            available && reason ? h('p', { role: 'status' }, reason) : null,
-            state.error ? withRaw(() => h('div', { role: 'alert', className: 'bt-execution-failed' }, executionPayload(state.error))) : null,
-            available && !records.length && !state.loading ? h('p', { role: 'status' }, '尚无可显示的执行记录。') : null,
-            records.length ? h('ol', { className: 'bt-execution-events', 'aria-label': '按时间排序的执行记录' }, records.map(node => h(ExecutionEvent, { key: node.key, node }))) : null,
+            renderExecutionRecords({ state, onRefresh }),
           ),
           h('footer', { className: 'bt-execution-footer' },
             h('button', { type: 'button', style: S.ghostBtn, onClick: onRefresh, disabled: state.loading }, '刷新记录'),
-            sessionId && !legacy ? h('button', { type: 'button', style: S.ghostBtn, onClick: () => onOpenSession(sessionId, setSessionError) }, '打开完整会话') : null,
-            legacy && state.fallbackSessionId ? h('button', { type: 'button', style: S.ghostBtn, onClick: () => onOpenSession(state.fallbackSessionId, setSessionError) }, '查看成员当前会话') : null,
+            sessionId && !legacy && onOpenSession ? h('button', { type: 'button', style: S.ghostBtn, onClick: () => onOpenSession(sessionId, setSessionError) }, '打开完整会话') : null,
+            legacy && state.fallbackSessionId && onOpenSession ? h('button', { type: 'button', style: S.ghostBtn, onClick: () => onOpenSession(state.fallbackSessionId, setSessionError) }, '查看成员当前会话') : null,
             sessionError ? h('span', { role: 'alert', className: 'bt-execution-failed' }, sessionError) : null,
           ),
         ),
@@ -5331,7 +5458,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       );
 
       const info = pluginInfo && typeof pluginInfo === 'object' ? pluginInfo : {};
-      const version = typeof info.version === 'string' && info.version ? info.version : '1.2.0';
+      const version = typeof info.version === 'string' && info.version ? info.version : '1.2.1';
       const packageName = typeof info.packageName === 'string' && info.packageName ? info.packageName : 'dsh-bot-team';
       const author = typeof info.author === 'string' && info.author ? info.author : 'shper';
       const metaRows = [
@@ -5656,6 +5783,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       mobileNavigation,
     }) {
       const collapsed = state.sidebarCollapsed === true;
+      const showWelcome = shouldShowWelcome(state);
       const sections = state.sectionsCollapsed || {};
       const model = buildSidebarModel(state);
       const schemaVersion = Number(state.config && state.config.schemaVersion);
@@ -6278,7 +6406,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
 
       const directSection = h(
         'div',
-        { className: 'bt-sidebar-section', style: S.section, 'data-section': SECTION_DIRECT },
+        { className: 'bt-sidebar-section', style: showWelcome ? S.section : { ...S.section, marginTop: 0 }, 'data-section': SECTION_DIRECT },
         sectionHeader(SECTION_DIRECT, '单聊', model.direct.length, [
           sectionAction('新建 Bot', 'plus', () => onCreateBot && onCreateBot()),
         ]),
@@ -6423,11 +6551,13 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         ),
       );
       const header = collapsed
-        ? h('div', { style: S.railHeader }, toggleButton, newGroupButton)
+        ? h('div', { style: S.railHeader }, toggleButton, showWelcome ? null : newGroupButton)
         : h(
             'div',
-            { style: S.leftHeader, className: 'bt-sidebar-brand' },
-            h('span', { className: 'bt-brand' }, h('span', { className: 'bt-brand-mark' }, h(WelcomeIcon, { name: 'bot' })), h('span', null, 'Bot Team')),
+            {
+              style: { ...S.leftHeader, padding: '12px 24px 0', justifyContent: 'flex-end' },
+              className: 'bt-sidebar-header',
+            },
             // Creation lives on the section headers now (单聊 + / 群聊 +); the
             // old duplicate "+ 新建" here made the two entry points ambiguous.
             h('div', { style: S.leftHeaderActions }, toggleButton),
@@ -6449,14 +6579,14 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           style: S.sidebar(collapsed),
         },
         header,
-        shouldShowWelcome(state) ? h('button', {
+        showWelcome ? h('button', {
           type: 'button', className: 'bt-welcome-nav', 'data-action': 'show-welcome',
           'data-active': !state.activeGroupId ? 'true' : 'false',
           'aria-current': !state.activeGroupId ? 'page' : undefined,
           'aria-label': '开始使用', title: '开始使用',
           onClick: () => { dispatch({ type: 'showWelcome' }); onShowWelcome?.(); },
         }, h(WelcomeIcon, { name: 'spark' }), collapsed ? null : h('span', null, '开始使用'), collapsed ? null : h(WelcomeIcon, { name: 'chevron', className: 'bt-welcome-nav-arrow' })) : null,
-        list,
+        showWelcome ? null : list,
         h(
           'div',
           {
@@ -7825,6 +7955,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       onExportHtml,
       onExportPdf,
       onOpenSettings,
+      active = true,
     }) {
       const isDirect = !!(group && group.kind === 'direct');
       const textareaRef = React.useRef(null);
@@ -7840,6 +7971,9 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       const [sending, setSending] = React.useState(false);
       const [draftAttachments, setDraftAttachments] = React.useState([]);
       const [addMenuOpen, setAddMenuOpen] = React.useState(false);
+      React.useEffect(() => {
+        if (!active) { setAddMenuOpen(false); setPicker(null); }
+      }, [active]);
       const [skillCatalog, setSkillCatalog] = React.useState([]);
       const [skillLoading, setSkillLoading] = React.useState(false);
       const [skillError, setSkillError] = React.useState(null);
@@ -8010,7 +8144,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       };
 
       React.useEffect(() => {
-        if (!addMenuOpen) return undefined;
+        if (!active || !addMenuOpen) return undefined;
         const node = addMenuRef.current;
         const first = node && typeof node.querySelector === 'function'
           ? node.querySelector('[role="menuitem"]:not([disabled])')
@@ -8022,7 +8156,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         };
         document.addEventListener('keydown', onEscape);
         return () => document.removeEventListener('keydown', onEscape);
-      }, [addMenuOpen]);
+      }, [addMenuOpen, active]);
 
       const ensureSkills = (force) => {
         const groupId = group && group.groupId;
@@ -8951,6 +9085,11 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
 
     function renderMembersPanel({ state, members, bots, dispatch, onAdd, onCollapse, onEdit, onViewSession, discussion, usage, onStopDiscussion }) {
       const runningMembers = members.filter((member) => state.statusByMember[member.membershipId] === 'running');
+      const inputTokens = usage?.inputTokens ?? 0;
+      const outputTokens = usage?.outputTokens ?? 0;
+      const totalTokens = usage?.totalTokens ?? (inputTokens + outputTokens);
+      const exactTokens = (value) => Number(value).toLocaleString(isEnglishUi() ? 'en-US' : 'zh-CN');
+      const displayTokens = (value) => value >= 1000000 ? formatTokens(value) : exactTokens(value);
       return h(
         'div',
         { id: 'bt-right-panel', className: 'bt-right-panel', style: S.right },
@@ -8981,18 +9120,30 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           'div',
           { style: S.memberList },
           h(
-            'div',
-            { style: { ...S.memberCard, fontSize: 11, color: 'var(--dsw-alias-label-tertiary, #8a8f98)' } },
-            (usage
-              ? uiT('本群 tokens：{total}（in {input} / out {output}）', {
-                  total: usage.totalTokens ?? 0,
-                  input: usage.inputTokens ?? 0,
-                  output: usage.outputTokens ?? 0,
-                })
-              : uiT('本群 tokens：0')) +
-              (state.config.schemaVersion ? ` · schema v${state.config.schemaVersion}` : '') +
-              (state.config.maxTurnsPerHour ? uiT(' · 限 {count} 轮/小时', { count: state.config.maxTurnsPerHour }) : ''),
-            runningMembers.length > 0 ? uiT(' · {count} 个运行中', { count: runningMembers.length }) : '',
+            'section',
+            { className: 'bt-group-usage', style: S.memberCard, 'aria-label': '本群累计 Token' },
+            h(
+              'div',
+              { style: S.usageHeader },
+              h('h3', { style: S.usageLabel }, '本群累计 Token'),
+              runningMembers.length > 0
+                ? h('span', { style: S.usageRunning, role: 'status' },
+                    h('span', { 'aria-hidden': true, style: { width: 5, height: 5, borderRadius: '50%', background: '#22c55e' } }),
+                    uiT('{count} 个运行中', { count: runningMembers.length }),
+                  )
+                : null,
+            ),
+            h('div', { style: S.usageTotal, title: exactTokens(totalTokens), 'aria-label': uiT('累计 {count} Token', { count: exactTokens(totalTokens) }) }, displayTokens(totalTokens)),
+            h(
+              'dl',
+              { style: S.usageBreakdown },
+              ...[['输入', inputTokens], ['输出', outputTokens]].map(([label, value]) => h(
+                'div',
+                { key: label, style: S.usageMetric },
+                h('dt', { style: S.usageLabel }, label),
+                h('dd', { style: S.usageValue, title: exactTokens(value), 'aria-label': exactTokens(value) }, displayTokens(value)),
+              )),
+            ),
           ),
           discussion
             ? h(
@@ -9168,7 +9319,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           { label: '分组', hint: (folders || []).length ? '分组在左侧「群聊」中可展开/收起，也可以直接拖动群调整位置。' : '还没有分组。可在左侧「群聊」标题右侧点文件夹图标新建。' },
           h(
             'select',
-            { style: S.input, value: folder, onChange: (event) => setFolder(event.target.value) },
+            { style: S.select, value: folder, onChange: (event) => setFolder(event.target.value) },
             h('option', { value: '' }, '不分组'),
             (folders || []).map((entry) => h('option', { key: entry.folderId, value: entry.folderId }, entry.title)),
           ),
@@ -9689,7 +9840,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             { label: 'Provider', style: { marginBottom: 0 } },
             h(
               'select',
-              { style: S.input, value: provider, onChange: (event) => onProviderChange(event.target.value) },
+              { style: S.select, value: provider, onChange: (event) => onProviderChange(event.target.value) },
               groups.map((group) => h('option', { key: group.id, value: group.id }, group.name || group.id)),
             ),
           ),
@@ -9698,7 +9849,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             { label: 'Model', style: { marginBottom: 0 } },
             h(
               'select',
-              { style: S.input, value: model, onChange: (event) => setModel(event.target.value) },
+              { style: S.select, value: model, onChange: (event) => setModel(event.target.value) },
               (providerGroup ? providerGroup.models : []).map((entry) => h('option', { key: entry.id, value: entry.id }, entry.name || entry.id)),
             ),
           ),
@@ -9711,7 +9862,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             { label: 'Reasoning effort', style: { marginBottom: 0 } },
             h(
               'select',
-              { style: S.input, value: reasoningEffort, onChange: (event) => setReasoningEffort(event.target.value) },
+              { style: S.select, value: reasoningEffort, onChange: (event) => setReasoningEffort(event.target.value) },
               h('option', { value: '' }, '默认'),
               efforts.map((effort) => h('option', { key: effort.id, value: effort.id }, effort.name || effort.id)),
             ),
@@ -9873,7 +10024,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               { label: '选择 Bot' },
               h(
                 'select',
-                { style: S.input, value: botId, onChange: (event) => setBotId(event.target.value) },
+                { style: S.select, value: botId, onChange: (event) => setBotId(event.target.value) },
                 available.map((bot) => h('option', { key: bot.botId, value: bot.botId }, `${bot.name}（${bot.model}）`)),
               ),
             ),
@@ -9934,7 +10085,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           { label: '评审者' },
           h(
             'select',
-            { style: S.input, value: reviewerMembershipId, onChange: (event) => setReviewerMembershipId(event.target.value) },
+            { style: S.select, value: reviewerMembershipId, onChange: (event) => setReviewerMembershipId(event.target.value) },
             candidates.map((entry) => h('option', { key: entry.member.membershipId, value: entry.member.membershipId }, entry.bot.name)),
           ),
         ),
@@ -10040,7 +10191,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             { label: '轮数' },
             h(
               'select',
-              { style: S.input, value: rounds, onChange: (event) => setRounds(Number(event.target.value)) },
+              { style: S.select, value: rounds, onChange: (event) => setRounds(Number(event.target.value)) },
               [1, 2, 3, 4, 5].map((value) => h('option', { key: value, value }, pluralUi('1 轮', '{count} 轮', value))),
             ),
           ),
@@ -10148,10 +10299,40 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       }, [state.sectionsCollapsed]);
 
       const [executionTarget, setExecutionTarget] = React.useState(null);
+      const [sessionTarget, setSessionTarget] = React.useState(null);
       const activeExecutionTarget = executionTarget?.groupId === state.activeGroupId ? executionTarget : null;
-      const execution = useMessageExecution(activeExecutionTarget);
+      const execution = useMessageExecution(sessionTarget ? null : activeExecutionTarget);
+      const sessionHistory = useMessageExecution(sessionTarget);
+      const historyReturnFocus = React.useRef(null);
+      const returnFromSession = React.useCallback(() => setSessionTarget(null), []);
+      React.useEffect(() => {
+        if (sessionTarget || !historyReturnFocus.current) return;
+        if (!activeExecutionTarget && historyReturnFocus.current.isConnected) historyReturnFocus.current.focus({ preventScroll: true });
+        historyReturnFocus.current = null;
+      }, [sessionTarget, activeExecutionTarget]);
       const closeExecution = React.useCallback(() => setExecutionTarget(null), []);
-      useSse(state.activeGroupId, dispatch, frame => { if (activeExecutionTarget) execution.controller.current?.notify(frame); });
+      // Bot Team manages its own agents, whose durable records may have no DSH
+      // parent address. Read their history without activating a native session.
+      const openBotSession = (sessionId, onError, groupId = state.activeGroupId) => {
+        if (!sessionId || !groupId) {
+          onError?.(uiT('这条消息尚未记录对应会话。'));
+          return;
+        }
+        const member = state.members.find(item => item.groupId === groupId && item.sessionId === sessionId);
+        historyReturnFocus.current = typeof document !== 'undefined' ? document.activeElement : null;
+        setHeaderMenuOpen(false);
+        setMessageMenu(null);
+        setMobileSidebarOpen(false);
+        setSessionTarget({
+          mode: 'session', groupId, sessionId,
+          groupTitle: state.groups.find(group => group.groupId === groupId)?.title || '',
+          botName: (activeExecutionTarget?.groupId === groupId ? activeExecutionTarget.message?.author?.name : null) || (member ? nameOfBot(state.bots, member.botId) : 'Bot'),
+        });
+      };
+      useSse(sessionTarget?.groupId || state.activeGroupId, dispatch, frame => {
+        if (sessionTarget) sessionHistory.controller.current?.notify(frame);
+        else if (activeExecutionTarget) execution.controller.current?.notify(frame);
+      });
 
       const reportedRef = React.useRef(false);
       React.useEffect(() => {
@@ -10247,7 +10428,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       React.useEffect(() => {
         setReplyTarget(null);
         setMessageMenu(null);
-        setExecutionTarget(null);
+        setExecutionTarget(current => current?.groupId === state.activeGroupId ? current : null);
         setHeaderMenuOpen(false);
         setShowJump(false);
         setNewCount(0);
@@ -10618,9 +10799,9 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
 
       const dialog = state.dialog;
 
-      return h(
+      const chat = h(
         'div',
-        { style: { position: 'relative', height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column' } },
+        { className: 'bt-chat-view', hidden: !!sessionTarget, 'data-view': 'chat', style: { position: 'relative', height: '100%', minHeight: 0, display: sessionTarget ? 'none' : 'flex', flexDirection: 'column' } },
         state.flash ? h('div', { style: S.flash }, state.flash) : null,
         state.error
           ? h(
@@ -10647,7 +10828,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             onEditGroup: openGroupEdit,
             onDeleteGroup: deleteGroup,
             onEditBot: openBotEdit,
-            onViewSession: (member) => openBotSession(member.sessionId, (message) => dispatch({ type: 'error', message })),
+            onViewSession: (member) => openBotSession(member.sessionId, (message) => dispatch({ type: 'error', message }), member.groupId),
             onCreateGroupInFolder: openGroupCreate,
             onRenameFolder: openFolderEdit,
             onDeleteFolder: deleteFolder,
@@ -10902,6 +11083,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                       : null,
                   ),
                   h(Composer, {
+                    active: !sessionTarget,
                     state,
                     dispatch,
                     group: activeGroup,
@@ -10966,7 +11148,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                   usage: activeGroup.usage || null,
                   onEdit: openBotEdit,
                   onCollapse: () => dispatch({ type: 'toggleRightPanel' }),
-                  onViewSession: (member) => openBotSession(member.sessionId, (message) => dispatch({ type: 'error', message })),
+                  onViewSession: (member) => openBotSession(member.sessionId, (message) => dispatch({ type: 'error', message }), member.groupId),
                 })
               : h(MembersPanel, {
                   state,
@@ -10979,7 +11161,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                   onAdd: openMemberAdd,
                   onCollapse: () => dispatch({ type: 'toggleRightPanel' }),
                   onEdit: openBotEdit,
-                  onViewSession: (member) => openBotSession(member.sessionId, (message) => dispatch({ type: 'error', message })),
+                  onViewSession: (member) => openBotSession(member.sessionId, (message) => dispatch({ type: 'error', message }), member.groupId),
                   onStopDiscussion: stopDiscussion,
                 })
             : null,
@@ -11001,13 +11183,14 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               })
             : null,
         ),
-        executionTarget && executionTarget.groupId === state.activeGroupId
+        !sessionTarget && activeExecutionTarget
           ? h(ExecutionDrawer, {
               key: executionTarget.groupId + ':' + executionTarget.message.messageId,
               target: executionTarget,
               state: execution.state,
               onClose: closeExecution,
               onRefresh: () => execution.controller.current?.refresh(),
+              onOpenSession: openBotSession,
             })
           : null,
         dialog && dialog.kind === 'getting-started'
@@ -11076,6 +11259,17 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             })
           : null,
         state.loading ? h('div', { className: 'bt-root', style: { ...S.overlay, background: 'var(--bt-loading)' } }, h('div', { style: { fontSize: 13, color: 'var(--bt-text-2)' } }, '加载 Bot Team…')) : null,
+      );
+      // Keep the chat mounted so returning restores its draft, scroll and source
+      // message. The execution drawer unmounts while this distinct page is open.
+      return h('div', { className: 'bt-page-host', style: { height: '100%', minHeight: 0, minWidth: 0 } },
+        chat,
+        sessionTarget ? h(SessionHistoryPage, {
+          key: sessionTarget.groupId + ':' + sessionTarget.sessionId,
+          target: sessionTarget, state: sessionHistory.state, onBack: returnFromSession,
+          onRefresh: () => sessionHistory.controller.current?.refresh(),
+          returnToExecution: !!activeExecutionTarget,
+        }) : null,
       );
     }
 

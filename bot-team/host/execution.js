@@ -1,4 +1,4 @@
-/** Read one Bot message's immutable execution reference through session-query. */
+/** Read Bot executions and group-owned Session history through session-query. */
 const ID = /^[A-Za-z0-9_-]{1,256}$/;
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/;
 const ACTIVE = new Set(['pending', 'streaming', 'running', 'queued']);
@@ -256,7 +256,7 @@ function project(event, inputMessageId) {
   switch (event.type) {
     case 'user/message':
       if (event.surfaceOp && event.surfaceOp !== 'append') return null;
-      if (data.id !== inputMessageId && data.source?.kind !== 'user') return null;
+      if ((typeof inputMessageId !== 'string' || data.id !== inputMessageId) && data.source?.kind !== 'user') return null;
       projected = userMessage(data);
       break;
     case 'turn/start':
@@ -342,6 +342,65 @@ function failureReason(error) {
   return 'session-log-read-failed';
 }
 
+/** Resolve group-owned references before any Session lookup, including historical Bots. */
+function sessionReferences(repo, groupId, sessionId) {
+  const group = repo.getGroup(groupId);
+  if (!group || group.groupId !== groupId) fail('not-found', 'Group not found');
+  const validId = (value) => typeof value === 'string' && ID.test(value);
+  const current = repo.membersOf(groupId).some((member) =>
+    member?.groupId === groupId && validId(member.membershipId) && validId(member.botId) && member.sessionId === sessionId,
+  );
+  const references = [];
+  for (const message of repo.messagesOf(groupId)) {
+    if (message?.groupId !== groupId || !validId(message.messageId) || message.author?.type !== 'bot' ||
+        !validId(message.author.membershipId) || !validId(message.author.botId)) continue;
+    const parsed = reference(message);
+    if (parsed.execution?.sessionId === sessionId) references.push(parsed.execution);
+  }
+  if (!current && references.length === 0) fail('invalid-input', 'Session does not belong to this group');
+  return references;
+}
+
+/** Read every visible turn of a verified Bot Session without creating or resuming an Agent. */
+export async function readBotSessionHistory({ ctx, repo, groupId, sessionId, afterSeq, limit, signal } = {}) {
+  if (typeof groupId !== 'string' || !ID.test(groupId) || typeof sessionId !== 'string' || !SESSION_ID.test(sessionId)) {
+    fail('invalid-input', 'groupId and sessionId must be valid identifiers');
+  }
+  afterSeq = integerParam(afterSeq, -1, -1, 'afterSeq');
+  limit = Math.min(integerParam(limit, 100, 1, 'limit'), 300);
+  abort(signal);
+  sessionReferences(repo, groupId, sessionId);
+  const result = (availability, extra = {}) => ({
+    ok: true, groupId, sessionId, availability, events: [], nextSeq: afterSeq, hasMore: false, ...extra,
+  });
+  let observation;
+  try {
+    const query = typeof ctx?.get === 'function' ? ctx.get('sessionQuery') : ctx?.sessionQuery;
+    if (typeof query?.observeSession !== 'function') return result('unavailable', { reason: 'session-query-unavailable' });
+    observation = await query.observeSession(sessionId, { signal, projectionMode: 'none' });
+    abort(signal);
+    // Group removal or membership rotation may have raced the asynchronous read.
+    const references = sessionReferences(repo, groupId, sessionId);
+    const raw = observationEvents(observation, sessionId);
+    const last = raw.at(-1);
+    // Only a recorded end for this exact tail protects it from cold-repair removal.
+    // An earlier turn's durable end must not legitimize a later synthetic suffix.
+    const end = references.find((ref) => ref.endSeq === last?.seq && (ref.turn === null || ref.turn === last.data?.turn));
+    const events = withoutColdRepairs(raw, observation, { endSeq: end?.endSeq ?? null });
+    const span = { startSeq: 0, lastSeq: events.at(-1)?.seq ?? -1 };
+    const response = result('available', page(events, span, { inputMessageId: null }, afterSeq, limit));
+    abort(signal);
+    return response;
+  } catch (error) {
+    if (isAbort(error, signal)) throw error;
+    if (error?.code === 'invalid-input' || error?.code === 'not-found') throw error;
+    sessionReferences(repo, groupId, sessionId);
+    return result('unavailable', { reason: failureReason(error) });
+  } finally {
+    if (typeof observation?.[Symbol.dispose] === 'function') observation[Symbol.dispose]();
+  }
+}
+
 /**
  * afterSeq is exclusive; nextSeq is the last examined raw seq (including hidden
  * records). Bounds in execution are inclusive. hasMore describes this captured
@@ -362,7 +421,10 @@ export async function readMessageExecution({ ctx, repo, groupId, messageId, afte
   if (!execution.sessionId) return response(message, afterSeq, ACTIVE.has(message.status) ? 'preparing' : 'unavailable', execution, { reason: 'execution-session-not-recorded' });
   let observation;
   try {
-    const query = ctx?.sessionQuery ?? ctx?.get?.('sessionQuery');
+    // Cordis rejects property reads for services outside the plugin's inject
+    // list. sessionQuery is optional: resolve it through get before touching
+    // the property used by plain-context adapters.
+    const query = typeof ctx?.get === 'function' ? ctx.get('sessionQuery') : ctx?.sessionQuery;
     if (typeof query?.observeSession !== 'function') return response(message, afterSeq, 'unavailable', execution, { reason: 'session-query-unavailable' });
     observation = await query.observeSession(execution.sessionId, { signal, projectionMode: 'none' });
     abort(signal);

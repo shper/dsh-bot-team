@@ -15,7 +15,7 @@ import { CHAT_DISPLAY_SETTINGS_KEY, isChatDisplaySettings, normalizeChatDisplayS
 import { Personas } from './personas.js';
 import { AgentPool } from './agents.js';
 import { Engine } from './engine.js';
-import { readMessageExecution } from './execution.js';
+import { readBotSessionHistory, readMessageExecution } from './execution.js';
 import { registerRoutes } from './routes.js';
 import { BOT_TEAM_TOOL_NAMES, registerBotTeamTools } from './tools.js';
 import { GroupBus, asString, fail, json, newId, now, trimmed } from './util.js';
@@ -56,7 +56,7 @@ try {
 export const PLUGIN_INFO = Object.freeze({
   name: 'Bot Team',
   packageName: typeof pluginPackage.name === 'string' ? pluginPackage.name : 'dsh-bot-team',
-  version: typeof pluginPackage.version === 'string' ? pluginPackage.version : '1.2.0',
+  version: typeof pluginPackage.version === 'string' ? pluginPackage.version : '1.2.1',
   author: typeof pluginPackage.author === 'string'
     ? pluginPackage.author
     : pluginPackage.author && typeof pluginPackage.author.name === 'string'
@@ -183,7 +183,7 @@ export class BotTeamService {
       bus: this.bus,
       config: this.config,
       logger: this.logger,
-      quotaGuard: (groupId, turns) => this.checkQuota(groupId, turns),
+      quotaGuard: (groupId) => this.checkQuota(groupId),
       workspaceGuard: (groupId) => this.assertWorkspaceStable(groupId),
       taskHook: (job, message, status) => this.onTaskJobFinished(job, message, status),
     });
@@ -206,11 +206,12 @@ export class BotTeamService {
   }
 
   // ── HTTP handlers ────────────────────────────────────────────────────────
-  async withReady(operation) {
+  async withReady(operation, signal) {
     try {
       await this.ready;
       return await operation();
     } catch (error) {
+      if (signal?.aborted) throw signal.reason ?? error;
       const code = error instanceof ServiceError ? error.code : 'not-ready';
       const status = code === 'not-ready' ? 503 : 400;
       return json(fail(code, String(error && error.message ? error.message : error)), status);
@@ -285,7 +286,6 @@ export class BotTeamService {
         defaultCwd: this.config.defaultCwd,
         botSandbox: this.config.botSandbox,
         botApprovalPolicy: this.config.botApprovalPolicy,
-        maxTurnsPerHour: this.config.maxTurnsPerHour,
         dailyTokenBudget: this.config.dailyTokenBudget,
         schemaVersion: this.repo.schemaVersion(),
       },
@@ -388,6 +388,32 @@ export class BotTeamService {
       response.headers.set('cache-control', 'no-store');
       return response;
     });
+  }
+
+  /** Read a group-owned Bot Session without activating it through ordinary Session routing. */
+  handleSessionHistory(request) {
+    return this.withReady(async () => {
+      const url = new URL(request.url);
+      let response;
+      try {
+        response = json(await readBotSessionHistory({
+          ctx: this.ctx,
+          repo: this.repo,
+          groupId: url.searchParams.get('groupId') || '',
+          sessionId: url.searchParams.get('sessionId') || '',
+          afterSeq: url.searchParams.get('afterSeq'),
+          limit: url.searchParams.get('limit'),
+          signal: request.signal,
+        }));
+      } catch (error) {
+        if (request.signal.aborted) throw error;
+        const code = ['not-found', 'invalid-input'].includes(error?.code) ? error.code : 'session-history-failed';
+        const status = code === 'not-found' ? 404 : code === 'invalid-input' ? 400 : 500;
+        response = json(fail(code, code === 'session-history-failed' ? 'Session history read failed' : String(error?.message || error)), status);
+      }
+      response.headers.set('cache-control', 'no-store');
+      return response;
+    }, request.signal);
   }
 
   handleEvents(request) {
@@ -924,9 +950,9 @@ export class BotTeamService {
     return views;
   }
 
-  requireTaskQuota(groupId, turns) {
+  requireTaskQuota(groupId) {
     try {
-      this.engine.assertQuota(groupId, turns);
+      this.engine.assertQuota(groupId);
     } catch (error) {
       if (error && error.code) throw new ServiceError(error.code, String(error.message));
       throw error;
@@ -1014,7 +1040,7 @@ export class BotTeamService {
         '任务被依赖阻塞：' + readiness.blockers.map((blocker) => blocker.title + '（' + blocker.status + '）').join('、'),
       );
     }
-    this.requireTaskQuota(task.groupId, 1);
+    this.requireTaskQuota(task.groupId);
     return this.withWorkspaceOperation(task.groupId, async () => {
       task.status = 'in_progress';
       await this.repo.putTask(task);
@@ -1032,7 +1058,7 @@ export class BotTeamService {
     const reviewer = this.repo.getMember(reviewerMembershipId);
     if (!reviewer || reviewer.groupId !== task.groupId) throw new ServiceError('invalid-input', '评审者不在该群里');
     if (!task.deliverableMessageId) throw new ServiceError('invalid-input', '任务还没有交付物');
-    this.requireTaskQuota(task.groupId, 1);
+    this.requireTaskQuota(task.groupId);
     const instructions =
       optionalText(input.instructions, 2000) ||
       '请按验收标准评审该任务的交付物：第一行输出 结论：通过 或 结论：需修改，然后给理由与具体修改建议。' +
@@ -1124,7 +1150,7 @@ export class BotTeamService {
         '任务被依赖阻塞：' + readiness.blockers.map((blocker) => blocker.title + '（' + blocker.status + '）').join('、'),
       );
     }
-    this.requireTaskQuota(task.groupId, 1);
+    this.requireTaskQuota(task.groupId);
     return this.withWorkspaceOperation(task.groupId, async () => {
       task.status = 'in_progress';
       await this.repo.putTask(task);
@@ -1919,30 +1945,17 @@ export class BotTeamService {
     return value;
   }
 
-  /** Per-group usage guard: hourly bot turns + daily token budget. */
-  checkQuota(groupId, turns = 1) {
-    const nowMs = Date.now();
-    const dayStart = new Date(nowMs);
+  /** Per-group usage guard: daily token budget, reset at local midnight. */
+  checkQuota(groupId) {
+    const dayStart = new Date(Date.now());
     dayStart.setHours(0, 0, 0, 0);
-    const hourAgo = nowMs - 3600 * 1000;
     const dayStartMs = dayStart.getTime();
-    let turnsLastHour = 0;
     let tokensToday = 0;
     for (const message of this.repo.messagesOf(groupId)) {
       if (!message.createdAt) continue;
-      const isBot = message.author && message.author.type === 'bot' && message.status === 'done';
-      if (isBot && message.createdAt >= hourAgo) turnsLastHour += 1;
       if (message.createdAt >= dayStartMs && message.usage) {
         tokensToday += (message.usage.totalTokens ?? ((message.usage.inputTokens ?? 0) + (message.usage.outputTokens ?? 0)));
       }
-    }
-    if (turnsLastHour + turns > this.config.maxTurnsPerHour) {
-      return {
-        ok: false,
-        reason: '本群最近一小时已触发 ' + turnsLastHour + ' 轮回复（上限 ' + this.config.maxTurnsPerHour + '），请稍候再试',
-        turnsLastHour,
-        limit: this.config.maxTurnsPerHour,
-      };
     }
     if (tokensToday >= this.config.dailyTokenBudget) {
       return {
@@ -1952,7 +1965,7 @@ export class BotTeamService {
         limit: this.config.dailyTokenBudget,
       };
     }
-    return { ok: true, turnsLastHour, tokensToday, turnsLimit: this.config.maxTurnsPerHour, tokenLimit: this.config.dailyTokenBudget };
+    return { ok: true, tokensToday, tokenLimit: this.config.dailyTokenBudget };
   }
 
   healthPayload() {
@@ -1965,14 +1978,13 @@ export class BotTeamService {
       config: {
         botSandbox: this.config.botSandbox,
         botApprovalPolicy: this.config.botApprovalPolicy,
-        maxTurnsPerHour: this.config.maxTurnsPerHour,
         dailyTokenBudget: this.config.dailyTokenBudget,
         maxParallelTurns: this.config.maxParallelTurns,
         enableModelTools: this.config.enableModelTools,
       },
       toolNames: BOT_TEAM_TOOL_NAMES,
       quotas: Object.fromEntries(
-        [...this.repo.groups.values()].map((group) => [group.groupId, this.checkQuota(group.groupId, 0)]),
+        [...this.repo.groups.values()].map((group) => [group.groupId, this.checkQuota(group.groupId)]),
       ),
       smoke: this.smokeState,
       at: Date.now(),
@@ -2465,8 +2477,15 @@ export class BotTeamService {
           health.domain.schemaVersion >= 6 &&
           health.domain.counts.messages > 0 &&
           health.toolNames.length === BOT_TEAM_TOOL_NAMES.length;
-        quotaPass = this.checkQuota(group.groupId, 1).ok === true;
-        quotaDenyPass = this.checkQuota(group.groupId, 999999).ok === false;
+        const quota = this.checkQuota(group.groupId);
+        quotaPass = quota.ok === true;
+        const dailyTokenBudget = this.config.dailyTokenBudget;
+        try {
+          this.config.dailyTokenBudget = quota.tokensToday;
+          quotaDenyPass = this.checkQuota(group.groupId).ok === false;
+        } finally {
+          this.config.dailyTokenBudget = dailyTokenBudget;
+        }
         const agentA2 = this.pool.current(memberA.membershipId);
         if (agentA2 && agentA2.session) {
           const modes = agentA2.session

@@ -1,8 +1,8 @@
-# Bot Team 1.2.0
+# Bot Team 1.2.1
 
 在 DSH Web GUI 里做多 Agent 群聊与单聊：每个 Bot 自动拥有一个单聊窗口；创建群/话题 → 从全局 Bot 库拉入多个 Bot → 在群里 @ 某个 Bot 派活、多 @ 并行回复、查看流式输出。群聊可以放进自定义分组、拖动排序，单聊 / 群聊 / 每个分组都能展开或收起。
 
-**1.2.0 更新**：新增首次使用欢迎页与三步引导，推荐先创建 Bot，再建群并用 `@` 协作；「开始使用」欢迎页及侧栏入口仅在没有 Bot 且没有群聊时显示；支持中英双语、深浅色与窄屏适配。群聊右侧任务面板已移除，任务模型工具和 HTTP API 继续可用。详见 [v1.2 首次使用引导变更记录](<../docs/v1.2-首次使用引导-变更记录.md>)。
+**1.2.1 更新**：修复执行记录读取和右侧 Token 用量刷新；「打开完整会话」改为独立只读历史页面，可返回原执行面板并保留聊天草稿、滚动位置和按钮；成员与侧栏的会话入口也使用完整历史页面。移除每小时回复轮数上限，每日 Token 预算继续生效。详见 [v1.2.1 会话历史与用量修复变更记录](<../docs/v1.2.1-会话历史与用量修复-变更记录.md>)。
 
 每个 Bot 是**真实的 DSH Agent**（独立持久 Session），可以单独设置：
 
@@ -38,7 +38,7 @@
 5. 输入框底部「停止」可中断当前群所有进行中的回复。
 6. **模型工具**：在任意普通会话里也能用 `bot_team_list` / `bot_team_create_group` / `bot_team_send` / `bot_team_review` / `bot_team_discuss` 操作群聊（Bot 成员自身被 deny，防递归）。
 7. **更多**：评审（结论徽标 + 让作者修改）、多轮讨论（进度/总结/停止）、Markdown（表格/删除线/代码块）、历史上翻、群导出 Markdown/HTML、成员「查看会话」、群 workspace 与 token 用量。
-8. **硬化**：按群配额/限流（`maxTurnsPerHour`、`dailyTokenBudget`）、所有 Bot 统一 workspace-write 沙箱（受群工作目录限制）、domain schema 迁移（meta/schema）、`GET /api/bot-team.health`。
+8. **硬化**：每群每日 token 预算（`dailyTokenBudget`，不再按小时限制回复轮数）、所有 Bot 统一 workspace-write 沙箱（受群工作目录限制）、domain schema 迁移（meta/schema）、`GET /api/bot-team.health`。
 9. **任务管理（模型工具/API）**：通过 `bot_team_task_create/list/update` 创建、查询与派发任务，跟踪 Bot 交付、评审、验收和返工；消息上仍显示任务状态标记。群聊右侧已移除任务面板和「新建任务」入口。
 10. **任务依赖/优先级**：任务支持 `priority`（排序）与 `dependsOn`（DAG 依赖、环检测、未验收阻塞派发、验收后自动解锁），通过模型工具或 HTTP action 设置。
 11. **任务队列 + 批量派发**：`bot_team_task_update` 的 `dispatch_ready` 可派发所有就绪任务（按优先级入队、受 `maxParallelTurns` 限制）；`autoDispatchReady`（默认关）可在依赖解锁后自动派发。
@@ -88,7 +88,7 @@
 **关于**：
 
 - 插件说明和功能特性（单聊自动创建、群聊分组与拖拽排序、展开/收起、BOT.md 人格、任务与评审）。
-- **版本号 / 包名 / 开发者** 来自插件 `package.json`，由 Host bootstrap 的 `plugin` 字段下发；当前为 `1.2.0` / `dsh-bot-team` / `shper`。
+- **版本号 / 包名 / 开发者** 来自插件 `package.json`，由 Host bootstrap 的 `plugin` 字段下发；当前为 `1.2.1` / `dsh-bot-team` / `shper`。
 - 数据与人格文件位置：`$DSH_HOME/storages/dsh-bot-team`、`$DSH_HOME/dsh-bot-team/bots/<botId>/BOT.md`；单聊 / 群聊工作目录在 `$DSH_HOME/dsh-bot-team/direct/<botId>/` 与 `$DSH_HOME/dsh-bot-team/groups/<groupId>/`。
 
 ![设置 · 消息设置](<../docs/assets/v0.7-settings-light.png>)
@@ -113,11 +113,12 @@
 | `smokeTest` | false | 激活时跑端到端冒烟/恢复检查（仅验证用；已关闭） |
 | `enableModelTools` | true | 是否向普通会话暴露 `bot_team_*` 工具 |
 | `toolWaitTimeoutMs` | 180000 | 模型工具等待 Bot 回复/讨论的默认超时 |
-| `maxTurnsPerHour` | 120 | 每群每小时 Bot 回复轮数上限 |
 | `dailyTokenBudget` | 5000000 | 每群每日 token 上限 |
 | `botSandbox` | true | 是否把 Bot session 显式设为 `workspace-write` 沙箱 |
 | `botApprovalPolicy` | ask | `ask`：越界/升权时在群时间线出现审批卡片，去 Bot 会话完成授权；`never`：无头模式，直接拒绝所有需审批操作 |
 | `pdfFontPath` | 空 | 可选：指定 PDF 导出的 CJK TrueType/TTC 字体文件；空则按平台自动发现 |
+
+Bot 回复不再按小时限制轮数，旧配置中的小时轮数上限会被忽略。每群每日 token 预算仍由 `dailyTokenBudget` 控制，按 Host 本地时间零点重置；并行上限、单 Bot 串行及讨论轮数等调度规则保持不变。
 
 HTTP 通道（全部在 `/api` 登录态栅栏内）：
 
@@ -134,15 +135,15 @@ HTTP 通道（全部在 `/api` 登录态栅栏内）：
 
 这是一个标准 DSH bundle：`package.json` 的 `dsh.bundle.patch` 指向 `cordis.patch.yml`，`dsh.client` + `exports["./client"]` 提供 Web 端界面，`exports["./locale/*.json"]` / `exports["./icon"]` 提供插件管理页的标题、描述与图标。npm 包名：`dsh-bot-team`。
 
-**桌面版（当前 GUI）**：左侧栏 **插件 / Plugins** 页 → 添加插件，填 `dsh-bot-team@1.2.0`（或本地绝对路径、Git 地址）；装好后对 `bot-team` 行 disable → enable，或完整重启 DSH；浏览器刷新页面。
+**桌面版（当前 GUI）**：左侧栏 **插件 / Plugins** 页 → 添加插件，填 `dsh-bot-team@1.2.1`（或本地绝对路径、Git 地址）；装好后对 `bot-team` 行 disable → enable，或完整重启 DSH；浏览器刷新页面。
 
 **CLI / 其他 profile**：
 
 ```sh
-dsh plugin --profile <profile> add dsh-bot-team@1.2.0
+dsh plugin --profile <profile> add dsh-bot-team@1.2.1
 ```
 
-> `1.2.0` 是当前源码版本；npm 安装示例适用于该版本发布后。发布前请用本地目录安装当前源码，发布流程见 [发布指南](<../docs/发布指南.md>)。
+> `1.2.1` 是当前源码版本；npm 安装示例适用于该版本发布后。发布前请用本地目录安装当前源码，发布流程见 [发布指南](<../docs/发布指南.md>)。
 
 该命令安装包，并把新 bundle 追加到 profile 的 `dsh.profile.bundles`。升级用 remove → add；桌面版插件页在提供 **Update** 时可直接更新，否则也是移除后重装。装完必须重新加载 Host 模块：只刷新页面不会加载新的 Host 代码。
 

@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { Engine } from '../host/engine.js';
 import { AgentPool } from '../host/agents.js';
 import { openRepository } from '../host/domain.js';
+import { BotTeamService } from '../host/service.js';
+import { resolveConfig } from '../host/util.js';
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const deferred = () => {
@@ -150,6 +152,99 @@ async function fixture(t, options = {}) {
   t.after(async () => { await engine.dispose(); await storage.flush(); });
   return f;
 }
+
+async function quotaFixture(t, rawConfig = {}) {
+  const f = await fixture(t, { config: resolveConfig(rawConfig) });
+  const service = Object.assign(Object.create(BotTeamService.prototype), {
+    repo: f.repo,
+    config: f.engine.config,
+    engine: f.engine,
+  });
+  f.engine.quotaGuard = (groupId) => service.checkQuota(groupId);
+  return { ...f, service };
+}
+
+for (const scenario of [
+  { name: 'default configuration', config: {} },
+  { name: 'legacy maxTurnsPerHour: 120', config: { maxTurnsPerHour: 120 } },
+]) {
+  test('125 replies in one hour complete under ' + scenario.name, async (t) => {
+    const at = new Date(2026, 9, 27, 12).getTime();
+    t.mock.method(Date, 'now', () => at);
+    const f = await quotaFixture(t, scenario.config);
+    assert.equal(Object.hasOwn(f.service.config, 'maxTurnsPerHour'), false);
+    for (let turn = 1; turn <= 125; turn += 1) {
+      const sent = f.engine.postHumanMessage({ groupId: 'group', text: 'reply ' + turn, mentions: ['a'] });
+      assert.deepEqual(sent.accepted, ['a']);
+      const job = f.engine.running.get('a');
+      await tick();
+      f.bind(job, turn);
+      f.answer(job);
+      await f.finish(job);
+      assert.equal(f.durable(job).status, 'done');
+    }
+    const replies = f.repo.messagesOf('group').filter((message) => message.author.type === 'bot');
+    assert.equal(replies.length, 125);
+    assert.ok(replies.every((message) => message.createdAt === at && message.status === 'done'));
+    assert.equal(f.submissions.length, 125);
+    assert.deepEqual(f.service.checkQuota('group'), { ok: true, tokensToday: 1875, tokenLimit: 5000000 });
+    assert.equal(f.engine.isRunning('group'), false);
+  });
+}
+
+test('daily token budget still stops new replies at the boundary and resets at local midnight', async (t) => {
+  let at = new Date(2026, 9, 27, 12).getTime();
+  t.mock.method(Date, 'now', () => at);
+  const f = await quotaFixture(t, { dailyTokenBudget: 1000, maxTurnsPerHour: 120 });
+  const previousDay = f.engine.createMessage({ groupId: 'group', author: { type: 'bot' }, text: 'yesterday' });
+  previousDay.createdAt = new Date(2026, 9, 26, 23, 59, 59).getTime();
+  previousDay.usage = { totalTokens: 5000 };
+  await f.repo.putMessage(previousDay);
+  await f.repo.putGroup({ groupId: 'other', title: 'Other group', nextSeq: 0 });
+  const otherGroup = f.engine.createMessage({ groupId: 'other', author: { type: 'bot' }, text: 'other group' });
+  otherGroup.usage = { totalTokens: 5000 };
+  await f.repo.putMessage(otherGroup);
+  const today = f.engine.createMessage({ groupId: 'group', author: { type: 'bot' }, text: 'earlier today' });
+  today.createdAt = new Date(2026, 9, 27, 0).getTime();
+  today.usage = { totalTokens: 985 };
+  await f.repo.putMessage(today);
+  assert.deepEqual(f.service.checkQuota('group'), { ok: true, tokensToday: 985, tokenLimit: 1000 });
+  assert.equal(f.service.checkQuota('other').ok, false, 'each group has an independent budget');
+
+  f.engine.postHumanMessage({ groupId: 'group', text: 'last allowed reply', mentions: ['a'] });
+  const job = f.engine.running.get('a');
+  await tick();
+  f.bind(job, 1);
+  f.answer(job); // Usage without totalTokens falls back to input + output (5 + 10).
+  await f.finish(job);
+  assert.equal(f.message(job).status, 'done');
+  assert.deepEqual(f.service.checkQuota('group'), {
+    ok: false,
+    reason: '本群今日 token 用量已达上限（1000 / 1000），请明天再试或调整配额',
+    tokensToday: 1000,
+    limit: 1000,
+  });
+  const denied = (error) => error.code === 'quota' && /今日 token/.test(error.message);
+  assert.throws(() => f.engine.postHumanMessage({ groupId: 'group', text: 'over budget', mentions: ['a'] }), denied);
+  assert.throws(() => f.engine.retryMessage(job.placeholderId), denied);
+  assert.throws(() => f.engine.requestReview({ groupId: 'group', targetMessageId: job.placeholderId, reviewerMembershipId: 'b' }), denied);
+  assert.throws(() => f.service.requireTaskQuota('group'), denied);
+  await assert.rejects(() => f.engine.startDiscussion({ groupId: 'group', topic: 'over budget', membershipIds: ['a'], rounds: 2 }), denied);
+  assert.equal(f.submissions.length, 1, 'denied operations never submit another model request');
+  assert.equal(f.engine.isRunning('group'), false);
+  assert.doesNotThrow(() => f.engine.postHumanMessage({ groupId: 'group', text: 'human only', mentions: [] }));
+
+  at = new Date(2026, 9, 28, 0).getTime();
+  assert.deepEqual(f.service.checkQuota('group'), { ok: true, tokensToday: 0, tokenLimit: 1000 });
+  f.engine.postHumanMessage({ groupId: 'group', text: 'new day', mentions: ['a'] });
+  const next = f.engine.running.get('a');
+  await tick();
+  f.bind(next, 2);
+  f.answer(next);
+  await f.finish(next);
+  assert.equal(f.message(next).status, 'done');
+  assert.deepEqual(f.service.checkQuota('group'), { ok: true, tokensToday: 15, tokenLimit: 1000 });
+});
 
 test('every reply starts with a fresh reference and records the ensured agent before submission', async (t) => {
   const ready = deferred();
@@ -340,7 +435,7 @@ test('live metadata and tool/PTC/approval/retry invalidations preserve streamed 
   for (const [type, data] of dataByType) {
     const event = f.event('a', type, data);
     const update = f.frames.findLast((frame) => frame.type === 'execution.updated');
-    assert.deepEqual(update, { groupId: 'group', type: 'execution.updated', messageId: job.placeholderId, seq: event.seq });
+    assert.deepEqual(update, { groupId: 'group', type: 'execution.updated', messageId: job.placeholderId, sessionId: job.execution.sessionId, seq: event.seq });
   }
   assert.equal(messageWrites(), before, 'ordinary events only invalidate; no repeated reply persistence');
   assert.equal(f.frames.filter((frame) => frame.type === 'message.updated' && frame.message.messageId === job.placeholderId).length, 0);
