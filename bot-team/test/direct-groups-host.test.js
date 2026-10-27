@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { openRepository } from '../host/domain.js';
@@ -297,7 +297,8 @@ test('group workspace defaults under dataDir/groups and an empty edit restores t
   assert.equal(group.workspaceCwd, fallback);
   assert.equal((await stat(fallback)).isDirectory(), true);
 
-  const custom = path.join(service.config.dataDir, 'custom-workspace');
+  await mkdir(path.join(service.config.dataDir, 'custom-workspace'));
+  const custom = await realpath(path.join(service.config.dataDir, 'custom-workspace'));
   await service.updateGroup({ groupId: group.groupId, workspaceCwd: custom });
   assert.equal(repo.getGroup(group.groupId).workspaceCwd, custom);
   assert.equal((await stat(custom)).isDirectory(), true);

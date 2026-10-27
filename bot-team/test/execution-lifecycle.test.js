@@ -526,3 +526,39 @@ test('a failed boundary write errors the reply and cancels the active agent', as
   assert.match(f.durable(job).error, /disk write failed/);
   assert.equal(f.agent().cancelled, 1);
 });
+
+test('a stopped job stays pending for workspace switching until asynchronous preparation settles', async (t) => {
+  const preparing = deferred();
+  const release = deferred();
+  const f = await fixture(t);
+  f.pool.ensure = async () => { preparing.resolve(); await release.promise; return f.agent(); };
+  f.start();
+  await preparing.promise;
+  f.engine.stopGroup('group');
+  assert.equal(f.engine.isRunning('group'), false);
+  assert.equal(f.engine.hasPendingWork('group'), true);
+  release.resolve();
+  await tick();
+  assert.equal(f.engine.hasPendingWork('group'), false);
+  assert.equal(f.submissions.length, 0);
+});
+
+test('workspace session rotation seeds the new turn from earlier durable group messages', async (t) => {
+  const f = await fixture(t);
+  const old = f.engine.postHumanMessage({ groupId: 'group', text: 'Earlier project requirement', mentions: [] }).message;
+  f.repo.getMember('a').lastSeenSeq = old.seq;
+  f.pool.ensure = async () => {
+    const member = f.repo.getMember('a');
+    member.sessionId = f.agent().id;
+    member.lastSeenSeq = 0;
+    await f.repo.putMember(member);
+    return f.agent();
+  };
+  const sent = f.engine.postHumanMessage({ groupId: 'group', text: 'Continue in the imported project', mentions: ['a'] });
+  const job = f.engine.running.get('a');
+  await tick();
+  assert.ok(job.context.some((message) => message.messageId === old.messageId));
+  assert.ok(job.context.some((message) => message.messageId === sent.message.messageId));
+  assert.equal(f.repo.getMember('a').lastSeenSeq, sent.message.seq);
+  f.engine.stopGroup('group');
+});

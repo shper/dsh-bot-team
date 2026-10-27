@@ -106,7 +106,14 @@ export function renderGroupContext(repo, botId, groupId) {
         `成员：${rosterLine(repo, groupId)}`,
         `你是：${bot.name}`,
       ];
+
   if (group.workspaceCwd) lines.push(`工作目录：${group.workspaceCwd}`);
+  if (group.projectWorkspaceCwd) {
+    lines.push(
+      `用户已引入本地项目：${group.projectWorkspaceCwd}`,
+      '项目任务请先读取该目录中的项目说明与适用的工作规则，再使用文件和命令工具完成；用户未指定路径时以该项目为根目录。',
+    );
+  }
   return lines.join('\n');
 }
 

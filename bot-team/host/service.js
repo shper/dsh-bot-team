@@ -35,7 +35,7 @@ import {
 } from './layout.js';
 import { parseMentionsFromText, renderGroupContext, renderPersona } from './prompt.js';
 import { buildGroupPdf } from './pdf.js';
-import { defaultWorkspaceDir, ensureWorkspaceDir, isStandardLayout, migrateLegacyLayout } from './workspace.js';
+import { defaultWorkspaceDir, ensureWorkspaceDir, isStandardLayout, migrateLegacyLayout, normalizeWorkspacePath, sessionCwdMatches, validateProjectWorkspace } from './workspace.js';
 
 class ServiceError extends Error {
   constructor(code, message) {
@@ -126,6 +126,8 @@ export class BotTeamService {
     this.personas = null;
     this.pool = null;
     this.engine = null;
+    this.workspaceChanges = new Set();
+    this.workspaceOperations = new Map();
     this.modelCatalogCache = null;
     this.smokeState = null;
     this.routeDispose = registerRoutes(ctx, this);
@@ -153,6 +155,14 @@ export class BotTeamService {
         )}`);
       }
     }
+    // Older group records already allowed custom workspaces; expose them as
+    // imported projects without changing the directory or its contents.
+    for (const group of this.repo.groups.values()) {
+      if (typeof group.projectWorkspaceCwd === 'string') continue;
+      group.projectWorkspaceCwd = group.workspaceCwd && !sessionCwdMatches(group.workspaceCwd, defaultWorkspaceDir(this.config, group))
+        ? group.workspaceCwd : '';
+      await this.repo.putGroup(group);
+    }
     this.personas = new Personas(this.config.botsDir, this.logger);
     this.pool = new AgentPool({
       ctx: this.ctx,
@@ -174,6 +184,7 @@ export class BotTeamService {
       config: this.config,
       logger: this.logger,
       quotaGuard: (groupId, turns) => this.checkQuota(groupId, turns),
+      workspaceGuard: (groupId) => this.assertWorkspaceStable(groupId),
       taskHook: (job, message, status) => this.onTaskJobFinished(job, message, status),
     });
     this.pool.attachStreamHandler((payload) => this.engine.onAssistantStream(payload));
@@ -607,6 +618,10 @@ export class BotTeamService {
   }
 
   async listSkills(groupId, memberId = '') {
+    return this.withWorkspaceOperation(groupId, () => this.listSkillsInWorkspace(groupId, memberId));
+  }
+
+  async listSkillsInWorkspace(groupId, memberId) {
     const group = this.repo.getGroup(groupId);
     if (!group) throw new ServiceError('not-found', `群 ${groupId} 不存在`);
     const members = this.repo.membersOf(groupId).filter(
@@ -715,6 +730,8 @@ export class BotTeamService {
         return this.createGroup(input);
       case 'group.update':
         return this.updateGroup(input);
+      case 'group.workspace.set':
+        return this.setGroupWorkspace(input);
       case 'group.delete':
         return this.deleteGroup(input);
       case 'group.reorder':
@@ -998,11 +1015,13 @@ export class BotTeamService {
       );
     }
     this.requireTaskQuota(task.groupId, 1);
-    task.status = 'in_progress';
-    await this.repo.putTask(task);
-    this.emitTask(task);
-    this.engine.enqueueTaskTurn({ taskId: task.taskId, phase: 'dispatch' });
-    return task;
+    return this.withWorkspaceOperation(task.groupId, async () => {
+      task.status = 'in_progress';
+      await this.repo.putTask(task);
+      this.emitTask(task);
+      this.engine.enqueueTaskTurn({ taskId: task.taskId, phase: 'dispatch' });
+      return task;
+    });
   }
 
   async reviewTask(input) {
@@ -1039,12 +1058,14 @@ export class BotTeamService {
     if (task.status !== 'delivered' && task.status !== 'changes_requested') {
       throw new ServiceError('invalid-input', '当前状态不能验收（' + task.status + '）');
     }
-    task.status = 'accepted';
-    task.acceptedAt = now();
-    await this.repo.putTask(task);
-    this.emitTask(task);
-    await this.unblockDependents(task);
-    return this.taskView(task);
+    return this.withWorkspaceOperation(task.groupId, async () => {
+      task.status = 'accepted';
+      task.acceptedAt = now();
+      await this.repo.putTask(task);
+      this.emitTask(task);
+      await this.unblockDependents(task);
+      return this.taskView(task);
+    });
   }
 
   async updateTask(input) {
@@ -1104,11 +1125,13 @@ export class BotTeamService {
       );
     }
     this.requireTaskQuota(task.groupId, 1);
-    task.status = 'in_progress';
-    await this.repo.putTask(task);
-    this.emitTask(task);
-    this.engine.enqueueTaskTurn({ taskId: task.taskId, phase: 'revision' });
-    return task;
+    return this.withWorkspaceOperation(task.groupId, async () => {
+      task.status = 'in_progress';
+      await this.repo.putTask(task);
+      this.emitTask(task);
+      this.engine.enqueueTaskTurn({ taskId: task.taskId, phase: 'revision' });
+      return task;
+    });
   }
 
   async cancelTask(input) {
@@ -1283,26 +1306,97 @@ export class BotTeamService {
     return folder;
   }
 
+  assertWorkspaceStable(groupId) {
+    if (this.workspaceChanges?.has(groupId)) {
+      throw new ServiceError('busy', '正在切换项目目录，请稍后重试');
+    }
+  }
+
+  /** Reserve a group before an async operation can prepare an agent or enqueue work. */
+  async withWorkspaceOperation(groupId, operation) {
+    this.assertWorkspaceStable(groupId);
+    this.workspaceOperations ??= new Map();
+    this.workspaceOperations.set(groupId, (this.workspaceOperations.get(groupId) || 0) + 1);
+    try {
+      return await operation();
+    } finally {
+      const remaining = this.workspaceOperations.get(groupId) - 1;
+      if (remaining > 0) this.workspaceOperations.set(groupId, remaining);
+      else this.workspaceOperations.delete(groupId);
+    }
+  }
+
+  workspaceBusy(groupId) {
+    return this.engine.isRunning(groupId)
+      || this.engine.hasPendingWork?.(groupId)
+      || this.repo.activeDiscussionOf(groupId)
+      || this.workspaceOperations?.get(groupId) > 0
+      || this.pool.isPreparingGroup?.(groupId);
+  }
+
+  /** Hold admission closed from before the first filesystem await through persistence. */
+  async withWorkspaceChange(groupId, value, commit) {
+    const group = this.repo.getGroup(groupId);
+    if (!group) throw new ServiceError('not-found', '群不存在');
+    const fallback = defaultWorkspaceDir(this.config, group);
+    const normalized = normalizeWorkspacePath(value);
+    // The legacy settings form always posts workspaceCwd, including the default.
+    const selected = normalized && !sessionCwdMatches(normalized, fallback) ? normalized : '';
+    const current = group.workspaceCwd || fallback;
+    this.assertWorkspaceStable(groupId);
+    if (sessionCwdMatches(selected || fallback, current) && (group.projectWorkspaceCwd || '') === selected) {
+      return this.withWorkspaceOperation(groupId, () => commit({ workspaceCwd: current, projectWorkspaceCwd: selected }));
+    }
+    if (this.workspaceBusy(groupId)) {
+      throw new ServiceError('busy', '当前聊天有运行、排队或准备中的任务或讨论，请结束后再切换项目目录');
+    }
+    this.workspaceChanges ??= new Set();
+    this.workspaceChanges.add(groupId);
+    try {
+      const projectWorkspaceCwd = selected ? await validateProjectWorkspace(selected) : '';
+      const workspaceCwd = projectWorkspaceCwd || fallback;
+      if (!selected && !(await ensureWorkspaceDir(fallback, this.logger))) {
+        throw new ServiceError('invalid-input', '无法准备默认工作目录');
+      }
+      if (!sessionCwdMatches(current, workspaceCwd)) {
+        // Await disposal before publishing the new root. The session id remains
+        // durable; AgentPool.ensure rotates it when its creation cwd differs.
+        for (const member of this.repo.membersOf(groupId)) {
+          await this.pool.disposeMember(member.membershipId, { strict: true });
+        }
+      }
+      return await commit({ workspaceCwd, projectWorkspaceCwd });
+    } finally {
+      this.workspaceChanges.delete(groupId);
+    }
+  }
+
+  async setGroupWorkspace(input) {
+    const workspaceCwd = normalizeWorkspacePath(input.workspaceCwd);
+    return this.updateGroup({ groupId: input.groupId, workspaceCwd });
+  }
+
   async createGroup(input) {
     const title = requireText(input.title, '群名称', 120);
     if (this.groupChats().length >= this.config.maxGroups) {
       throw new ServiceError('limit', `群数量已达上限 ${this.config.maxGroups}`);
     }
-    const workspaceCwd = optionalText(input.workspaceCwd, 1024);
-    if (workspaceCwd && !path.isAbsolute(workspaceCwd)) {
-      throw new ServiceError('invalid-input', 'workspaceCwd 必须是绝对路径');
-    }
+    const selected = normalizeWorkspacePath(input.workspaceCwd ?? '');
+    const projectWorkspaceCwd = selected ? await validateProjectWorkspace(selected) : '';
     const folder = await this.requireFolder(input.folderId);
     const avatar = normalizeAvatar(input.avatar);
     const groupId = newId('grp');
-    const groupWorkspace = workspaceCwd || defaultWorkspaceDir(this.config, { kind: 'group', groupId });
-    await ensureWorkspaceDir(groupWorkspace, this.logger);
+    const groupWorkspace = projectWorkspaceCwd || defaultWorkspaceDir(this.config, { kind: 'group', groupId });
+    if (!projectWorkspaceCwd && !(await ensureWorkspaceDir(groupWorkspace, this.logger))) {
+      throw new ServiceError('invalid-input', '无法准备默认工作目录');
+    }
     const group = {
       groupId,
       kind: 'group',
       title,
       topic: optionalText(input.topic, 2000),
       workspaceCwd: groupWorkspace,
+      projectWorkspaceCwd,
       folderId: folder ? folder.folderId : null,
       order: nextOrder(this.groupsInFolder(folder ? folder.folderId : null)),
       ...(avatar ? { avatar } : {}),
@@ -1316,39 +1410,54 @@ export class BotTeamService {
   }
 
   async updateGroup(input) {
-    const group = this.repo.getGroup(String(input.groupId || ''));
-    if (!group) throw new ServiceError('not-found', '群不存在');
-    if (input.title !== undefined) {
-      if (isDirectGroup(group)) throw new ServiceError('invalid-input', '单聊名称随 Bot 名称自动更新');
-      group.title = requireText(input.title, '群名称', 120);
-    }
-    if (input.topic !== undefined) group.topic = optionalText(input.topic, 2000);
-    if (input.workspaceCwd !== undefined) {
-      const workspaceCwd = optionalText(input.workspaceCwd, 1024);
-      if (workspaceCwd && !path.isAbsolute(workspaceCwd)) {
-        throw new ServiceError('invalid-input', 'workspaceCwd 必须是绝对路径');
+    const groupId = String(input.groupId || '');
+    if (!this.repo.getGroup(groupId)) throw new ServiceError('not-found', '群不存在');
+    const commit = async (workspace = {}) => {
+      let folder;
+      if (input.folderId !== undefined) {
+        if (isDirectGroup(this.repo.getGroup(groupId))) throw new ServiceError('invalid-input', '单聊不能放进分组');
+        folder = await this.requireFolder(input.folderId);
       }
-      const nextWorkspace = workspaceCwd || defaultWorkspaceDir(this.config, group);
-      group.workspaceCwd = nextWorkspace;
-      await ensureWorkspaceDir(nextWorkspace, this.logger);
-    }
-    if (input.avatar !== undefined) {
-      const avatar = normalizeAvatar(input.avatar);
-      if (avatar) group.avatar = avatar;
-      else delete group.avatar;
-    }
-    if (input.folderId !== undefined) {
-      if (isDirectGroup(group)) throw new ServiceError('invalid-input', '单聊不能放进分组');
-      const folder = await this.requireFolder(input.folderId);
-      const nextFolderId = folder ? folder.folderId : null;
-      if (groupFolderIdOf(group) !== nextFolderId) {
-        group.folderId = nextFolderId;
-        group.order = nextOrder(this.groupsInFolder(nextFolderId));
+      // Read after all asynchronous validation so a running turn cannot have its
+      // newly allocated sequence overwritten by a stale group snapshot.
+      const previous = this.repo.getGroup(groupId);
+      if (!previous) throw new ServiceError('not-found', '群不存在');
+      const group = { ...previous, ...workspace };
+      if (input.title !== undefined) {
+        if (isDirectGroup(group)) throw new ServiceError('invalid-input', '单聊名称随 Bot 名称自动更新');
+        group.title = requireText(input.title, '群名称', 120);
       }
-    }
-    await this.repo.putGroup(group);
-    this.bus.emit(group.groupId, { type: 'group.updated', group });
-    return group;
+      if (input.topic !== undefined) group.topic = optionalText(input.topic, 2000);
+      if (input.avatar !== undefined) {
+        const avatar = normalizeAvatar(input.avatar);
+        if (avatar) group.avatar = avatar;
+        else delete group.avatar;
+      }
+      if (input.folderId !== undefined) {
+        const nextFolderId = folder ? folder.folderId : null;
+        if (groupFolderIdOf(group) !== nextFolderId) {
+          group.folderId = nextFolderId;
+          group.order = nextOrder(this.groupsInFolder(nextFolderId));
+        }
+      }
+      if (JSON.stringify(group) === JSON.stringify(previous)) return previous;
+      try {
+        await this.repo.putGroup(group);
+      } catch (error) {
+        // putGroup publishes to the in-memory map before its durable write.
+        // Keep failed workspace changes invisible once admission opens again.
+        if (this.repo.getGroup(groupId) === group) {
+          previous.nextSeq = Math.max(previous.nextSeq || 0, group.nextSeq || 0);
+          this.repo.groups.set(groupId, previous);
+        }
+        throw error;
+      }
+      this.bus.emit(groupId, { type: 'group.updated', group });
+      return group;
+    };
+    return input.workspaceCwd !== undefined
+      ? this.withWorkspaceChange(groupId, input.workspaceCwd, commit)
+      : this.withWorkspaceOperation(groupId, () => commit());
   }
 
   async deleteGroup(input) {
@@ -1393,6 +1502,7 @@ export class BotTeamService {
         title: bot.name,
         topic: '',
         workspaceCwd: defaultWorkspaceDir(this.config, { kind: 'direct', botId: bot.botId }),
+        projectWorkspaceCwd: '',
         folderId: null,
         order: nextOrder(this.directGroups()),
         nextSeq: 0,
@@ -1417,7 +1527,7 @@ export class BotTeamService {
       }
       if (changed) await this.repo.putGroup(direct);
     }
-    await ensureWorkspaceDir(direct.workspaceCwd, this.logger);
+    if (!direct.projectWorkspaceCwd) await ensureWorkspaceDir(direct.workspaceCwd, this.logger);
     const members = this.repo.membersOf(direct.groupId);
     if (!members.some((member) => member.botId === bot.botId)) {
       const at = now();

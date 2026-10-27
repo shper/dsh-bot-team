@@ -17,7 +17,7 @@
  */
 import { BOT_TEAM_TOOL_NAMES } from './tools.js';
 import { newId } from './util.js';
-import { defaultWorkspaceDir, ensureWorkspaceDir, sessionCwdMatches } from './workspace.js';
+import { defaultWorkspaceDir, ensureWorkspaceDir, sessionCwdMatches, validateProjectWorkspace } from './workspace.js';
 
 const BOT_PRESET_ID = 'bot-team-tools';
 
@@ -45,6 +45,7 @@ export class AgentPool {
     this.config = config;
     this.logger = logger;
     this.entries = new Map();
+    this.preparing = new Map();
   }
 
   sessionIdOf(member) {
@@ -52,6 +53,21 @@ export class AgentPool {
   }
 
   async ensure(memberId) {
+    if (this.preparing.has(memberId)) return this.preparing.get(memberId);
+    const pending = this.prepare(memberId);
+    this.preparing.set(memberId, pending);
+    try {
+      return await pending;
+    } finally {
+      if (this.preparing.get(memberId) === pending) this.preparing.delete(memberId);
+    }
+  }
+
+  isPreparingGroup(groupId) {
+    return [...this.preparing.keys()].some((memberId) => this.repo.getMember(memberId)?.groupId === groupId);
+  }
+
+  async prepare(memberId) {
     const member = this.repo.getMember(memberId);
     if (!member) throw new Error(`membership ${memberId} does not exist`);
     const bot = this.repo.getBot(member.botId);
@@ -60,6 +76,7 @@ export class AgentPool {
     if (!group) throw new Error(`group ${member.groupId} does not exist`);
 
     const cwd = group.workspaceCwd || defaultWorkspaceDir(this.config, group);
+    if (group.projectWorkspaceCwd) await validateProjectWorkspace(cwd);
     const fingerprint = JSON.stringify({
       provider: bot.provider,
       model: bot.model,
@@ -89,7 +106,9 @@ export class AgentPool {
       ...(Number.isInteger(bot.maxTokens) && bot.maxTokens > 0 ? { maxTokens: bot.maxTokens } : {}),
     };
     const setup = this.makeSetup(member.membershipId);
-    await ensureWorkspaceDir(cwd, this.logger);
+    if (!group.projectWorkspaceCwd && !(await ensureWorkspaceDir(cwd, this.logger))) {
+      throw new Error('无法准备默认工作目录');
+    }
     const meta = {
       cwd,
       origin: 'subagent',
@@ -140,6 +159,7 @@ export class AgentPool {
       );
       handle = await this.ctx.agents.create({ sessionId: freshSessionId, meta, agentOptions, setup });
       member.sessionId = freshSessionId;
+      member.lastSeenSeq = 0;
       await this.repo.putMember(member);
     }
 
@@ -150,9 +170,8 @@ export class AgentPool {
       try {
         await workingDirectory.set(handle.agent, cwd);
       } catch (error) {
-        this.logger?.warn?.(`bot-team: set working directory ${cwd} failed: ${String(
-          error && error.message ? error.message : error,
-        )}`);
+        await handle.dispose();
+        throw new Error(`无法设置 Bot 工作目录 ${cwd}: ${String(error?.message || error)}`);
       }
     }
 
@@ -333,7 +352,7 @@ export class AgentPool {
     };
   }
 
-  async disposeMember(membershipId) {
+  async disposeMember(membershipId, { strict = false } = {}) {
     const entry = this.entries.get(membershipId);
     if (!entry) return;
     this.entries.delete(membershipId);
@@ -341,6 +360,10 @@ export class AgentPool {
       await entry.handle.dispose();
     } catch (error) {
       this.logger?.warn?.(`bot-team: dispose agent ${membershipId} failed: ${String(error)}`);
+      if (strict) {
+        this.entries.set(membershipId, entry);
+        throw error;
+      }
     }
   }
 

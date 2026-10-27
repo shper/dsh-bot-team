@@ -30,7 +30,7 @@ const executionTurn = (value) => Number.isSafeInteger(value) && value > 0;
 const executionEvent = (type) => /^(?:turn|step|user|assistant|tool|tools|ptc|approval|llm|request|compaction)\//.test(type);
 
 export class Engine {
-  constructor({ ctx, repo, pool, personas, bus, config, logger, quotaGuard, taskHook }) {
+  constructor({ ctx, repo, pool, personas, bus, config, logger, quotaGuard, taskHook, workspaceGuard }) {
     this.ctx = ctx;
     this.repo = repo;
     this.pool = pool;
@@ -40,6 +40,8 @@ export class Engine {
     this.logger = logger;
     this.quotaGuard = quotaGuard || (() => ({ ok: true }));
     this.taskHook = taskHook || (() => {});
+    this.workspaceGuard = workspaceGuard || (() => {});
+    this.pendingWork = new Set();
 
     this.queue = [];
     this.running = new Map(); // membershipId -> job
@@ -138,6 +140,7 @@ export class Engine {
 
   // ── public dispatch ──────────────────────────────────────────────────────
   assertQuota(groupId, turns = 1) {
+    this.workspaceGuard(groupId);
     const result = this.quotaGuard(groupId, turns);
     if (!result || result.ok) return;
     const error = new Error(result.reason || '本群额度已用完，请稍后再试');
@@ -146,6 +149,7 @@ export class Engine {
   }
 
   postHumanMessage({ groupId, text, mentions, author, replyTo, attachments }) {
+    this.workspaceGuard(groupId);
     const group = this.repo.getGroup(groupId);
     if (!group) throw new Error(`group ${groupId} does not exist`);
     let replyToId = null;
@@ -291,12 +295,23 @@ export class Engine {
   }
 
   async runJob(job, member, bot, context) {
+    this.pendingWork.add(job);
     try {
+      const previousSessionId = member.sessionId;
       const agent = await this.pool.ensure(member.membershipId);
       if (job.finished) return;
       if (this.disposed || job.state === 'stopped') {
         this.finishJob(job, 'stopped', '已停止');
         return;
+      }
+      if (member.sessionId !== previousSessionId) {
+        // A workspace switch creates a new DSH history; seed it from the durable
+        // group timeline rather than only the delta consumed by the old session.
+        context = this.repo.messagesBetween(job.groupId, 0, job.triggerSeq)
+          .slice(-this.config.maxContextMessages);
+        job.context = context;
+        member.lastSeenSeq = job.triggerSeq;
+        this.repo.touchMember(member);
       }
       job.sessionId = agent.id;
       this.activeBySession.set(agent.id, job);
@@ -337,6 +352,7 @@ export class Engine {
       this.finishJob(job, 'error', String(error && error.message ? error.message : error));
     } finally {
       if (job.timer) clearTimeout(job.timer);
+      this.pendingWork.delete(job);
     }
   }
 
@@ -583,9 +599,11 @@ export class Engine {
     try {
       const hookResult = this.taskHook(job, message, status);
       if (hookResult && typeof hookResult.then === 'function') {
+        const pendingHook = { groupId: job.groupId };
+        this.pendingWork.add(pendingHook);
         hookResult.catch((hookError) => {
           this.logger?.warn?.('bot-team: task hook failed: ' + String(hookError));
-        });
+        }).finally(() => this.pendingWork.delete(pendingHook));
       }
     } catch (hookError) {
       this.logger?.warn?.('bot-team: task hook failed: ' + String(hookError));
@@ -679,6 +697,7 @@ export class Engine {
 
   // ── M2: review / revision ───────────────────────────────────────────────
   enqueueJob(spec) {
+    this.workspaceGuard(spec.groupId);
     const job = {
       jobId: newId('job'),
       state: 'queued',
@@ -1201,6 +1220,10 @@ export class Engine {
       list.push(entry);
       this.waiters.set(groupId, list);
     });
+  }
+
+  hasPendingWork(groupId) {
+    return [...this.pendingWork].some((operation) => operation.groupId === groupId);
   }
 
   isRunning(groupId) {

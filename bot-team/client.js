@@ -398,6 +398,15 @@ window.__ModuleLoader__.load({
         ),
     };
 
+    /** DSH's picker returns a host path; browser directory handles do not. */
+    async function pickProjectDirectory() {
+      const bridge = window.__DSH_DIRECTORY_PICKER__;
+      if (bridge && typeof bridge.pick === 'function') return bridge.pick();
+      const workspace = appCtx && appCtx.uiWorkspace;
+      if (workspace && typeof workspace.pickDirectory === 'function') return workspace.pickDirectory();
+      throw new Error(uiT('目录选择器不可用，请填写文件夹的绝对路径。'));
+    }
+
     function formatFileSize(bytes) {
       const value = Number(bytes);
       if (!Number.isFinite(value) || value < 0) return '';
@@ -1218,6 +1227,35 @@ window.__ModuleLoader__.load({
       "Enter 发送 · Shift + Enter 换行 · / 选择 Skill": "Enter to send · Shift + Enter for a new line · / to select a Skill",
       "Host 仍是旧版本：重启 DSH（或重新启用 Bot Team）后，单聊与分组才会生效。": "The Host is still on an old version: restart DSH (or re-enable Bot Team) for direct chats and folders to take effect.",
       "Host 未返回附件引用": "Host did not return an attachment reference",
+      "文件夹": "Folder",
+      "引入项目，Bot 可在目录中检索和处理任务": "Add a project so Bots can search and work in its folder",
+      "任务结束后可切换项目文件夹": "Wait for active tasks to finish before switching projects",
+      "当前项目": "Current project",
+      "切换项目文件夹": "Switch project folder",
+      "更换": "Change",
+      "移除项目，恢复默认工作目录": "Remove project and restore the default working directory",
+      "引入文件夹 / 项目": "Add folder / project",
+      "Bot 将在这个文件夹中检索文件，并按你的任务读取、修改和运行项目。": "Bots will search this folder and read, edit, and run the project as your task requires.",
+      "项目文件夹": "Project folder",
+      "项目文件夹路径": "Project folder path",
+      "选择或填写运行 DSH 的电脑上的文件夹绝对路径。": "Choose a folder or enter its absolute path on the computer running DSH.",
+      "选择文件夹…": "Choose folder…",
+      "正在选择…": "Choosing…",
+      "引入项目": "Add project",
+      "正在引入…": "Adding project…",
+      "引入后对当前聊天持续生效。可在输入框更换或移除项目；移除会恢复默认工作目录，项目文件保留。": "This project stays active for this chat. Change or remove it in the composer; removing restores the default working directory and keeps your project files.",
+      "目录选择器不可用，请填写文件夹的绝对路径。": "The folder picker is unavailable. Enter the absolute folder path.",
+      "无法打开目录选择器，请填写路径：{error}": "Cannot open the folder picker. Enter a path: {error}",
+      "Host 未返回项目工作目录": "The Host did not return the project working directory",
+      "正在切换项目目录，请稍后重试": "The project folder is changing. Try again shortly.",
+      "当前聊天有运行、排队或准备中的任务或讨论，请结束后再切换项目目录": "This chat has tasks or a discussion running, queued, or starting. Finish them before switching project folders.",
+      "workspaceCwd 必须是有效的目录路径": "Enter a valid folder path.",
+      "workspaceCwd 必须是绝对路径（可使用 ~/）": "Enter an absolute folder path (~/ is supported).",
+      "项目目录不能为空": "The project folder cannot be empty.",
+      "无法准备默认工作目录": "Cannot prepare the default working directory.",
+      "无法引入项目目录：目录不存在": "Cannot add project: the folder does not exist.",
+      "无法引入项目目录：目录不可访问": "Cannot add project: the folder is not accessible.",
+      "无法引入项目目录：请选择文件夹，而不是文件": "Cannot add project: select a folder, not a file.",
       "Skill 加载失败：": "Failed to load Skills: ",
       "Token 用量（本单聊累计）": "Token usage (this direct chat, cumulative)",
       "通用助手": "General assistant",
@@ -7175,6 +7213,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         return h('span', { style: { fontSize: 13, fontWeight: 600, lineHeight: 1 } }, '@');
       }
       const paths = {
+        folder: [h('path', { key: 'p', d: 'M2.5 5a1.5 1.5 0 0 1 1.5-1.5h4l2 2h6A1.5 1.5 0 0 1 17.5 7v8a1.5 1.5 0 0 1-1.5 1.5H4A1.5 1.5 0 0 1 2.5 15Z' })],
         stop: [h('rect', { key: 'r', x: 5, y: 5, width: 10, height: 10, rx: 2 })],
         download: [
           h('path', { key: 'p1', d: 'M10 3v9' }),
@@ -7696,6 +7735,81 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       );
     }
 
+    function ProjectWorkspaceDialog({ group, locked, onClose, onSaved }) {
+      const [directory, setDirectory] = React.useState(group.projectWorkspaceCwd || '');
+      const [busy, setBusy] = React.useState(false);
+      const [picking, setPicking] = React.useState(false);
+      const [error, setError] = React.useState('');
+      const busyRef = React.useRef(false);
+      const pickingRef = React.useRef(false);
+      const aliveRef = React.useRef(true);
+      React.useEffect(() => {
+        aliveRef.current = true;
+        return () => { aliveRef.current = false; };
+      }, []);
+
+      const choose = async () => {
+        if (locked || busyRef.current || pickingRef.current) return;
+        pickingRef.current = true;
+        setPicking(true);
+        setError('');
+        try {
+          const selected = await pickProjectDirectory();
+          // null means cancel. Keep the draft and never open a second picker.
+          if (aliveRef.current && typeof selected === 'string' && selected.trim()) setDirectory(selected);
+        } catch (reason) {
+          if (aliveRef.current) setError(uiT('无法打开目录选择器，请填写路径：{error}', { error: String(reason && reason.message ? reason.message : reason) }));
+        } finally {
+          pickingRef.current = false;
+          if (aliveRef.current) setPicking(false);
+        }
+      };
+
+      const submit = async () => {
+        if (locked || busyRef.current || pickingRef.current || !directory.trim()) return;
+        busyRef.current = true;
+        setBusy(true);
+        setError('');
+        try {
+          const result = await api.action('group.workspace.set', { groupId: group.groupId, workspaceCwd: directory.trim() });
+          if (!result.result || result.result.groupId !== group.groupId) throw new Error(uiT('Host 未返回项目工作目录'));
+          if (aliveRef.current) onSaved(result.result);
+        } catch (reason) {
+          if (aliveRef.current) setError(uiT(String(reason && reason.message ? reason.message : reason)));
+        } finally {
+          busyRef.current = false;
+          if (aliveRef.current) setBusy(false);
+        }
+      };
+      const close = () => { if (!busyRef.current) onClose(); };
+      return h(Modal, {
+        title: '引入文件夹 / 项目',
+        subtitle: 'Bot 将在这个文件夹中检索文件，并按你的任务读取、修改和运行项目。',
+        width: 580,
+        onClose: close,
+        footer: [
+          h('button', { key: 'cancel', type: 'button', style: S.ghostBtn, disabled: busy, onClick: close }, '取消'),
+          h('button', { key: 'save', type: 'button', style: S.primaryBtn, disabled: busy || picking || locked || !directory.trim(), onClick: () => void submit() }, busy ? '正在引入…' : '引入项目'),
+        ],
+      },
+        error ? h('div', { role: 'alert', style: { ...S.errorBanner, borderRadius: 8, marginBottom: 12 }, raw: true }, error) : null,
+        locked ? h('div', { role: 'status', style: S.fieldHint }, '任务结束后可切换项目文件夹') : null,
+        h(Field, { label: '项目文件夹', required: true, hint: '选择或填写运行 DSH 的电脑上的文件夹绝对路径。' },
+          h('input', {
+            className: 'bt-project-path', style: S.input, value: directory,
+            placeholder: '/Users/you/project', 'aria-label': '项目文件夹路径', autoFocus: true,
+            disabled: busy || picking || locked, autoComplete: 'off', spellCheck: false,
+            onChange: (event) => { setDirectory(event.target.value); setError(''); },
+            onKeyDown: (event) => {
+              if (event.key === 'Enter' && !event.nativeEvent?.isComposing) { event.preventDefault(); void submit(); }
+            },
+          }),
+          h('button', { type: 'button', style: { ...S.ghostBtn, marginTop: 10, display: 'inline-flex', alignItems: 'center', gap: 6 }, disabled: busy || picking || locked, onClick: () => void choose() },
+            h(AddMenuGlyph, { name: 'folder', size: 15 }), picking ? '正在选择…' : '选择文件夹…')),
+        h('div', { style: S.fieldHint }, '引入后对当前聊天持续生效。可在输入框更换或移除项目；移除会恢复默认工作目录，项目文件保留。'),
+      );
+    }
+
     function renderComposer({
       state,
       dispatch,
@@ -7730,6 +7844,13 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       const [skillLoading, setSkillLoading] = React.useState(false);
       const [skillError, setSkillError] = React.useState(null);
       const [skillReason, setSkillReason] = React.useState('');
+      const [projectDialogOpen, setProjectDialogOpen] = React.useState(false);
+      const [workspaceSaving, setWorkspaceSaving] = React.useState(false);
+      const workspaceSavingRef = React.useRef(false);
+      const projectCwd = (group && group.projectWorkspaceCwd) || '';
+      const workspaceLocked = !!(group && (group.running || group.activeDiscussion?.status === 'running'))
+        || members.some((member) => member.running || ['running', 'queued'].includes(state.statusByMember[member.membershipId]))
+        || state.discussions?.[group && group.groupId]?.status === 'running';
 
       const groupIdRef = React.useRef(group && group.groupId);
       groupIdRef.current = group && group.groupId;
@@ -7761,7 +7882,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         .filter((item) => item.status === 'ready' && item.attachment)
         .map((item) => item.attachment);
       const attachmentsPending = draftAttachments.some((item) => item.status !== 'ready');
-      const canSend = !sending && !attachmentsPending && (text.trim() !== '' || readyAttachments.length > 0);
+      const canSend = !sending && !workspaceSaving && !attachmentsPending && (text.trim() !== '' || readyAttachments.length > 0);
 
       React.useEffect(() => {
         const node = textareaRef.current;
@@ -7832,6 +7953,9 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       React.useEffect(() => {
         setDraftAttachments([]);
         setAddMenuOpen(false);
+        setProjectDialogOpen(false);
+        setWorkspaceSaving(false);
+        workspaceSavingRef.current = false;
         setPicker(null);
         setPickerIndex(0);
       }, [group && group.groupId]);
@@ -8176,9 +8300,34 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         else dispatch({ type: 'error', message: '当前浏览器不支持文件选择' });
       };
 
+      const workspaceSaved = (updated) => {
+        dispatch({ type: 'sse', frame: { type: 'group.updated', group: updated } });
+        if (groupIdRef.current !== updated.groupId) return;
+        setProjectDialogOpen(false);
+        onSent && onSent();
+      };
+
+      const removeProject = async () => {
+        if (workspaceLocked || sending || workspaceSavingRef.current) return;
+        const groupId = group.groupId;
+        workspaceSavingRef.current = true;
+        setWorkspaceSaving(true);
+        try {
+          const result = await api.action('group.workspace.set', { groupId, workspaceCwd: '' });
+          workspaceSaved(result.result);
+        } catch (error) {
+          if (groupIdRef.current === groupId) dispatch({ type: 'error', message: uiT(String(error && error.message ? error.message : error)) });
+        } finally {
+          if (groupIdRef.current === groupId) {
+            workspaceSavingRef.current = false;
+            setWorkspaceSaving(false);
+          }
+        }
+      };
+
       const send = async () => {
         const trimmedText = text.trim();
-        if (sending || attachmentsPending) return;
+        if (sending || workspaceSavingRef.current || attachmentsPending) return;
         if (!trimmedText && readyAttachments.length === 0) return;
         const stillMentioned = mentions.filter((membershipId) => {
           const entry = memberEntries.find((candidate) => candidate.member.membershipId === membershipId);
@@ -8265,6 +8414,15 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         description: '上传本地文件，Bot 可按路径读取',
         icon: 'file',
         run: chooseFiles,
+      });
+      addMenuAction('添加', {
+        key: 'folder',
+        label: '文件夹',
+        alias: 'folder',
+        description: workspaceLocked ? '任务结束后可切换项目文件夹' : '引入项目，Bot 可在目录中检索和处理任务',
+        icon: 'folder',
+        disabled: workspaceLocked || sending || workspaceSaving,
+        run: () => setProjectDialogOpen(true),
       });
       addMenuAction('添加', {
         key: 'skill',
@@ -8526,7 +8684,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                           type: 'button',
                           role: 'menuitem',
                           className: 'bt-add-menu-item',
-                          style: S.addMenuItem,
+                          style: { ...S.addMenuItem, ...(item.disabled ? { opacity: 0.5, cursor: 'not-allowed' } : {}) },
+                          disabled: !!item.disabled,
                           onClick: () => runAddMenuAction(item),
                         },
                         h('span', { style: S.addMenuIcon }, h(AddMenuGlyph, { name: item.icon, size: 14 })),
@@ -8540,6 +8699,16 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               )
             : null,
           renderPicker(),
+          projectCwd
+            ? h('div', { className: 'bt-project-workspace', style: { ...S.draftAttachments, flexWrap: 'nowrap', alignItems: 'center' } },
+                h('div', { style: { ...S.draftAttachment('ready'), maxWidth: '100%', flex: 1, color: S.draftAttachmentMeta.color }, title: projectCwd, rawTitle: true },
+                  h(AddMenuGlyph, { name: 'folder', size: 18 }),
+                  h('div', { style: S.draftAttachmentBody },
+                    h('span', { style: S.draftAttachmentMeta }, '当前项目'),
+                    h('span', { style: S.draftAttachmentName, raw: true }, projectCwd)),
+                  h('button', { type: 'button', style: S.toolButton, disabled: workspaceLocked || sending || workspaceSaving, onClick: () => setProjectDialogOpen(true), 'aria-label': '切换项目文件夹' }, '更换'),
+                  h('button', { type: 'button', style: S.draftAttachmentRemove, disabled: workspaceLocked || sending || workspaceSaving, onClick: () => void removeProject(), title: '移除项目，恢复默认工作目录', 'aria-label': '移除项目，恢复默认工作目录' }, '×')))
+            : null,
           replyTarget
             ? h(
                 'div',
@@ -8675,6 +8844,10 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             ),
           ),
         ),
+        projectDialogOpen ? h(ProjectWorkspaceDialog, {
+          key: group.groupId, group, locked: workspaceLocked || sending || workspaceSaving,
+          onClose: () => setProjectDialogOpen(false), onSaved: workspaceSaved,
+        }) : null,
       );
     }
     function Composer(props) {

@@ -18,7 +18,8 @@
  */
 import os from 'node:os';
 import path from 'node:path';
-import { mkdir, readdir, rename, rmdir, stat, unlink } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { access, mkdir, readdir, realpath, rename, rmdir, stat, unlink } from 'node:fs/promises';
 
 export function dshHomeDir() {
   return process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
@@ -58,6 +59,39 @@ export function isStandardLayout(config) {
 export function sessionCwdMatches(headerCwd, workspaceCwd) {
   return typeof headerCwd === 'string'
     && path.resolve(headerCwd) === path.resolve(workspaceCwd);
+}
+
+/** Normalize a user-selected host path without creating any project directories. */
+export function normalizeWorkspacePath(value) {
+  if (typeof value !== 'string' || value.length > 4096 || value.includes('\0')) {
+    throw Object.assign(new Error('workspaceCwd 必须是有效的目录路径'), { code: 'invalid-input' });
+  }
+  let target = value.trim();
+  if (!target) return '';
+  if (target === '~') target = os.homedir();
+  else if (target.startsWith('~/')) target = path.join(os.homedir(), target.slice(2));
+  if (!path.isAbsolute(target)) {
+    throw Object.assign(new Error('workspaceCwd 必须是绝对路径（可使用 ~/）'), { code: 'invalid-input' });
+  }
+  return path.resolve(target);
+}
+
+/** Resolve symlinks and verify an existing, readable/searchable local directory. */
+export async function validateProjectWorkspace(value) {
+  const target = normalizeWorkspacePath(value);
+  if (!target) throw Object.assign(new Error('项目目录不能为空'), { code: 'invalid-input' });
+  try {
+    const canonical = await realpath(target);
+    if (!(await stat(canonical)).isDirectory()) {
+      throw new Error('请选择文件夹，而不是文件');
+    }
+    await access(canonical, constants.R_OK | constants.X_OK);
+    return canonical;
+  } catch (error) {
+    const reason = error?.code === 'ENOENT' ? '目录不存在' : error?.code === 'EACCES' || error?.code === 'EPERM'
+      ? '目录不可访问' : String(error?.message || error);
+    throw Object.assign(new Error('无法引入项目目录：' + reason), { code: 'invalid-input' });
+  }
 }
 
 export async function pathExists(target) {
@@ -167,7 +201,7 @@ export async function migrateLegacyLayout({ repo, config, logger }) {
     const legacyWorkspace = current ? isInside(current, legacyRoot) : false;
     const previousDirectWorkspace = current ? isPreviousDirectWorkspace(config, group, current) : false;
     if (current && !legacyWorkspace && !previousDirectWorkspace) {
-      await ensureWorkspaceDir(current, logger);
+      // A user-owned project may have moved or become unavailable. Never recreate it.
       continue;
     }
     if (current && current !== target) await moveWorkspace(current, target, logger, summary);
