@@ -24,6 +24,55 @@ function loader(local = client) {
   return { controller, requests, snapshots };
 }
 
+for (const [locale, expected] of [
+  ['zh', '执行过程接口尚未加载。请完全退出并重新启动 DSH'],
+  ['en', 'The execution details endpoint is not loaded. Fully quit and restart DSH'],
+]) {
+  test(`missing Host route explains recovery in ${locale} and retry succeeds after backend reload`, async () => {
+    let ready = false;
+    let calls = 0;
+    const local = loadClient({ fetch: async (url, options) => {
+      calls++;
+      assert.equal(url, '/api/bot-team.message-execution?groupId=g1&messageId=m1&afterSeq=-1&limit=100');
+      assert.equal(options.method, 'GET');
+      assert.equal(options.signal.aborted, false);
+      return ready ? Response.json(page({ status: 'done', events: [event(0, 'turn/start')] })) : new Response('not found', { status: 404 });
+    } });
+    local.setTestLocale(locale);
+    const controller = local.createExecutionController({ groupId: 'g1', messageId: 'm1', onChange() {} });
+    try {
+      await controller.refresh();
+      assert.ok(controller.getState().loadError.startsWith(expected));
+      assert.equal(controller.getState().loading, false);
+      assert.equal(controller.getState().availability, null);
+      assert.equal(calls, 1);
+      ready = true;
+      await controller.refresh();
+      assert.equal(controller.getState().loadError, '');
+      assert.equal(controller.getState().availability, 'available');
+      assert.equal(controller.getState().events.length, 1);
+    } finally { controller.dispose(); }
+  });
+}
+
+test('execution preserves application not-found messages instead of misdiagnosing an unloaded endpoint', async () => {
+  const local = loadClient({ fetch: async () => Response.json({ ok: false, error: { code: 'not-found', message: 'Message not found' } }, { status: 404 }) });
+  const controller = local.createExecutionController({ groupId: 'g1', messageId: 'm1', onChange() {} });
+  try {
+    await controller.refresh();
+    assert.equal(controller.getState().loadError, 'Message not found');
+  } finally { controller.dispose(); }
+});
+
+test('execution authentication failures remain distinct from an unloaded endpoint', async () => {
+  const local = loadClient({ fetch: async () => new Response('unauthorized', { status: 401 }) });
+  const controller = local.createExecutionController({ groupId: 'g1', messageId: 'm1', onChange() {} });
+  try {
+    await controller.refresh();
+    assert.equal(controller.getState().loadError, '请求失败 (HTTP 401)');
+  } finally { controller.dispose(); }
+});
+
 test('merging pages is ordered, immutable and deduplicated while the cursor follows filtered raw records', () => {
   const original = [event(4, 'step/start'), event(2, 'turn/start')];
   const incoming = [event(4, 'step/start'), event(8, 'step/end')];

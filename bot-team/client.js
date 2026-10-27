@@ -340,7 +340,10 @@ window.__ModuleLoader__.load({
       }
       if (!body || body.ok === false) {
         const message = body && body.error && body.error.message ? body.error.message : uiT('请求失败 (HTTP {status})', { status: response.status });
-        throw new Error(message);
+        const error = new Error(message);
+        error.status = response.status;
+        error.code = body?.error?.code || (response.status === 404 && body === null ? 'route-not-found' : null);
+        throw error;
       }
       return body;
     }
@@ -354,8 +357,19 @@ window.__ModuleLoader__.load({
           }`,
           { method: 'GET' },
         ),
-      execution: (groupId, messageId, afterSeq, signal) =>
-        request(`${ROUTES.execution}?groupId=${encodeURIComponent(groupId)}&messageId=${encodeURIComponent(messageId)}&afterSeq=${afterSeq}&limit=100`, { method: 'GET', signal }),
+      execution: async (groupId, messageId, afterSeq, signal) => {
+        try {
+          return await request(`${ROUTES.execution}?groupId=${encodeURIComponent(groupId)}&messageId=${encodeURIComponent(messageId)}&afterSeq=${afterSeq}&limit=100`, { method: 'GET', signal });
+        } catch (error) {
+          // The Host dispatcher returns plain-text 404 when this route is absent.
+          // A missing group/message has its own structured error and must stay distinct.
+          if (error.code === 'route-not-found') {
+            error.message = uiT('执行过程接口尚未加载。请完全退出并重新启动 DSH，再打开此面板；仅刷新页面无法加载后端更新。');
+            error.code = 'execution-api-unavailable';
+          }
+          throw error;
+        }
+      },
       action: (action, payload) =>
         request(ROUTES.action, {
           method: 'POST',
@@ -1309,6 +1323,7 @@ window.__ModuleLoader__.load({
       "执行过程": "Execution details",
       "查看这条回复的执行过程": "View this reply's execution details",
       "关闭执行过程": "Close execution details",
+      "执行过程接口尚未加载。请完全退出并重新启动 DSH，再打开此面板；仅刷新页面无法加载后端更新。": "The execution details endpoint is not loaded. Fully quit and restart DSH, then reopen this panel. Refreshing the page alone cannot load backend updates.",
       "触发输入": "Trigger input",
       "执行开始": "Execution started",
       "执行结束": "Execution ended",
