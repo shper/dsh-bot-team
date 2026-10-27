@@ -10,6 +10,7 @@ import { appendFile, mkdir, stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 
 import { openRepository } from './domain.js';
+import { openPluginStorageDomain } from './storage-layout.js';
 import { CHAT_DISPLAY_SETTINGS_KEY, isChatDisplaySettings, normalizeChatDisplaySettings } from './chat-settings.js';
 import { Personas } from './personas.js';
 import { AgentPool } from './agents.js';
@@ -138,7 +139,7 @@ export class BotTeamService {
   }
 
   async init() {
-    this.repo = await openRepository(this.ctx, this.logger);
+    this.repo = await openRepository(this.ctx, this.logger, spec => openPluginStorageDomain(this.ctx.storageDomain, spec, this.logger));
     const migration = await this.repo.runMigrations();
     if (migration.applied.length > 0) {
       this.logger?.info?.('bot-team: migrated domain records to schema v' + migration.version);

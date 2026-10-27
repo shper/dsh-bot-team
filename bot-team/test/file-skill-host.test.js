@@ -10,9 +10,10 @@ import { resolveConfig } from '../host/util.js';
 const SAME_BYTES = new Uint8Array([104, 105]);
 const ATTACHMENT_ID = 'sha256:' + 'a'.repeat(64);
 
-function fakeCtx() {
+function fakeCtx(storageRoot) {
   const tables = new Map();
   const domain = {
+    unit: { constructor: { name: 'PerRecordJsonUnit' }, descriptor: { name: 'bot_team', layout: 'per-record' }, dir: path.join(storageRoot, 'bot_team') },
     table(name) {
       if (!tables.has(name)) tables.set(name, new Map());
       const records = tables.get(name);
@@ -49,7 +50,12 @@ function fakeCtx() {
   const workingDirectory = { ensured: [], async ensure(agent) { this.ensured.push(agent); return this.cwd; }, cwd: '' };
   const ctx = {
     logger: { info() {}, warn() {}, error() {} },
-    storageDomain: { open: async () => domain },
+    storageDomain: {
+      config: { backend: 'json' },
+      ctx: { storage: { backend: { get: () => ({ constructor: { name: 'JsonStorageBackend' }, root: storageRoot }) } } },
+      get: () => undefined,
+      open: async () => domain,
+    },
     connection: { fetch: { register: (route) => { routes.push(route); return () => {}; } } },
     tools: { register: (definition) => { tools.push(definition); return () => {}; } },
     on: () => () => {},
@@ -67,7 +73,7 @@ function fakeCtx() {
 
 async function boot() {
   const home = await mkdtemp(path.join(os.tmpdir(), 'bot-team-files-'));
-  const fake = fakeCtx();
+  const fake = fakeCtx(path.join(home, 'storages'));
   const service = new BotTeamService(
     fake.ctx,
     resolveConfig({

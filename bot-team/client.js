@@ -1080,7 +1080,13 @@ window.__ModuleLoader__.load({
       "输出 Token": "Output tokens",
       "输入 Token": "Input tokens",
       "输入消息，@ 成员派活…": "Type a message, @ a member to assign work…",
-      "数据保存在 $DSH_HOME/storages/bot_team；Bot 会话是真实 DSH session。人格文件在 $DSH_HOME/dsh-bot-team/bots/<botId>/BOT.md；单聊工作目录 $DSH_HOME/dsh-bot-team/direct/<botId>/，群聊工作目录 $DSH_HOME/dsh-bot-team/groups/<groupId>/。": "Data is stored in $DSH_HOME/storages/bot_team; Bot conversations are real DSH sessions. Persona files live in $DSH_HOME/dsh-bot-team/bots/<botId>/BOT.md; direct chat working directories are $DSH_HOME/dsh-bot-team/direct/<botId>/, and group chat working directories are $DSH_HOME/dsh-bot-team/groups/<groupId>/.",
+      "数据存储": "Data storage",
+      "Bot 会话": "Bot sessions",
+      "使用真实的 DSH session。": "Uses real DSH sessions.",
+      "人格文件": "Persona file",
+      "单聊工作目录": "Direct chat working directory",
+      "群聊工作目录": "Group chat working directory",
+      "在新标签页打开 GitHub 仓库": "Open the GitHub repository in a new tab",
       "刷新": "Refresh",
       "搜索": "Search",
       "速度包含本次模型请求的等待与思考，不含工具执行；并非纯解码速度。缺少计时或 Token 数据的历史消息不显示速度。": "Speed includes waiting and thinking for this model request, excludes tool execution, and is not pure decode speed. Messages missing timing or token data show no speed.",
@@ -3717,7 +3723,20 @@ window.__ModuleLoader__.load({
         wordBreak: 'break-all',
         minWidth: 0,
       },
-      aboutNote: { fontSize: 11, color: 'var(--bt-text-3)', lineHeight: 1.7, marginTop: 2 },
+      aboutLink: { color: 'var(--bt-accent)', textDecoration: 'underline', textUnderlineOffset: 3 },
+      aboutNotes: {
+        display: 'grid',
+        gap: 6,
+        margin: '2px 0 0',
+        paddingLeft: 18,
+        listStyleType: 'disc',
+        fontSize: 11,
+        color: 'var(--bt-text-3)',
+        lineHeight: 1.7,
+        overflowWrap: 'anywhere',
+      },
+      aboutNoteLabel: { color: 'var(--bt-text-2)', fontWeight: 500, marginRight: 8 },
+      aboutPath: { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 'inherit' },
     });
 
     const WELCOME_CSS = `
@@ -5131,6 +5150,14 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
     ];
     const ABOUT_DESCRIPTION = '在 DSH Web GUI 中运行单聊与多 Agent 群聊：每个 Bot 自动拥有独立的单聊窗口；群聊支持自定义分组、拖拽排序与展开/收起；Bot 可配置自己的模型、BOT.md 人格和完整工具能力。';
     const ABOUT_FEATURES = ['单聊自动创建', '群聊分组与拖拽排序', '展开 / 收起', 'BOT.md 人格', '任务与评审'];
+    const ABOUT_GITHUB_URL = 'https://github.com/shper/dsh-bot-team';
+    const ABOUT_DATA_NOTES = [
+      { label: '数据存储', path: '$DSH_HOME/storages/dsh-bot-team' },
+      { label: 'Bot 会话', text: '使用真实的 DSH session。' },
+      { label: '人格文件', path: '$DSH_HOME/dsh-bot-team/bots/<botId>/BOT.md' },
+      { label: '单聊工作目录', path: '$DSH_HOME/dsh-bot-team/direct/<botId>/' },
+      { label: '群聊工作目录', path: '$DSH_HOME/dsh-bot-team/groups/<groupId>/' },
+    ];
 
     function SettingsNavIcon({ name }) {
       const common = {
@@ -5273,6 +5300,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         { label: '版本', value: version },
         { label: '包名', value: packageName },
         { label: '开发者', value: author },
+        { label: 'GitHub', value: ABOUT_GITHUB_URL, href: ABOUT_GITHUB_URL },
       ];
       const aboutPanel = h(
         'div',
@@ -5319,13 +5347,26 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               },
             },
             h('span', { style: S.aboutLabel }, row.label),
-            h('span', { style: S.aboutValue, title: row.value }, row.value),
+            row.href
+              ? h('a', {
+                  href: row.href,
+                  target: '_blank',
+                  rel: 'noopener noreferrer',
+                  title: '在新标签页打开 GitHub 仓库',
+                  style: { ...S.aboutValue, ...S.aboutLink },
+                }, row.value)
+              : h('span', { style: S.aboutValue, title: row.value }, row.value),
           )),
         ),
         h(
-          'div',
-          { style: S.aboutNote },
-          '数据保存在 $DSH_HOME/storages/bot_team；Bot 会话是真实 DSH session。人格文件在 $DSH_HOME/dsh-bot-team/bots/<botId>/BOT.md；单聊工作目录 $DSH_HOME/dsh-bot-team/direct/<botId>/，群聊工作目录 $DSH_HOME/dsh-bot-team/groups/<groupId>/。',
+          'ul',
+          { style: S.aboutNotes },
+          ABOUT_DATA_NOTES.map(note => h(
+            'li',
+            { key: note.label },
+            h('span', { style: S.aboutNoteLabel }, note.label),
+            note.path ? h('code', { style: S.aboutPath }, note.path) : h('span', null, note.text),
+          )),
         ),
       );
 

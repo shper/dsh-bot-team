@@ -7,9 +7,10 @@ import { BotTeamService } from '../host/service.js';
 import { resolveConfig } from '../host/util.js';
 
 /** The DSH services the Host half touches during startup (no agents are run). */
-function fakeCtx() {
+function fakeCtx(storageRoot) {
   const tables = new Map();
   const domain = {
+    unit: { constructor: { name: 'PerRecordJsonUnit' }, descriptor: { name: 'bot_team', layout: 'per-record' }, dir: path.join(storageRoot, 'bot_team') },
     table(name) {
       if (!tables.has(name)) tables.set(name, new Map());
       const records = tables.get(name);
@@ -25,7 +26,12 @@ function fakeCtx() {
   const tools = [];
   const ctx = {
     logger: { info() {}, warn() {}, error() {} },
-    storageDomain: { open: async () => domain },
+    storageDomain: {
+      config: { backend: 'json' },
+      ctx: { storage: { backend: { get: () => ({ constructor: { name: 'JsonStorageBackend' }, root: storageRoot }) } } },
+      get: () => undefined,
+      open: async () => domain,
+    },
     connection: { fetch: { register: (route) => { routes.push(route); return () => {}; } } },
     tools: { register: (definition) => { tools.push(definition); return () => {}; } },
     on: () => () => {},
@@ -38,7 +44,7 @@ function fakeCtx() {
 
 test('the real service boots, registers its routes/tools, and drives direct chats + folders end to end', async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'bot-team-service-'));
-  const { ctx, routes, tools } = fakeCtx();
+  const { ctx, routes, tools } = fakeCtx(path.join(home, 'storages'));
   const service = new BotTeamService(
     ctx,
     resolveConfig({

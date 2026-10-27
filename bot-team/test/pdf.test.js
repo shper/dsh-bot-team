@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import { buildGroupPdf, findPdfFont, PdfError } from '../host/pdf.js';
 
 const font = await findPdfFont().catch(() => null);
@@ -82,9 +83,10 @@ test('a missing font path produces a readable PdfError', { skip: font === null }
   );
 });
 
-function pdfFakeCtx() {
+function pdfFakeCtx(storageDirectory) {
   const tables = new Map();
   const domain = {
+    unit: { constructor: { name: 'PerRecordJsonUnit' }, descriptor: { name: 'bot_team', layout: 'per-record' }, dir: storageDirectory },
     table(name) {
       if (!tables.has(name)) tables.set(name, new Map());
       const records = tables.get(name);
@@ -98,7 +100,12 @@ function pdfFakeCtx() {
   };
   return {
     logger: { info() {}, warn() {}, error() {} },
-    storageDomain: { open: async () => domain },
+    storageDomain: {
+      config: { backend: 'json' },
+      ctx: { storage: { backend: { get: () => ({ constructor: { name: 'JsonStorageBackend' }, root: path.dirname(storageDirectory) }) } } },
+      get: () => undefined,
+      open: async () => domain,
+    },
     connection: { fetch: { register: () => () => {} } },
     tools: { register: () => () => {} },
     on: () => () => {},
@@ -111,12 +118,11 @@ function pdfFakeCtx() {
 test('the Host PDF route returns a downloadable PDF and a readable 404', { skip: font === null }, async () => {
   const { mkdtemp, rm } = await import('node:fs/promises');
   const os = await import('node:os');
-  const path = await import('node:path');
   const { BotTeamService } = await import('../host/service.js');
   const { resolveConfig } = await import('../host/util.js');
   const home = await mkdtemp(path.join(os.tmpdir(), 'bot-team-pdf-service-'));
   const service = new BotTeamService(
-    pdfFakeCtx(),
+    pdfFakeCtx(path.join(home, 'storages', 'bot_team')),
     resolveConfig({
       dataDir: path.join(home, 'data'),
       botsDir: path.join(home, 'data', 'bots'),

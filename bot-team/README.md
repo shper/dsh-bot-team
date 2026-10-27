@@ -11,7 +11,9 @@
 - **人格与工作规范**：`<botsDir>/<botId>/BOT.md`（一个文件写「你是谁」+「你怎么做事」，在页面内编辑，下一轮生效；旧版 SOUL.md/AGENT.md 仍可读取）；
 - **工具**：所有 Bot 统一为全能力 Bot——文件读写、搜索、联网、命令执行、Skill；不提供只读版或按角色裁剪工具的版本。session 沙箱为 `workspace-write`，范围受群/单聊工作目录限制。
 
-群、分组、Bot、成员、消息都保存在插件自己的 storage domain `bot_team`（`$DSH_HOME/storages/bot_team/`），不污染会话日志。单聊也是 group 记录（`kind: "direct"`），由 Host 自动创建与清理。
+群、分组、Bot、成员、消息都保存在插件自己的 storage domain（宿主内部标识 `bot_team`，真实目录 `$DSH_HOME/storages/dsh-bot-team/`），不污染会话日志。单聊也是 group 记录（`kind: "direct"`），由 Host 自动创建与清理。
+
+插件启动时会把旧的 `storages/bot_team/` 实体目录迁到 `storages/dsh-bot-team/`，并让旧路径成为指向新目录的符号链接（Windows 为 junction）。这样可兼容 DSH 0.2 存储标识不接受连字符的限制，实际记录及后续写入都在新目录。迁移在存储关闭后执行，重复启动不会重复搬移；若两个实体目录同时存在或链接目标异常，会停止启动并保留数据，等待解决冲突。自定义 JSON 后端根目录及域路由会按宿主实际打开的目录处理；不支持的后端布局会明确报错。旧版单文件 `bot_team.json` 由宿主通过兼容链接导入新目录，原文件仍保留为历史备份。
 
 插件文件数据默认在 `$DSH_HOME/dsh-bot-team/`：
 
@@ -81,7 +83,7 @@
 
 - 插件说明和功能特性（单聊自动创建、群聊分组与拖拽排序、展开/收起、BOT.md 人格、任务与评审）。
 - **版本号 / 包名 / 开发者** 来自插件 `package.json`，由 Host bootstrap 的 `plugin` 字段下发；当前为 `1.2.0` / `dsh-bot-team` / `shper`。
-- 数据与人格文件位置：`$DSH_HOME/storages/bot_team`、`$DSH_HOME/dsh-bot-team/bots/<botId>/BOT.md`；单聊 / 群聊工作目录在 `$DSH_HOME/dsh-bot-team/direct/<botId>/` 与 `$DSH_HOME/dsh-bot-team/groups/<groupId>/`。
+- 数据与人格文件位置：`$DSH_HOME/storages/dsh-bot-team`、`$DSH_HOME/dsh-bot-team/bots/<botId>/BOT.md`；单聊 / 群聊工作目录在 `$DSH_HOME/dsh-bot-team/direct/<botId>/` 与 `$DSH_HOME/dsh-bot-team/groups/<groupId>/`。
 
 ![设置 · 消息设置](<../docs/assets/v0.7-settings-light.png>)
 

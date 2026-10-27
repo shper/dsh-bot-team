@@ -121,7 +121,7 @@ git clone https://github.com/shper/dsh-bot-team.git
 | 群消息 | 群消息转成 `UserMessage` 走 `agent.followup()`；`session/event` 与 `agent/assistant-stream` 驱动消息与流式 |
 | 人格 | `ctx.systemPrompt.section/context`（agent 作用域）注入 `BOT.md` 与群上下文 |
 | 工具 | `ctx.agentPresets.mount` 挂载「全能力」preset；`ctx.tools.restrict` 防止 Bot 递归调用 Team 工具 |
-| 数据 | storage domain `bot_team`（群 / 单聊 / 分组 / Bot / 成员 / 消息 / 讨论 / 任务），不写会话日志 |
+| 数据 | storage domain 内部标识 `bot_team`，实际目录 `storages/dsh-bot-team`（群 / 单聊 / 分组 / Bot / 成员 / 消息 / 讨论 / 任务），不写会话日志 |
 | 页面 | 单文件 `client.js` 通过 `window.__ModuleLoader__.load` 注册到 `main` 与 `sidebar.panellist` 槽位 |
 | 通道 | `/api/bot-team.*`（bootstrap / messages / events(SSE) / action / file / health），全部在登录态栅栏内 |
 
@@ -149,11 +149,12 @@ git clone https://github.com/shper/dsh-bot-team.git
 
 | 路径 | 内容 |
 |---|---|
-| `$DSH_HOME/storages/bot_team/` | 群、单聊、分组、Bot、成员、消息、任务、讨论 |
+| `$DSH_HOME/storages/dsh-bot-team/` | 群、单聊、分组、Bot、成员、消息、任务、讨论 |
 | `$DSH_HOME/dsh-bot-team/bots/<botId>/BOT.md` | 人格与工作规范 |
 | `$DSH_HOME/dsh-bot-team/groups/<groupId>/` | 群聊工作目录 |
 | `$DSH_HOME/dsh-bot-team/direct/<botId>/` | 单聊工作目录 |
 
+- 启动时自动把旧的 `storages/bot_team/` 实体目录迁到 `storages/dsh-bot-team/`，旧路径保留为兼容目录链接；已有记录和后续写入均位于新目录。使用自定义 JSON 存储根目录时，在该根目录下做同样迁移。
 - 插件不向任何第三方服务上传数据；Bot 的模型请求走你在 DSH 里配置的 provider。
 - Bot 默认拥有 `workspace-write` 的文件与命令能力，范围受工作目录限制。把它们指向敏感目录之前，请先确认这是你想要的。
 

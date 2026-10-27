@@ -1,7 +1,8 @@
 /**
  * Durable repository for Bot Team, backed by the Host storage-domain service.
  *
- * Layout: one domain `bot_team` (per-record) with the tables bots / groups /
+ * Layout: one domain `bot_team` (per-record), mapped by storage-layout.js to the
+ * physical `dsh-bot-team` directory, with the tables bots / groups /
  * folders / members / messages / meta. Records are plain JSON; the domain calls each
  * table's `parse` when loading stored records (see `recordSchema`). Memory is
  * authoritative for reads; every write awaits backend durability through the
@@ -23,8 +24,8 @@ function sortBySeq(list) {
   return list;
 }
 
-export async function openRepository(ctx, logger) {
-  const domain = await ctx.storageDomain.open({
+export async function openRepository(ctx, logger, openDomain = spec => ctx.storageDomain.open(spec)) {
+  const domain = await openDomain({
     name: DOMAIN_NAME,
     version: DOMAIN_VERSION,
     layout: 'per-record',
