@@ -155,16 +155,9 @@ window.__ModuleLoader__.load({
     // The browser cap keeps a single draft from blocking the page on huge files.
     const MAX_ATTACHMENT_BYTES = 32 * 1024 * 1024;
     const MAX_DRAFT_ATTACHMENTS = 10;
-    const TASK_PRIORITY_LABEL = { urgent: '紧急', high: '高', normal: '普通', low: '低' };
     const ACCOUNT_CLIENT_VERSION = '0.2.1-rc.3';
     // The right-click menu's box is sized in JS so placement can clamp it to the viewport.
     const MESSAGE_MENU_WIDTH = 200;
-    const TASK_PRIORITY_COLOR = {
-      urgent: ['#fef2f2', '#b91c1c'],
-      high: ['#fff7ed', '#c2410c'],
-      normal: ['#f3f4f6', '#4b5563'],
-      low: ['#f8fafc', '#64748b'],
-    };
     const TASK_STATUS_LABEL = {
       pending: '待派发',
       in_progress: '进行中',
@@ -826,6 +819,50 @@ window.__ModuleLoader__.load({
     // from the same keys at registration time; UI_EN lives beside it so a missing
     // entry falls back to Chinese instead of blank text.
     const UI_EN = {
+      "开始使用": "Get started",
+      "Bot Team 导航": "Bot Team navigation",
+      "欢迎来到 Bot Team": "Welcome to Bot Team",
+      "好搭档，从这里开始。": "Great teammates start here.",
+      "从一次对话，到一群 Bot 的默契协作。": "From one conversation to a team working together.",
+      "为你的想法，找到一起把它实现的搭档。": "Find the teammates who help bring your ideas to life.",
+      "你的第一位搭档，即将到来。": "Your first teammate starts here.",
+      "为一个共同的目标，聚在一起。": "Bring a team together around a shared goal.",
+      "快速上手": "Quick start",
+      "工作空间": "Workspace",
+      "打开导航": "Open navigation",
+      "关闭导航": "Close navigation",
+      "创建第一个 Bot": "Create your first Bot",
+      "创建 Bot": "Create Bot",
+      "推荐第一步": "Start here",
+      "选一个模型，赋予它名字与专长。": "Choose a model, a name, and a specialty.",
+      "写代码、找资料、聊想法，从一位搭档开始。": "Code, research, or explore an idea with your first teammate.",
+      "自动开启一对一会话": "Includes a direct chat",
+      "组建一个协作群": "Bring a team together",
+      "让不同专长的 Bot 聚在一起。": "Bring Bots with different strengths into one group.",
+      "讨论、分工、互相检查，一起把任务向前推进。": "Discuss, divide the work, and review it together.",
+      "创建群聊": "Create group",
+      "也可以稍后添加 Bot": "You can add Bots later",
+      "一个想法，可以这样一起完成": "One idea, a few helpful teammates",
+      "协作示例": "Example workflow",
+      "@研究员 @工程师 @审阅者": "@Researcher @Engineer @Reviewer",
+      "一起帮我做一个个人网站": "Help me build a personal website",
+      "在群聊中": "In a group chat",
+      "研究员": "Researcher",
+      "工程师": "Engineer",
+      "审阅者": "Reviewer",
+      "梳理需求，找到合适的方向": "Explore the needs and find a direction",
+      "编写代码，把想法做出来": "Write the code and bring it to life",
+      "检查细节，让结果更可靠": "Review the details and improve the result",
+      "每个 Bot 都可以有自己的模型与做事风格，你来决定如何搭配。": "Each Bot can have its own model and working style. You choose the mix.",
+      "先从单聊开始也很好，随时都能组建你的团队。": "Start with a direct chat. You can build your team whenever you are ready.",
+      "各有所长，一起完成。": "Different strengths. Better together.",
+      "三小步，开启协作": "Three steps to working together",
+      "先认识一位 Bot": "Meet your first Bot",
+      "选择模型、名字与专长。创建后，它会自动拥有一个和你的单聊。": "Choose a model, name, and specialty. Your Bot gets a direct chat as soon as you create it.",
+      "为共同的目标，建一个群": "Create a group around a goal",
+      "邀请不同专长的 Bot 加入，同一个 Bot 也可以参与多个群。": "Invite Bots with different strengths. A Bot can participate in more than one group.",
+      "用 @ 邀请它们参与": "Invite them with @mentions",
+      "让 Bot 讨论问题、处理任务或检查彼此的工作。你来掌握方向。": "Ask Bots to discuss a problem, handle a task, or review each other's work. You set the direction.",
       " · 群：": " · Groups: ",
       " · 未加入任何群聊": " · No group chats",
       " · 消息数：": " · Messages: ",
@@ -849,7 +886,6 @@ window.__ModuleLoader__.load({
       "+ 添加": "+ Add",
       "+ 新建 Bot": "+ New Bot",
       "＋ 新建分组…": "+ New folder…",
-      "+ 新建任务": "+ New task",
       "</p><p>导出时间：": "</p><p>Exported at: ",
       "<div class=\"attachment\">附件 · ": "<div class=\"attachment\">Attachment · ",
       "<p>成员：": "<p>Members: ",
@@ -879,8 +915,6 @@ window.__ModuleLoader__.load({
       "创建": "Create",
       "创建 Bot": "Create Bot",
       "创建单聊": "Create direct chat",
-      "创建后点任务卡片「派发」开始执行；执行中可「中断」；点「执行流」查看该 Bot 的完整执行过程。": "After creating a task, click “Dispatch” on its card to start; while it runs you can “Interrupt” it; click “Execution flow” to see the Bot's full run.",
-      "创建任务": "Create task",
       "创建一个可复用的 Agent：定好它是谁、用什么模型。": "Create a reusable agent: define who it is and which model it uses.",
       "从全局 Bot 库删除「": "Delete from the global Bot library: 「",
       "从左侧「单聊」新建一个 Bot（自动获得一对一会话），或创建一个群/话题把多个 Bot 拉进来；每个 Bot 可以有自己的模型、BOT.md 人格与能力。": "Create a Bot from “Direct chat” on the left (it gets a one-on-one conversation automatically), or create a group/topic and add several Bots. Each Bot can have its own model, BOT.md persona, and capabilities.",
@@ -938,7 +972,6 @@ window.__ModuleLoader__.load({
       "还没有成员。添加一个 Bot，或用「新建 Bot」创建一个带人格设定的成员。": "No members yet. Add a Bot, or use “New Bot” to create one with a persona.",
       "还没有分组。可在左侧「群聊」标题右侧点文件夹图标新建。": "No folders yet. Click the folder icon to the right of the “Group chats” heading on the left to create one.",
       "还没有群。新建一个群/话题，然后把 Bot 拉进来。": "No groups yet. Create a group/topic, then add Bots.",
-      "还没有任务。新建并派发后，可中断执行、查看执行详情。": "No tasks yet. After creating and dispatching one, you can interrupt it or view execution details.",
       "还没有消息": "No messages yet",
       "海浪": "Waves",
       "花朵": "Flower",
@@ -973,12 +1006,10 @@ window.__ModuleLoader__.load({
       "空闲": "Idle",
       "控制 Bot 回复下方的模型、Token 与速度信息；保存后应用于所有群聊与单聊。": "Controls the model, token, and speed details below Bot replies; applies to all group and direct chats after saving.",
       "例如：产品方案评审": "e.g. Product proposal review",
-      "例如：单测通过、无 lint 错误": "e.g. Unit tests pass and there are no lint errors",
       "例如：工作": "e.g. Work",
       "例如：工作、产品、个人。同名分组只能有一个。": "e.g. Work, Product, Personal. Folder names must be unique.",
       "例如：架构师 Alice": "e.g. Architect Alice",
       "例如：如何看待把 Agent 群聊接入现有 IM？": "e.g. How should we integrate agent group chat with our existing IM?",
-      "例如：实现登录页表单校验": "e.g. Implement login form validation",
       "例如：重点检查方案风险与遗漏；输出 结论：通过/需修改，再给建议。": "e.g. Focus on risks and gaps; output Conclusion: pass / needs changes, then suggestions.",
       "联网": "Web access",
       "浏览器不支持复制": "Copying is not supported in this browser",
@@ -994,7 +1025,6 @@ window.__ModuleLoader__.load({
       "默认": "Default",
       "默认按名称生成机器人头像；点「随机生成」换一个配色/表情。": "By default, a robot avatar is generated from the name; click “Randomize” for a new color/mood.",
       "默认按群名称生成渐变底色；可随机配色、选插画或上传图片。": "By default, a gradient is generated from the group name; you can randomize colors, pick an illustration, or upload an image.",
-      "目标、范围、注意事项…": "Goals, scope, notes…",
       "排队中": "Queued",
       "派发": "Dispatch",
       "平均回复速度": "Average reply speed",
@@ -1025,9 +1055,6 @@ window.__ModuleLoader__.load({
       "人格模板库": "Persona templates",
       "人格与工作规范": "Persona & working guidelines",
       "人格与工作规范在「编辑 Bot → BOT.md」中维护，下一轮回复生效。": "Persona and working guidelines are maintained in “Edit Bot → BOT.md” and take effect on the next reply.",
-      "任务 (": "Tasks (",
-      "任务标题": "Task title",
-      "任务描述（可选）": "Task description (optional)",
       "任务与评审": "Tasks & reviews",
       "删除": "Delete",
       "删除 Bot": "Delete Bot",
@@ -1103,7 +1130,6 @@ window.__ModuleLoader__.load({
       "新建 Bot": "New Bot",
       "新建分组": "New folder",
       "新建群 / 话题": "New group / topic",
-      "新建任务": "New task",
       "新群": "New group",
       "新消息": "New messages",
       "星球": "Planet",
@@ -1115,9 +1141,7 @@ window.__ModuleLoader__.load({
       "选择 Skill": "Select Skill",
       "选择成员": "Select member",
       "选择要提及的成员": "Select a member to mention",
-      "验收标准（可选）": "Acceptance criteria (optional)",
       "叶子": "Leaf",
-      "依赖未完成：": "Blocked by: ",
       "移出群": "Remove from group",
       "移除文件": "Remove file",
       "移除文件 ": "Remove file ",
@@ -1136,7 +1160,6 @@ window.__ModuleLoader__.load({
       "已隐藏全部消息信息": "All message info hidden",
       "已允许一次": "Allowed once",
       "已中断": "Interrupted",
-      "已中断任务": "Interrupted task",
       "隐藏": "Hide",
       "用户": "User",
       "月亮": "Moon",
@@ -1161,15 +1184,10 @@ window.__ModuleLoader__.load({
       "正在加载 Skill…": "Loading Skills…",
       "正在输入": "Typing",
       "支持 Markdown · 留空则只使用默认角色设定": "Markdown supported · leave blank to use only the default role prompt",
-      "执行流": "Execution flow",
       "执行中": "Running",
       "只读附件": "Read-only attachment",
       "只维护一个文件：先写「你是谁」，再写「你怎么做事」。建议保留「人格」「工作规范」两个小节标题，模型更容易遵循；也可以从模板库选一个人设快速起步。": "Maintain a single file: first describe “who you are”, then “how you work”. Keep the “Persona” and “Working guidelines” headings so the model follows them more reliably; you can also start quickly with a template.",
       "指令": "Commands",
-      "指派：": "Assignee: ",
-      "指派：未知": "Assignee: unknown",
-      "指派成员已不存在": "Assignee no longer exists",
-      "指派给": "Assign to",
       "中断": "Interrupt",
       "中断当前会话进行中的回复": "Interrupt the in-progress reply in this conversation",
       "重命名分组": "Rename folder",
@@ -1226,7 +1244,6 @@ window.__ModuleLoader__.load({
       "文件「{name}」上传失败：{error}": "Failed to upload “{name}”: {error}",
       "已跳过空文件「{name}」": "Skipped empty file “{name}”",
       "{count} 条新消息": "{count} new messages",
-      "任务 ({count})": "Tasks ({count})",
       "成员 ({count})": "Members ({count})",
       "{count} 位成员 · {bots} 个 Bot": "{count} members · {bots} bots",
       "{count} 个运行中": "{count} running",
@@ -1272,15 +1289,12 @@ window.__ModuleLoader__.load({
       "评审 #{seq}": "Review #{seq}",
       "被评审消息 #{seq}": "Reviewed message #{seq}",
       "任务 · {title} · {status}": "Task · {title} · {status}",
-      "指派：{name} · {hint}": "Assignee: {name} · {hint}",
-      "依赖未完成：{titles}": "Blocked by: {titles}",
       "{count} 个群": "{count} groups",
       "{name}：": "{name}: ",
       "{count} 位成员": "{count} members",
       " · {count} 个 Bot": " · {count} bots",
       " · {count} 个运行中": " · {count} running",
       "{error}（点击关闭）": "{error} (click to close)",
-      "指派：{name}": "Assignee: {name}",
       "附件": "Attachment",
       "成员：": "Members:",
       "导出时间：": "Exported:",
@@ -1663,6 +1677,7 @@ window.__ModuleLoader__.load({
       sectionsCollapsed: readSectionsCollapsed(),
       pendingDirectBotId: null,
       activeGroupId: null,
+      homeSelected: false,
       messagesByGroup: {},
       statusByMember: {},
       dialog: null,
@@ -1704,9 +1719,11 @@ window.__ModuleLoader__.load({
             : null;
           const activeGroupId = pendingGroup
             ? pendingGroup.groupId
-            : groups.some((group) => group.groupId === state.activeGroupId)
-              ? state.activeGroupId
-              : groups[0]?.groupId ?? null;
+            : state.homeSelected
+              ? null
+              : groups.some((group) => group.groupId === state.activeGroupId)
+                ? state.activeGroupId
+                : groups[0]?.groupId ?? null;
           return {
             ...state,
             loading: false,
@@ -1721,6 +1738,7 @@ window.__ModuleLoader__.load({
             chatDisplaySettings: normalizeChatDisplaySettings(data.chatDisplaySettings),
             smoke: data.smoke || null,
             activeGroupId,
+            homeSelected: pendingGroup ? false : state.homeSelected,
             pendingDirectBotId:
               pendingBotId && !pendingGroup && !bots.some((bot) => bot.botId === pendingBotId)
                 ? pendingBotId
@@ -1737,11 +1755,14 @@ window.__ModuleLoader__.load({
             ),
           };
         }
+        case 'showWelcome':
+          // An explicit navigation choice survives bootstrap/SSE refreshes.
+          return { ...state, homeSelected: true, activeGroupId: null, dialog: null, pendingDirectBotId: null };
         case 'selectGroup':
           // A manual choice wins over a pending "open the new bot's DM" request.
-          return { ...state, activeGroupId: action.groupId, dialog: null, pendingDirectBotId: null };
+          return { ...state, homeSelected: false, activeGroupId: action.groupId, dialog: null, pendingDirectBotId: null };
         case 'pendingDirect':
-          return { ...state, pendingDirectBotId: action.botId || null };
+          return { ...state, pendingDirectBotId: action.botId || null, homeSelected: action.botId ? false : state.homeSelected };
         case 'sectionCollapsed': {
           const sections = { ...state.sectionsCollapsed };
           if (action.collapsed === true) sections[action.key] = true;
@@ -2181,8 +2202,8 @@ window.__ModuleLoader__.load({
       },
       left: {
         ...S.left,
-        width: 252,
-        background: 'var(--bt-bg-soft)',
+        width: 232,
+        background: 'var(--bt-home-sidebar, var(--bt-bg-soft))',
         borderRight: '1px solid var(--bt-border)',
       },
       leftHeader: {
@@ -2198,10 +2219,9 @@ window.__ModuleLoader__.load({
         marginTop: 'auto',
         flex: '0 0 auto',
         display: 'grid',
-        gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-        gap: 6,
-        padding: '10px 12px',
-        borderTop: '1px solid var(--bt-border)',
+        gridTemplateColumns: 'minmax(0, 1fr)',
+        gap: 4,
+        padding: '12px 16px 16px',
       },
       sidebarAction: {
         appearance: 'none',
@@ -2655,8 +2675,8 @@ window.__ModuleLoader__.load({
 
     // ── v0.6 group-chat feed ──────────────────────────────────────────────
     Object.assign(S, {
-      left: { ...S.left, width: 264 },
-      leftHeader: { ...S.leftHeader, padding: '16px 14px 10px' },
+      left: { ...S.left, width: 232 },
+      leftHeader: { ...S.leftHeader, padding: '26px 24px 28px' },
       groupItem: (active) => ({
         display: 'flex',
         alignItems: 'center',
@@ -3432,11 +3452,11 @@ window.__ModuleLoader__.load({
         gridTemplateColumns: 'minmax(0, 1fr)',
         gap: 4,
         padding: '10px 0',
-        borderTop: '1px solid var(--bt-border)',
         justifyItems: 'center',
       },
       railAction: {
         ...S.sidebarAction,
+        justifyContent: 'center',
         width: 38,
         height: 38,
         minWidth: 38,
@@ -3451,9 +3471,9 @@ window.__ModuleLoader__.load({
         minHeight: 0,
         overflowY: 'auto',
         overflowX: 'hidden',
-        padding: '0 8px 8px',
+        padding: '0 16px 8px',
       },
-      section: { marginTop: 4 },
+      section: { marginTop: 22 },
       sectionHead: { display: 'flex', alignItems: 'center', gap: 2, padding: '4px 2px 2px', minHeight: 26 },
       sectionToggle: {
         display: 'flex',
@@ -3699,7 +3719,144 @@ window.__ModuleLoader__.load({
       aboutNote: { fontSize: 11, color: 'var(--bt-text-3)', lineHeight: 1.7, marginTop: 2 },
     });
 
+    const WELCOME_CSS = `
+/* First-use workspace, sized to the plugin pane rather than the browser. */
+.bt-root { --bt-home-sidebar:#f7f8fa; --bt-home-bg:#fbfcff; --bt-home-card:#fff; --bt-home-primary:#eff4ff; --bt-home-border:#dce3ef; --bt-home-primary-border:#b8cbef; --bt-home-blue:#4168c4; --bt-home-button:#496fda; --bt-home-button-text:#fff; --bt-home-mint:#307d6a; --bt-home-sand:#906b38; }
+body[data-ds-dark-theme] .bt-root { --bt-home-sidebar:#15171c; --bt-home-bg:#101216; --bt-home-card:#191c23; --bt-home-primary:#1d273a; --bt-home-border:#303541; --bt-home-primary-border:#506dac87; --bt-home-blue:#aac1ff; --bt-home-button:#7899fb; --bt-home-button-text:#111c37; --bt-home-mint:#90cbb8; --bt-home-sand:#cab28f; }
+.bt-page { position:relative; min-width:0; container:bot-team / inline-size; }
+.bt-main-panel { container:bot-main / inline-size; }
+.bt-sidebar { flex-shrink:0; }
+.bt-brand { display:flex; align-items:center; gap:11px; color:var(--bt-text-strong); font-size:17px; font-weight:650; letter-spacing:-.3px; }
+.bt-brand-mark { width:32px; height:32px; flex-shrink:0; display:grid; place-items:center; border-radius:10px; background:var(--bt-home-button); color:var(--bt-home-button-text); }
+.bt-brand-mark .bt-welcome-icon { width:23px; height:23px; }
+.bt-welcome-icon { display:block; flex-shrink:0; pointer-events:none; }
+.bt-welcome-nav { display:flex; align-items:center; gap:11px; flex-shrink:0; margin:0 16px 8px; padding:12px 13px; border:1px solid transparent; border-radius:9px; background:transparent; color:var(--bt-text-2); font:inherit; font-size:13px; font-weight:550; text-align:left; cursor:pointer; }
+.bt-welcome-nav[data-active=true] { color:var(--bt-home-blue); border-color:var(--bt-accent-border); background:var(--bt-accent-soft); }
+.bt-welcome-nav:hover { background:var(--bt-hover); }
+.bt-welcome-nav .bt-welcome-icon { width:18px; height:18px; }
+.bt-welcome-nav .bt-welcome-nav-arrow { margin-left:auto; width:13px; height:13px; }
+.bt-sidebar[data-collapsed=true] .bt-welcome-nav { justify-content:center; margin:0 auto 12px; width:46px; height:42px; padding:0; }
+.bt-welcome-screen { flex:1; min-height:0; overflow:auto; background:radial-gradient(ellipse at 65% 0%,#7899fb06,transparent 53%),var(--bt-home-bg); }
+.bt-welcome-screen *, .bt-welcome-nav { box-sizing:border-box; }
+.bt-welcome-topbar { height:70px; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:0 38px; border-bottom:1px solid var(--bt-border); }
+.bt-welcome-breadcrumb { display:flex; align-items:center; gap:12px; color:var(--bt-text-2); font-size:12px; }
+.bt-welcome-muted { color:var(--bt-text-3); }
+.bt-welcome-guide { display:flex; align-items:center; gap:7px; color:var(--bt-text-3); padding:9px 0 9px 10px; border:0; background:none; font:inherit; font-size:12px; cursor:pointer; white-space:nowrap; }
+.bt-welcome-guide:hover { color:var(--bt-text); }
+.bt-welcome-guide .bt-welcome-icon { width:16px; height:16px; }
+.bt-welcome-guide .bt-welcome-icon:last-child { width:12px; height:12px; }
+.bt-welcome-mobile-menu, .bt-welcome-scrim { display:none; }
+.bt-welcome-content { max-width:1080px; margin:0 auto; padding:62px 40px 34px; }
+.bt-welcome-hero { display:flex; align-items:center; justify-content:space-between; gap:24px; min-height:176px; margin-bottom:37px; }
+.bt-welcome-eyebrow { display:flex; align-items:center; gap:9px; color:var(--bt-text-2); font-size:12px; letter-spacing:.4px; margin:0 0 17px; }
+.bt-welcome-eyebrow::before { content:''; width:6px; height:6px; flex-shrink:0; border-radius:50%; background:var(--bt-home-mint); box-shadow:0 0 0 4px #8bcbb60c; }
+.bt-welcome-hero h1 { margin:0; color:var(--bt-text-strong); font-size:38px; letter-spacing:-1.4px; line-height:1.4; font-weight:620; }
+.bt-welcome-description { font-size:14px; line-height:1.9; color:var(--bt-text-3); margin:14px 0 0; }
+.bt-welcome-art { position:relative; width:270px; height:170px; flex-shrink:0; background-image:radial-gradient(#67728c25 1px,transparent 1px); background-size:17px 17px; mask-image:linear-gradient(90deg,transparent,black 14%,black 86%,transparent); }
+.bt-welcome-connectors { position:absolute; inset:0; width:100%; height:100%; stroke:var(--bt-accent-border); stroke-width:1.1; }
+.bt-welcome-tile { position:absolute; border-radius:13px; width:50px; height:50px; display:grid; place-items:center; border:1px solid var(--bt-home-border); box-shadow:0 10px 22px #0002; }
+.bt-welcome-tile .bt-welcome-icon { width:25px; height:25px; }
+.bt-welcome-tile.main-bot { left:104px; top:37px; width:69px; height:69px; background:linear-gradient(145deg,#779cff,#4768d6); border-color:#afc4ff77; color:#f5f8ff; border-radius:17px; transform:rotate(-7deg); }
+.bt-welcome-tile.main-bot .bt-welcome-icon { width:37px; height:37px; }
+.bt-welcome-tile.research { left:29px; top:91px; color:var(--bt-home-mint); background:color-mix(in srgb,var(--bt-home-mint) 15%,var(--bt-home-bg)); transform:rotate(-13deg); }
+.bt-welcome-tile.review { left:208px; top:91px; color:var(--bt-home-sand); background:color-mix(in srgb,var(--bt-home-sand) 15%,var(--bt-home-bg)); transform:rotate(12deg); }
+.bt-welcome-spark { position:absolute; left:55px; top:33px; color:var(--bt-text-3); font-size:16px; }
+.bt-welcome-spark.second { left:221px; font-size:10px; }
+.bt-welcome-art-caption { position:absolute; left:91px; bottom:8px; color:var(--bt-text-3); font-size:9px; letter-spacing:1.3px; }
+.bt-welcome-actions { display:grid; grid-template-columns:1.08fr 1fr; gap:18px; }
+.bt-welcome-card { display:flex; flex-direction:column; min-width:0; min-height:268px; padding:26px; border:1px solid var(--bt-home-border); border-radius:16px; background:var(--bt-home-card); }
+.bt-welcome-card.primary { border-color:var(--bt-home-primary-border); background:radial-gradient(ellipse at 95% 5%,#4d70c510,transparent 60%),linear-gradient(120deg,var(--bt-home-primary),var(--bt-home-card)); }
+.bt-welcome-card-top { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:19px; }
+.bt-welcome-symbol { width:43px; height:43px; display:grid; place-items:center; border-radius:12px; background:var(--bt-accent-soft); color:var(--bt-home-blue); border:1px solid var(--bt-accent-border); }
+.bt-welcome-symbol .bt-welcome-icon { width:24px; height:24px; }
+.bt-welcome-symbol.group { background:var(--bt-hover); color:var(--bt-text-2); border-color:var(--bt-border); }
+.bt-welcome-recommended { color:var(--bt-home-blue); font-size:10px; padding:5px 9px; border:1px solid var(--bt-accent-border); border-radius:5px; letter-spacing:.2px; }
+.bt-welcome-card h2 { color:var(--bt-text-strong); font-size:20px; letter-spacing:-.5px; font-weight:600; margin:0 0 10px; line-height:1.5; }
+.bt-welcome-card p { font-size:12px; line-height:1.95; margin:0 0 25px; color:var(--bt-text-3); }
+.bt-welcome-card-bottom { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-top:auto; }
+.bt-welcome-button { min-height:39px; padding:9px 15px; border-radius:7px; display:inline-flex; align-items:center; justify-content:center; gap:15px; font:inherit; font-size:12px; font-weight:550; cursor:pointer; }
+.bt-welcome-button .bt-welcome-icon { width:16px; height:16px; }
+.bt-welcome-primary { background:var(--bt-home-button); color:var(--bt-home-button-text); border:1px solid #adc2ff42; box-shadow:0 3px 12px #060e2914; }
+.bt-welcome-secondary { background:var(--bt-hover); border:1px solid var(--bt-border-strong); color:var(--bt-text-2); }
+.bt-welcome-card-caption { font-size:10px; color:var(--bt-text-3); display:flex; align-items:center; gap:5px; }
+.bt-welcome-card-caption .bt-welcome-icon { width:12px; height:12px; }
+.bt-welcome-example-section { margin-top:36px; }
+.bt-welcome-section-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:15px; }
+.bt-welcome-section-heading h3 { font-size:13px; font-weight:500; color:var(--bt-text-2); margin:0; }
+.bt-welcome-example-label { font-size:10px; color:var(--bt-text-3); display:flex; align-items:center; gap:5px; flex-shrink:0; }
+.bt-welcome-example-label .bt-welcome-icon { width:13px; height:13px; }
+.bt-welcome-example { border:1px solid var(--bt-border); border-radius:13px; overflow:hidden; background:var(--bt-home-card); }
+.bt-welcome-prompt { display:flex; align-items:center; gap:12px; padding:18px 21px; border-bottom:1px solid var(--bt-border); }
+.bt-welcome-prompt-icon { width:25px; height:25px; flex-shrink:0; display:grid; place-items:center; border-radius:7px; background:var(--bt-hover); color:var(--bt-text-2); }
+.bt-welcome-prompt-icon .bt-welcome-icon { width:15px; height:15px; }
+.bt-welcome-prompt-text { font-size:12px; color:var(--bt-text-2); line-height:1.8; }
+.bt-welcome-prompt-text strong { font-weight:500; color:var(--bt-home-blue); margin-right:6px; }
+.bt-welcome-prompt-context { margin-left:auto; color:var(--bt-text-3); display:flex; gap:5px; align-items:center; font-size:10px; white-space:nowrap; }
+.bt-welcome-prompt-context .bt-welcome-icon { height:12px; width:12px; }
+.bt-welcome-workflow { list-style:none; margin:0; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:28px; padding:25px 24px; }
+.bt-welcome-role { position:relative; display:flex; align-items:center; gap:11px; min-width:0; }
+.bt-welcome-role:not(:last-child)::after { content:''; position:absolute; right:-13px; top:17px; width:5px; height:5px; border-top:1px solid var(--bt-text-3); border-right:1px solid var(--bt-text-3); transform:rotate(45deg); }
+.bt-welcome-avatar { width:37px; height:37px; flex-shrink:0; display:grid; place-items:center; border:1px solid var(--bt-home-border); border-radius:10px; color:var(--bt-home-mint); background:color-mix(in srgb,var(--bt-home-mint) 10%,var(--bt-home-card)); }
+.bt-welcome-avatar .bt-welcome-icon { width:19px; height:19px; }
+.bt-welcome-avatar.blue { color:var(--bt-home-blue); background:var(--bt-accent-soft); }
+.bt-welcome-avatar.sand { color:var(--bt-home-sand); background:color-mix(in srgb,var(--bt-home-sand) 10%,var(--bt-home-card)); }
+.bt-welcome-role-name { font-size:12px; font-weight:550; margin-bottom:6px; color:var(--bt-text-2); }
+.bt-welcome-role-copy { font-size:10px; color:var(--bt-text-3); line-height:1.7; }
+.bt-welcome-example-bottom { display:flex; align-items:flex-start; gap:6px; padding:0 24px 19px; color:var(--bt-text-3); font-size:10px; line-height:1.8; }
+.bt-welcome-example-bottom .bt-welcome-icon { height:12px; width:12px; margin-top:3px; }
+.bt-welcome-note { display:flex; align-items:center; justify-content:center; gap:7px; color:var(--bt-text-3); font-size:11px; margin:29px 0 0; line-height:1.8; text-align:center; }
+.bt-welcome-note .bt-welcome-icon { height:14px; width:14px; }
+.bt-welcome-footer { display:flex; align-items:center; justify-content:center; gap:7px; margin-top:37px; font-size:9px; color:var(--bt-text-3); letter-spacing:.7px; }
+.bt-welcome-steps { list-style:none; padding:0; margin:0; display:grid; gap:24px; }
+.bt-welcome-steps li { display:flex; align-items:flex-start; gap:15px; }
+.bt-welcome-step-number { display:grid; place-items:center; width:26px; height:26px; flex-shrink:0; border-radius:50%; background:var(--bt-accent-soft); color:var(--bt-accent); font-size:11px; }
+.bt-welcome-steps h3 { font-size:13px; margin:2px 0 6px; font-weight:550; }
+.bt-welcome-steps p { font-size:12px; line-height:1.8; color:var(--bt-text-2); margin:0; }
+@container bot-main (max-width:1000px) {
+  .bt-welcome-content { padding:48px 28px 32px; }
+  .bt-welcome-hero h1 { font-size:32px; }
+  .bt-welcome-description { font-size:12px; }
+  .bt-welcome-art { transform:scale(.85); transform-origin:right center; margin-left:-35px; }
+  .bt-welcome-card { padding:22px; }
+}
+@container bot-main (max-width:800px) {
+  .bt-welcome-art { display:none; }
+  .bt-welcome-content { padding-top:38px; }
+  .bt-welcome-role { flex-direction:column; align-items:flex-start; gap:9px; }
+  .bt-welcome-role:not(:last-child)::after { top:32px; }
+  .bt-welcome-prompt-context { display:none; }
+}
+@container bot-main (max-width:600px) {
+  .bt-welcome-topbar { height:61px; padding:0 20px; gap:10px; }
+  .bt-welcome-breadcrumb { gap:9px; }
+  .bt-welcome-content { padding:32px 20px; }
+  .bt-welcome-hero { min-height:150px; margin-bottom:25px; }
+  .bt-welcome-hero h1 { font-size:28px; letter-spacing:-.8px; }
+  .bt-welcome-actions { grid-template-columns:minmax(0,1fr); gap:14px; }
+  .bt-welcome-card { min-height:245px; }
+  .bt-welcome-card-top { margin-bottom:16px; }
+  .bt-welcome-example-section { margin-top:29px; }
+  .bt-welcome-section-heading h3 { font-size:12px; }
+  .bt-welcome-workflow { gap:17px; padding:23px 19px; }
+  .bt-welcome-role:not(:last-child)::after { right:-8px; }
+  .bt-welcome-avatar { width:32px; height:32px; }
+  .bt-welcome-role-name { font-size:11px; }
+  .bt-welcome-prompt { padding:16px; gap:9px; align-items:flex-start; }
+  .bt-welcome-prompt-text { font-size:11px; }
+  .bt-welcome-example-bottom { padding:0 19px 18px; }
+  .bt-welcome-note { font-size:10px; margin-top:24px; }
+}
+@container bot-team (max-width:760px) {
+  .bt-page[data-home=true] > .bt-sidebar { display:none !important; }
+  .bt-page[data-home=true][data-mobile-sidebar=true] > .bt-sidebar { display:flex !important; position:absolute; z-index:21; inset:0 auto 0 0; max-width:calc(100% - 48px); box-shadow:12px 0 35px #0003; }
+  .bt-page[data-home=true] .bt-welcome-mobile-menu { display:grid; place-items:center; padding:0; width:28px; height:32px; background:none; border:0; color:var(--bt-text-2); cursor:pointer; }
+  .bt-page[data-home=true] > .bt-welcome-scrim { display:block; position:absolute; inset:0; z-index:20; border:0; background:#04070e99; backdrop-filter:blur(4px); }
+}
+@media (prefers-reduced-motion:reduce) { .bt-welcome-screen *, .bt-welcome-nav, .bt-sidebar { transition:none !important; } }
+`;
+
     const GLOBAL_CSS = `
+${WELCOME_CSS}
 .bt-root {
   --bt-surface: #ffffff;
   --bt-overlay: rgba(17,24,39,0.38);
@@ -4855,6 +5012,103 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       );
     }
 
+    // ── getting started: all actions use the existing Host-backed dialogs ──
+    function WelcomeIcon({ name, className }) {
+      const paths = {
+        bot: ['M12 3v4M1.5 12v4m21-4v4M9 16h6', 'M8.5 11.5v1m7-1v1'],
+        plus: ['M12 5v14M5 12h14'],
+        arrow: ['M4 12h16m-6-6 6 6-6 6'],
+        chevron: ['m9 5 7 7-7 7'],
+        chat: ['M20 11.5a8.5 8.5 0 0 1-8.5 8.5H4l1-4A8.5 8.5 0 1 1 20 11.5Z', 'M8 10h7m-7 4h4'],
+        group: ['M2.5 20v-2a5.5 5.5 0 0 1 5.5-5.5h2A5.5 5.5 0 0 1 15.5 18v2M16 4.8a3.2 3.2 0 0 1 0 6.4M18 14a5 5 0 0 1 3.5 4.7V20'],
+        search: ['m16 16 4.5 4.5M8 10.5h5m-2.5-2.5v5'],
+        code: ['m7 6-5 6 5 6m10-12 5 6-5 6M14 4l-4 16'],
+        check: ['m5 12 4 4L19 6'],
+        shield: ['m12 3 8 3v6c0 4-4 7-8 9-4-2-8-5-8-9V6zM8 11.5l2.5 2.5L16 9'],
+        spark: ['m12 3 2.6 6.4L21 12l-6.4 2.6L12 21l-2.6-6.4L3 12l6.4-2.6Z'],
+        book: ['M12 5c-3-2-6-2-9-1v15c3-1 6-1 9 1 3-2 6-2 9-1V4c-3-1-6-1-9 1Zm0 0v15'],
+        info: ['M12 11v5m0-9v.2'],
+        menu: ['M4 6h16M4 12h16M4 18h16'],
+      };
+      return h('svg', {
+        className: 'bt-welcome-icon' + (className ? ' ' + className : ''),
+        width: 20, height: 20, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
+        strokeWidth: 1.65, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true, focusable: false,
+      },
+        name === 'bot' ? h('rect', { x: 4, y: 7, width: 16, height: 13, rx: 4 }) : null,
+        name === 'group' ? h('circle', { cx: 9, cy: 8, r: 3.2 }) : null,
+        name === 'search' ? h('circle', { cx: 10.5, cy: 10.5, r: 6.5 }) : null,
+        name === 'info' ? h('circle', { cx: 12, cy: 12, r: 9 }) : null,
+        (paths[name] || paths.spark).map((d, key) => h('path', { key, d })),
+      );
+    }
+
+    function WelcomeScreen({ hasBots, onCreateBot, onCreateGroup, onGuide, onOpenSidebar, sidebarOpen = false }) {
+      const action = (label, name, callback, primary) => h('button', {
+        type: 'button', className: 'bt-welcome-button ' + (primary ? 'bt-welcome-primary' : 'bt-welcome-secondary'),
+        'data-action': name, onClick: callback,
+      }, label, h(WelcomeIcon, { name: 'arrow' }));
+      const role = (name, icon, copy, color) => h('li', { key: icon, className: 'bt-welcome-role' },
+        h('span', { className: 'bt-welcome-avatar ' + color }, h(WelcomeIcon, { name: icon })),
+        h('div', null, h('div', { className: 'bt-welcome-role-name' }, name), h('div', { className: 'bt-welcome-role-copy' }, copy)),
+      );
+      return h('div', { className: 'bt-welcome-screen', 'data-testid': 'welcome-screen' },
+        h('header', { className: 'bt-welcome-topbar' },
+          h('div', { className: 'bt-welcome-breadcrumb' },
+            h('button', { type: 'button', className: 'bt-welcome-mobile-menu', onClick: onOpenSidebar, 'aria-label': '打开导航', 'aria-controls': 'bt-group-sidebar', 'aria-expanded': sidebarOpen }, h(WelcomeIcon, { name: 'menu' })),
+            h('span', { className: 'bt-welcome-muted' }, '工作空间'), h('span', { 'aria-hidden': true }, '/'), h('span', null, '开始使用')),
+          h('button', { type: 'button', className: 'bt-welcome-guide', 'data-action': 'quick-start', onClick: onGuide }, h(WelcomeIcon, { name: 'book' }), '快速上手', h(WelcomeIcon, { name: 'chevron' }))),
+        h('div', { className: 'bt-welcome-content' },
+          h('section', { className: 'bt-welcome-hero', 'aria-labelledby': 'bt-welcome-title' },
+            h('div', null, h('p', { className: 'bt-welcome-eyebrow' }, '欢迎来到 Bot Team'),
+              h('h1', { id: 'bt-welcome-title' }, '好搭档，从这里开始。'),
+              h('p', { className: 'bt-welcome-description' }, '从一次对话，到一群 Bot 的默契协作。', h('br'), '为你的想法，找到一起把它实现的搭档。')),
+            h('div', { className: 'bt-welcome-art', 'aria-hidden': true },
+              h('svg', { className: 'bt-welcome-connectors', viewBox: '0 0 270 170', fill: 'none', focusable: false },
+                h('path', { d: 'M133 90C132 126 90 108 57 118M142 88C156 121 197 100 231 118', strokeDasharray: '3 5' }),
+                h('path', { d: 'M62 111C62 66 84 60 128 62M232 112C232 54 192 54 156 62', opacity: .5 })),
+              h('span', { className: 'bt-welcome-spark' }, '✧'), h('span', { className: 'bt-welcome-spark second' }, '✦'),
+              h('div', { className: 'bt-welcome-tile research' }, h(WelcomeIcon, { name: 'search' })),
+              h('div', { className: 'bt-welcome-tile main-bot' }, h(WelcomeIcon, { name: 'bot' })),
+              h('div', { className: 'bt-welcome-tile review' }, h(WelcomeIcon, { name: 'shield' })),
+              h('div', { className: 'bt-welcome-art-caption' }, '• BETTER TOGETHER'))),
+          h('section', { className: 'bt-welcome-actions', 'aria-label': '开始使用' },
+            h('article', { className: 'bt-welcome-card primary' },
+              h('div', { className: 'bt-welcome-card-top' }, h('div', { className: 'bt-welcome-symbol' }, h(WelcomeIcon, { name: 'bot' })), !hasBots ? h('span', { className: 'bt-welcome-recommended' }, '推荐第一步') : null),
+              h('h2', null, hasBots ? '创建 Bot' : '创建第一个 Bot'),
+              h('p', null, '选一个模型，赋予它名字与专长。', h('br'), '写代码、找资料、聊想法，从一位搭档开始。'),
+              h('div', { className: 'bt-welcome-card-bottom' }, action('创建 Bot', 'create-bot', onCreateBot, true), h('span', { className: 'bt-welcome-card-caption' }, h(WelcomeIcon, { name: 'chat' }), '自动开启一对一会话'))),
+            h('article', { className: 'bt-welcome-card' },
+              h('div', { className: 'bt-welcome-card-top' }, h('div', { className: 'bt-welcome-symbol group' }, h(WelcomeIcon, { name: 'group' }))),
+              h('h2', null, '组建一个协作群'), h('p', null, '让不同专长的 Bot 聚在一起。', h('br'), '讨论、分工、互相检查，一起把任务向前推进。'),
+              h('div', { className: 'bt-welcome-card-bottom' }, action('创建群聊', 'create-group', onCreateGroup, false), h('span', { className: 'bt-welcome-card-caption' }, '也可以稍后添加 Bot')))),
+          h('section', { className: 'bt-welcome-example-section', 'aria-labelledby': 'bt-welcome-example-title' },
+            h('div', { className: 'bt-welcome-section-heading' }, h('h3', { id: 'bt-welcome-example-title' }, '一个想法，可以这样一起完成'), h('span', { className: 'bt-welcome-example-label' }, h(WelcomeIcon, { name: 'info' }), '协作示例')),
+            h('div', { className: 'bt-welcome-example' },
+              h('div', { className: 'bt-welcome-prompt' }, h('span', { className: 'bt-welcome-prompt-icon' }, h(WelcomeIcon, { name: 'chat' })), h('span', { className: 'bt-welcome-prompt-text' }, h('strong', null, '@研究员 @工程师 @审阅者'), ' ', '一起帮我做一个个人网站'), h('span', { className: 'bt-welcome-prompt-context' }, h(WelcomeIcon, { name: 'group' }), '在群聊中')),
+              h('ol', { className: 'bt-welcome-workflow' }, role('研究员', 'search', '梳理需求，找到合适的方向', 'mint'), role('工程师', 'code', '编写代码，把想法做出来', 'blue'), role('审阅者', 'shield', '检查细节，让结果更可靠', 'sand')),
+              h('div', { className: 'bt-welcome-example-bottom' }, h(WelcomeIcon, { name: 'spark' }), '每个 Bot 都可以有自己的模型与做事风格，你来决定如何搭配。'))),
+          h('p', { className: 'bt-welcome-note' }, h(WelcomeIcon, { name: 'check' }), '先从单聊开始也很好，随时都能组建你的团队。'),
+          h('footer', { className: 'bt-welcome-footer' }, h('span', null, 'BOT TEAM'), h('span', { 'aria-hidden': true }, '·'), h('span', null, '各有所长，一起完成。'))));
+    }
+
+    function GettingStartedDialog({ hasBots, onClose, onCreateBot, onCreateGroup }) {
+      const steps = [
+        ['先认识一位 Bot', '选择模型、名字与专长。创建后，它会自动拥有一个和你的单聊。'],
+        ['为共同的目标，建一个群', '邀请不同专长的 Bot 加入，同一个 Bot 也可以参与多个群。'],
+        ['用 @ 邀请它们参与', '让 Bot 讨论问题、处理任务或检查彼此的工作。你来掌握方向。'],
+      ];
+      return h(Modal, { title: '三小步，开启协作', onClose, width: 500,
+        footer: [
+          h('button', { key: 'group', type: 'button', style: S.ghostBtn, 'data-action': 'create-group', onClick: onCreateGroup }, '创建群聊'),
+          h('button', { key: 'bot', type: 'button', style: S.primaryBtn, 'data-action': 'create-bot', onClick: onCreateBot }, hasBots ? '创建 Bot' : '创建第一个 Bot'),
+        ],
+      }, h('ol', { className: 'bt-welcome-steps' }, steps.map(([title, text], index) => h('li', { key: title },
+        h('span', { className: 'bt-welcome-step-number', 'aria-hidden': true }, String(index + 1)),
+        h('div', null, h('h3', null, title), h('p', null, text)),
+      ))));
+    }
+
     function Field({ label, hint, required, style, children }) {
       return h(
         'div',
@@ -5011,7 +5265,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       );
 
       const info = pluginInfo && typeof pluginInfo === 'object' ? pluginInfo : {};
-      const version = typeof info.version === 'string' && info.version ? info.version : '1.1.0';
+      const version = typeof info.version === 'string' && info.version ? info.version : '1.2.0';
       const packageName = typeof info.packageName === 'string' && info.packageName ? info.packageName : 'dsh-bot-team';
       const author = typeof info.author === 'string' && info.author ? info.author : 'shper';
       const metaRows = [
@@ -5317,6 +5571,9 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       onDeleteFolder,
       onReorderGroups,
       onReorderFolders,
+      onShowWelcome,
+      sidebarRef,
+      mobileNavigation,
     }) {
       const collapsed = state.sidebarCollapsed === true;
       const sections = state.sectionsCollapsed || {};
@@ -5959,7 +6216,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                 'Host 仍是旧版本：重启 DSH（或重新启用 Bot Team）后，单聊与分组才会生效。',
               )
             : model.direct.length === 0
-              ? h('div', { style: { fontSize: 11.5, color: 'var(--bt-text-3)', padding: '4px 8px 8px', lineHeight: 1.7 } }, '还没有 Bot。新建一个 Bot，就会自动拥有一个单聊窗口。')
+              ? h('div', { style: { fontSize: 11.5, color: 'var(--bt-text-3)', padding: '4px 8px 8px', lineHeight: 1.7 } }, '你的第一位搭档，即将到来。')
               : model.direct.map(renderDirectRow),
         ),
       );
@@ -5984,7 +6241,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             ? h(
                 'div',
                 { style: { fontSize: 11.5, color: 'var(--bt-text-3)', padding: '4px 8px 8px', lineHeight: 1.7 } },
-                '还没有群。新建一个群/话题，然后把 Bot 拉进来。',
+                '为一个共同的目标，聚在一起。',
               )
             : null,
         ),
@@ -6050,7 +6307,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             groupsSection,
           );
 
-      const toggleTitle = collapsed ? '展开侧栏' : '收起侧栏';
+      const toggleTitle = mobileNavigation ? '关闭导航' : collapsed ? '展开侧栏' : '收起侧栏';
       const toggleButton = h(
         'button',
         {
@@ -6061,7 +6318,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           'aria-label': toggleTitle,
           'aria-expanded': !collapsed,
           'aria-controls': 'bt-group-sidebar',
-          onClick: () => dispatch({ type: 'toggleSidebar' }),
+          onClick: () => mobileNavigation ? onShowWelcome?.() : dispatch({ type: 'toggleSidebar' }),
         },
         h('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true, focusable: false, style: S.sidebarActionIcon },
           h('rect', { x: 3, y: 4, width: 18, height: 16, rx: 3 }),
@@ -6089,24 +6346,36 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         ? h('div', { style: S.railHeader }, toggleButton, newGroupButton)
         : h(
             'div',
-            { style: S.leftHeader },
-            h('span', null, '对话'),
+            { style: S.leftHeader, className: 'bt-sidebar-brand' },
+            h('span', { className: 'bt-brand' }, h('span', { className: 'bt-brand-mark' }, h(WelcomeIcon, { name: 'bot' })), h('span', null, 'Bot Team')),
             // Creation lives on the section headers now (单聊 + / 群聊 +); the
             // old duplicate "+ 新建" here made the two entry points ambiguous.
             h('div', { style: S.leftHeaderActions }, toggleButton),
           );
 
-      const actionStyle = collapsed ? S.railAction : S.sidebarAction;
+      const actionStyle = collapsed ? S.railAction : { ...S.sidebarAction, justifyContent: 'flex-start', gap: 12, height: 40 };
       const actionIconStyle = collapsed ? S.railActionIcon : S.sidebarActionIcon;
       return h(
         'div',
         {
           id: 'bt-group-sidebar',
           className: 'bt-sidebar',
+          ref: sidebarRef,
+          role: mobileNavigation ? 'dialog' : 'navigation',
+          'aria-label': 'Bot Team 导航',
+          'aria-modal': mobileNavigation ? true : undefined,
+          tabIndex: -1,
           'data-collapsed': collapsed ? 'true' : 'false',
           style: S.sidebar(collapsed),
         },
         header,
+        h('button', {
+          type: 'button', className: 'bt-welcome-nav', 'data-action': 'show-welcome',
+          'data-active': !state.activeGroupId ? 'true' : 'false',
+          'aria-current': !state.activeGroupId ? 'page' : undefined,
+          'aria-label': '开始使用', title: '开始使用',
+          onClick: () => { dispatch({ type: 'showWelcome' }); onShowWelcome?.(); },
+        }, h(WelcomeIcon, { name: 'spark' }), collapsed ? null : h('span', null, '开始使用'), collapsed ? null : h(WelcomeIcon, { name: 'chevron', className: 'bt-welcome-nav-arrow' })),
         list,
         h(
           'div',
@@ -8465,7 +8734,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
     }
 
 
-    function renderMembersPanel({ state, group, members, bots, dispatch, onAdd, onCollapse, onEdit, onViewSession, discussion, usage, tasks, onStopDiscussion, onTaskCreate, onTaskAction, onTaskEdit, onTaskStream }) {
+    function renderMembersPanel({ state, members, bots, dispatch, onAdd, onCollapse, onEdit, onViewSession, discussion, usage, onStopDiscussion }) {
       const runningMembers = members.filter((member) => state.statusByMember[member.membershipId] === 'running');
       return h(
         'div',
@@ -8509,70 +8778,6 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               (state.config.schemaVersion ? ` · schema v${state.config.schemaVersion}` : '') +
               (state.config.maxTurnsPerHour ? uiT(' · 限 {count} 轮/小时', { count: state.config.maxTurnsPerHour }) : ''),
             runningMembers.length > 0 ? uiT(' · {count} 个运行中', { count: runningMembers.length }) : '',
-          ),
-          h(
-            'div',
-            { style: S.memberCard },
-            h(
-              'div',
-              { style: S.memberTop },
-              h('span', { style: { ...S.memberName, fontSize: 12 } }, uiT('任务 ({count})', { count: tasks ? tasks.length : 0 })),
-              h('button', { style: S.smallBtn, onClick: onTaskCreate }, '+ 新建任务'),
-            ),
-            (tasks || []).length === 0
-              ? h('div', { style: { fontSize: 11, color: 'var(--bt-text-3)', marginTop: 6 } }, '还没有任务。新建并派发后，可中断执行、查看执行详情。')
-              : (tasks || []).map((task) => {
-                  const assigneeMember = members.find((member) => member.membershipId === task.assigneeMembershipId);
-                  const assigneeBot = assigneeMember ? bots.find((bot) => bot.botId === assigneeMember.botId) : null;
-                  const queued = group.queue && (group.queue.queuedTaskIds || []).includes(task.taskId);
-                  const canDispatch = task.status === 'pending' && task.ready !== false;
-                  const canInterrupt = task.status === 'in_progress';
-                  const stateHint =
-                    task.status === 'in_progress'
-                      ? (queued ? uiT('排队中') : uiT('执行中'))
-                      : task.status === 'delivered'
-                        ? uiT('已交付')
-                        : task.status === 'cancelled'
-                          ? uiT('已中断')
-                          : '';
-                  return h(
-                    'div',
-                    { key: task.taskId, style: { borderTop: '1px solid var(--bt-border)', paddingTop: 6, marginTop: 6 } },
-                    h(
-                      'div',
-                      { style: { display: 'flex', alignItems: 'center', gap: 6 } },
-                      h('span', { style: badgeStyle('#eef2ff', '#4f46e5') }, TASK_STATUS_LABEL[task.status] || task.status),
-                      h(
-                        'span',
-                        { style: { fontSize: 12, fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
-                        task.title,
-                      ),
-                    ),
-                    h(
-                      'div',
-                      { style: { fontSize: 11, color: 'var(--bt-text-3)', marginTop: 3 } },
-                      (assigneeBot ? uiT('指派：{name}', { name: assigneeBot.name }) : uiT('指派：未知')) + (stateHint ? ' · ' + stateHint : ''),
-                    ),
-                    task.blockedBy && task.blockedBy.length > 0
-                      ? h(
-                          'div',
-                          { style: { fontSize: 11, color: '#b45309', marginTop: 3 } },
-                          uiT('依赖未完成：{titles}', { titles: task.blockedBy.map((blocker) => blocker.title).join(isEnglishUi() ? ', ' : '、') }),
-                        )
-                      : null,
-                    h(
-                      'div',
-                      { style: S.memberActions },
-                      canDispatch
-                        ? h('button', { style: S.smallBtn, onClick: () => onTaskAction && onTaskAction(task, 'dispatch') }, '派发')
-                        : null,
-                      canInterrupt
-                        ? h('button', { style: { ...S.smallBtn, color: 'var(--bt-danger-text)' }, onClick: () => onTaskAction && onTaskAction(task, 'cancel') }, '中断')
-                        : null,
-                      h('button', { style: S.smallBtn, onClick: () => onTaskStream && onTaskStream(task) }, '执行流'),
-                    ),
-                  );
-                }),
           ),
           discussion
             ? h(
@@ -8677,7 +8882,6 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       const discussion = props && props.discussion;
       if (group) values.push(group.title, group.topic);
       for (const bot of (props && props.bots) || []) values.push(bot.name, bot.provider, bot.model, bot.reasoningEffort);
-      for (const task of (props && props.tasks) || []) values.push(task.title, task.description, task.acceptance);
       if (discussion) values.push(discussion.topic, discussion.summary);
       return withContent(values, () => renderMembersPanel(props));
     }
@@ -9469,78 +9673,6 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
     }
 
 
-    function renderTaskDialog({ group, members, bots, onClose, onSaved }) {
-      const candidates = members
-        .map((member) => ({ member, bot: bots.find((candidate) => candidate.botId === member.botId) }))
-        .filter((entry) => entry.bot);
-      const [title, setTitle] = React.useState('');
-      const [description, setDescription] = React.useState('');
-      const [acceptance, setAcceptance] = React.useState('');
-      const [assigneeMembershipId, setAssigneeMembershipId] = React.useState(
-        candidates[0] ? candidates[0].member.membershipId : '',
-      );
-      const [error, setError] = React.useState('');
-      const [busy, setBusy] = React.useState(false);
-      const submit = async () => {
-        if (!assigneeMembershipId) return;
-        setBusy(true);
-        setError('');
-        try {
-          await api.action('task.create', {
-            groupId: group.groupId,
-            title,
-            description,
-            acceptance,
-            assigneeMembershipId,
-          });
-          uiReport({ kind: 'action', action: 'task.create' });
-          onSaved();
-        } catch (reason) {
-          setError(String(reason && reason.message ? reason.message : reason));
-        } finally {
-          setBusy(false);
-        }
-      };
-      return h(
-        Modal,
-        {
-          title: '新建任务',
-          onClose,
-          footer: [
-            h('button', { key: 'cancel', style: S.ghostBtn, onClick: onClose }, '取消'),
-            h('button', { key: 'ok', style: S.primaryBtn, disabled: busy || !assigneeMembershipId, onClick: () => void submit() }, '创建任务'),
-          ],
-        },
-        error ? h('div', { style: { ...S.errorBanner, borderRadius: 8, marginBottom: 10 } }, error) : null,
-        h(Field, { label: '任务标题' }, h('input', { style: S.input, value: title, onChange: (event) => setTitle(event.target.value), placeholder: '例如：实现登录页表单校验' })),
-        h(Field, { label: '任务描述（可选）' }, h('textarea', { style: { ...S.input, minHeight: 80 }, value: description, onChange: (event) => setDescription(event.target.value), placeholder: '目标、范围、注意事项…' })),
-        h(Field, { label: '验收标准（可选）' }, h('textarea', { style: { ...S.input, minHeight: 60 }, value: acceptance, onChange: (event) => setAcceptance(event.target.value), placeholder: '例如：单测通过、无 lint 错误' })),
-        h(
-          Field,
-          { label: '指派给' },
-          h(
-            'select',
-            { style: S.input, value: assigneeMembershipId, onChange: (event) => setAssigneeMembershipId(event.target.value) },
-            candidates.map((entry) => h('option', { key: entry.member.membershipId, value: entry.member.membershipId }, entry.bot.name)),
-          ),
-        ),
-        h('div', { style: { fontSize: 11, color: 'var(--bt-text-3)' } }, '创建后点任务卡片「派发」开始执行；执行中可「中断」；点「执行流」查看该 Bot 的完整执行过程。'),
-      );
-    }
-    function TaskDialog(props) {
-      const values = [];
-      const task = props && props.task;
-      const group = props && props.group;
-      if (group) values.push(group.title, group.topic);
-      if (task) values.push(task.title, task.description, task.acceptance);
-      for (const member of (props && props.members) || []) {
-        const bot = member && member.bot;
-        if (bot) values.push(bot.name);
-      }
-      return withContent(values, () => renderTaskDialog(props));
-    }
-
-
     function renderReviewDialog({ target, group, members, bots, onClose, onSaved }) {
       const candidates = members
         .map((member) => ({ member, bot: bots.find((candidate) => candidate.botId === member.botId) }))
@@ -9847,6 +9979,24 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         : null;
       const messages = state.messagesByGroup[state.activeGroupId] || EMPTY_MESSAGES;
       const timelineRef = React.useRef(null);
+      const mobileSidebarRef = React.useRef(null);
+      const [mobileSidebarOpen, setMobileSidebarOpen] = React.useState(false);
+      React.useEffect(() => { setMobileSidebarOpen(false); }, [state.activeGroupId, state.dialog]);
+      React.useEffect(() => {
+        if (!mobileSidebarOpen) return;
+        const releaseFocus = containModalFocus(mobileSidebarRef.current);
+        const closeOnEscape = (event) => { if (event.key === 'Escape') setMobileSidebarOpen(false); };
+        const resizeObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(([entry]) => {
+          if (entry.contentRect.width > 760) setMobileSidebarOpen(false);
+        }) : null;
+        if (mobileSidebarRef.current?.parentElement) resizeObserver?.observe(mobileSidebarRef.current.parentElement);
+        window.addEventListener('keydown', closeOnEscape);
+        return () => {
+          window.removeEventListener('keydown', closeOnEscape);
+          resizeObserver?.disconnect();
+          releaseFocus?.();
+        };
+      }, [mobileSidebarOpen]);
       const [replyTarget, setReplyTarget] = React.useState(null);
       const [messageMenu, setMessageMenu] = React.useState(null);
       const [headerMenuOpen, setHeaderMenuOpen] = React.useState(false);
@@ -10022,33 +10172,6 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       const openFolderCreate = () => dispatch({ type: 'dialog', dialog: { kind: 'folder' } });
       const openFolderEdit = (folder) => dispatch({ type: 'dialog', dialog: { kind: 'folder', folder } });
       const openReview = (message) => dispatch({ type: 'dialog', dialog: { kind: 'review', target: message } });
-      const openTaskStream = (task) => {
-        const member = members.find((candidate) => candidate.membershipId === task.assigneeMembershipId);
-        if (!member) {
-          dispatch({ type: 'error', message: '指派成员已不存在' });
-          return;
-        }
-        openBotSession(member.sessionId, (message) => dispatch({ type: 'error', message }));
-      };
-      const openTaskCreate = () => dispatch({ type: 'dialog', dialog: { kind: 'task' } });
-      const openTaskEdit = (task) => dispatch({ type: 'dialog', dialog: { kind: 'task', task } });
-      const taskAction = async (task, action) => {
-        try {
-          if (action === 'dispatch') await api.action('task.dispatch', { taskId: task.taskId });
-          else if (action === 'review') await api.action('task.review', { taskId: task.taskId });
-          else if (action === 'accept') await api.action('task.accept', { taskId: task.taskId });
-          else if (action === 'request_changes') await api.action('task.request_changes', { taskId: task.taskId });
-          else if (action === 'revise') await api.action('task.revise', { taskId: task.taskId });
-          else if (action === 'cancel') await api.action('task.cancel', { taskId: task.taskId });
-          uiReport({ kind: 'action', action: 'task.' + action });
-          if (action === 'cancel') dispatch({ type: 'flash', message: '已中断任务' });
-          dispatch({ type: 'refreshTick' });
-          dispatch({ type: 'messagesTick' });
-        } catch (error) {
-          dispatch({ type: 'error', message: String(error && error.message ? error.message : error) });
-        }
-      };
-
       const openDiscussion = () =>
         dispatch({ type: 'dialog', dialog: { kind: 'discussion', defaultTopic: '' } });
 
@@ -10293,10 +10416,14 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         h('style', { key: 'bt-global-css' }, GLOBAL_CSS),
         h(
           'div',
-          { className: 'bt-root', style: { ...S.root, flex: 1, minHeight: 0 } },
+          { className: 'bt-root bt-page', 'data-home': !activeGroup ? 'true' : 'false', 'data-mobile-sidebar': mobileSidebarOpen ? 'true' : 'false', style: { ...S.root, flex: 1, minHeight: 0 } },
+          mobileSidebarOpen && !activeGroup ? h('button', { type: 'button', className: 'bt-welcome-scrim', 'aria-label': '关闭导航', onClick: () => setMobileSidebarOpen(false) }) : null,
           h(GroupList, {
             state,
             dispatch,
+            sidebarRef: mobileSidebarRef,
+            mobileNavigation: mobileSidebarOpen && !activeGroup,
+            onShowWelcome: () => setMobileSidebarOpen(false),
             onCreate: openGroupCreate,
             onCreateBot: openBotCreate,
             onCreateFolder: openFolderCreate,
@@ -10313,7 +10440,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           }),
           h(
             'div',
-            { style: S.center },
+            { className: 'bt-main-panel', style: S.center },
             activeGroup
               ? h(
                   React.Fragment,
@@ -10597,13 +10724,17 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                     },
                   }),
                 )
-              : h(
-                  'div',
-                  { style: S.centerEmpty },
-                  h('div', { style: { fontSize: 15, fontWeight: 600 } }, 'Bot Team'),
-                  h('div', null, '从左侧「单聊」新建一个 Bot（自动获得一对一会话），或创建一个群/话题把多个 Bot 拉进来；每个 Bot 可以有自己的模型、BOT.md 人格与能力。'),
-                  h('button', { style: S.primaryBtn, onClick: () => openGroupCreate() }, '新建群 / 话题'),
-                ),
+              : h(WelcomeScreen, {
+                  hasBots: state.bots.length > 0,
+                  onCreateBot: openBotCreate,
+                  onCreateGroup: () => openGroupCreate(),
+                  onGuide: () => dispatch({ type: 'dialog', dialog: { kind: 'getting-started' } }),
+                  sidebarOpen: mobileSidebarOpen,
+                  onOpenSidebar: () => {
+                    if (state.sidebarCollapsed) dispatch({ type: 'toggleSidebar' });
+                    setMobileSidebarOpen(true);
+                  },
+                }),
           ),
           activeGroup
             ? state.rightPanelCollapsed === true
@@ -10630,21 +10761,9 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                   onCollapse: () => dispatch({ type: 'toggleRightPanel' }),
                   onEdit: openBotEdit,
                   onViewSession: (member) => openBotSession(member.sessionId, (message) => dispatch({ type: 'error', message })),
-                  tasks: activeGroup.tasks || [],
-                  onTaskCreate: openTaskCreate,
-                  onTaskAction: (task, action) => void taskAction(task, action),
-                  onTaskEdit: openTaskEdit,
-                  onTaskStream: openTaskStream,
                   onStopDiscussion: stopDiscussion,
                 })
-            : h('div', { id: 'bt-right-panel', style: S.right }, h('div', { style: S.rightHeader }, 'Bot 库'), h('div', { style: { padding: '0 12px 12px', display: 'flex', flexDirection: 'column', gap: 8 } },
-                h('button', { style: S.ghostBtn, onClick: openBotCreate }, '+ 新建 Bot'),
-                h('div', { style: { fontSize: 12, color: 'var(--bt-text-3)', lineHeight: 1.7 } }, uiT('已有 {count} 个 Bot。每个 Bot 都有自己的单聊；也可以在群里加入它们。', { count: state.bots.length })),
-                state.bots.map((bot) => h('div', { key: bot.botId, style: { ...S.memberCard, cursor: 'pointer' }, onClick: () => openBotEdit(bot) },
-                  h('div', { style: S.memberTop }, h(Avatar, { bot, size: 24 }), h('span', { style: S.memberName, raw: true }, bot.name)),
-                  h('div', { style: S.memberMeta, raw: true }, `${bot.model}`),
-                )),
-              )),
+            : null,
           messageMenu && messageMenu.groupId === state.activeGroupId
             ? h(MessageContextMenu, {
                 menu: messageMenu,
@@ -10670,6 +10789,12 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               state: execution.state,
               onClose: closeExecution,
               onRefresh: () => execution.controller.current?.refresh(),
+            })
+          : null,
+        dialog && dialog.kind === 'getting-started'
+          ? h(GettingStartedDialog, {
+              hasBots: state.bots.length > 0, onClose: closeDialog,
+              onCreateBot: openBotCreate, onCreateGroup: () => openGroupCreate(),
             })
           : null,
         dialog && dialog.kind === 'settings'
@@ -10717,16 +10842,6 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           : null,
         dialog && dialog.kind === 'member' && activeGroup
           ? h(AddMemberDialog, { group: activeGroup, bots: state.bots, members, onClose: closeDialog, onSaved: afterChange })
-          : null,
-        dialog && dialog.kind === 'task' && activeGroup
-          ? h(TaskDialog, {
-              group: activeGroup,
-              members,
-              bots: state.bots,
-              task: dialog.task || null,
-              onClose: closeDialog,
-              onSaved: afterChange,
-            })
           : null,
         dialog && dialog.kind === 'review' && activeGroup
           ? h(ReviewDialog, { target: dialog.target, group: activeGroup, members, bots: state.bots, onClose: closeDialog, onSaved: afterChange })

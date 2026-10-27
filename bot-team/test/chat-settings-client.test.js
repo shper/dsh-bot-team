@@ -99,22 +99,22 @@ test('settings button is available with no groups, alongside the existing Bot ma
   assert.equal(actions[1].dialog.kind, 'bots');
 });
 
-test('sidebar actions share equal columns, fixed heights and centered icon/text layout', () => {
+test('sidebar actions stack with shared heights and aligned icon/text layout', () => {
   const tree = client.GroupList({ state: client.initialState, dispatch() {} });
   const footer = walk(tree).find(node => node.props?.className === 'bt-sidebar-actions');
   assert.equal(footer.props.style.display, 'grid');
-  assert.equal(footer.props.style.gridTemplateColumns, 'repeat(2, minmax(0, 1fr))');
+  assert.equal(footer.props.style.gridTemplateColumns, 'minmax(0, 1fr)');
   const actions = footer.props.children.filter(node => node.type === 'button');
   assert.equal(actions.length, 2);
   assert.equal(actions[0].props.style, actions[1].props.style, 'one shared style prevents height drift');
   for (const action of actions) {
     const style = action.props.style;
-    assert.equal(style.height, 36);
+    assert.equal(style.height, 40);
     assert.equal(style.width, '100%');
     assert.equal(style.boxSizing, 'border-box');
     assert.equal(style.display, 'inline-flex');
     assert.equal(style.alignItems, 'center');
-    assert.equal(style.justifyContent, 'center');
+    assert.equal(style.justifyContent, 'flex-start');
     assert.equal(style.lineHeight, '20px');
     assert.equal(style.border, 0, 'quiet toolbar rather than two heavy outlined buttons');
     const icon = action.props.children.find(node => node.type === 'svg');

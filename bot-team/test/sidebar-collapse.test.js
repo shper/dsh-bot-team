@@ -43,7 +43,7 @@ test('expanded sidebar keeps the group feed, labels and a collapse affordance', 
   const rail = sidebar(tree);
   assert.equal(rail.props['data-collapsed'], 'false');
   assert.equal(rail.props.id, 'bt-group-sidebar');
-  assert.equal(rail.props.style.width, 264);
+  assert.equal(rail.props.style.width, 232);
   assert.equal(rail.props.style.transition, 'width 180ms ease');
   assert.match(client.GLOBAL_CSS, /\.bt-sidebar \{ transition: width 180ms ease; \}/);
   assert.match(client.GLOBAL_CSS, /\.bt-sidebar-toggle:hover/);
