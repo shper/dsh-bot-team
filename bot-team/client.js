@@ -820,6 +820,7 @@ window.__ModuleLoader__.load({
     // entry falls back to Chinese instead of blank text.
     const UI_EN = {
       "开始使用": "Get started",
+      "选择一个单聊或群聊开始对话": "Select a direct or group chat to start a conversation",
       "Bot Team 导航": "Bot Team navigation",
       "欢迎来到 Bot Team": "Welcome to Bot Team",
       "好搭档，从这里开始。": "Great teammates start here.",
@@ -1677,7 +1678,6 @@ window.__ModuleLoader__.load({
       sectionsCollapsed: readSectionsCollapsed(),
       pendingDirectBotId: null,
       activeGroupId: null,
-      homeSelected: false,
       messagesByGroup: {},
       statusByMember: {},
       dialog: null,
@@ -1704,6 +1704,10 @@ window.__ModuleLoader__.load({
       return next;
     }
 
+    function shouldShowWelcome(state) {
+      return !state.loading && state.bots.length === 0 && state.groups.length === 0;
+    }
+
     function reducer(state, action) {
       switch (action.type) {
         case 'bootstrap': {
@@ -1719,11 +1723,9 @@ window.__ModuleLoader__.load({
             : null;
           const activeGroupId = pendingGroup
             ? pendingGroup.groupId
-            : state.homeSelected
-              ? null
-              : groups.some((group) => group.groupId === state.activeGroupId)
-                ? state.activeGroupId
-                : groups[0]?.groupId ?? null;
+            : groups.some((group) => group.groupId === state.activeGroupId)
+              ? state.activeGroupId
+              : groups[0]?.groupId ?? null;
           return {
             ...state,
             loading: false,
@@ -1738,7 +1740,6 @@ window.__ModuleLoader__.load({
             chatDisplaySettings: normalizeChatDisplaySettings(data.chatDisplaySettings),
             smoke: data.smoke || null,
             activeGroupId,
-            homeSelected: pendingGroup ? false : state.homeSelected,
             pendingDirectBotId:
               pendingBotId && !pendingGroup && !bots.some((bot) => bot.botId === pendingBotId)
                 ? pendingBotId
@@ -1756,13 +1757,13 @@ window.__ModuleLoader__.load({
           };
         }
         case 'showWelcome':
-          // An explicit navigation choice survives bootstrap/SSE refreshes.
-          return { ...state, homeSelected: true, activeGroupId: null, dialog: null, pendingDirectBotId: null };
+          if (!shouldShowWelcome(state)) return state;
+          return { ...state, activeGroupId: null, dialog: null, pendingDirectBotId: null };
         case 'selectGroup':
           // A manual choice wins over a pending "open the new bot's DM" request.
-          return { ...state, homeSelected: false, activeGroupId: action.groupId, dialog: null, pendingDirectBotId: null };
+          return { ...state, activeGroupId: action.groupId, dialog: null, pendingDirectBotId: null };
         case 'pendingDirect':
-          return { ...state, pendingDirectBotId: action.botId || null, homeSelected: action.botId ? false : state.homeSelected };
+          return { ...state, pendingDirectBotId: action.botId || null };
         case 'sectionCollapsed': {
           const sections = { ...state.sectionsCollapsed };
           if (action.collapsed === true) sections[action.key] = true;
@@ -6369,13 +6370,13 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           style: S.sidebar(collapsed),
         },
         header,
-        h('button', {
+        shouldShowWelcome(state) ? h('button', {
           type: 'button', className: 'bt-welcome-nav', 'data-action': 'show-welcome',
           'data-active': !state.activeGroupId ? 'true' : 'false',
           'aria-current': !state.activeGroupId ? 'page' : undefined,
           'aria-label': '开始使用', title: '开始使用',
           onClick: () => { dispatch({ type: 'showWelcome' }); onShowWelcome?.(); },
-        }, h(WelcomeIcon, { name: 'spark' }), collapsed ? null : h('span', null, '开始使用'), collapsed ? null : h(WelcomeIcon, { name: 'chevron', className: 'bt-welcome-nav-arrow' })),
+        }, h(WelcomeIcon, { name: 'spark' }), collapsed ? null : h('span', null, '开始使用'), collapsed ? null : h(WelcomeIcon, { name: 'chevron', className: 'bt-welcome-nav-arrow' })) : null,
         list,
         h(
           'div',
@@ -9971,6 +9972,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       }, [state.activeGroupId, state.messagesTick]);
 
       const activeGroup = state.groups.find((group) => group.groupId === state.activeGroupId) || null;
+      const showWelcome = shouldShowWelcome(state);
       const members = state.members.filter((member) => member.groupId === state.activeGroupId);
       const activeIsDirect = isDirectGroup(activeGroup);
       const activeDirectMember = activeIsDirect ? members[0] || null : null;
@@ -10416,13 +10418,13 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         h('style', { key: 'bt-global-css' }, GLOBAL_CSS),
         h(
           'div',
-          { className: 'bt-root bt-page', 'data-home': !activeGroup ? 'true' : 'false', 'data-mobile-sidebar': mobileSidebarOpen ? 'true' : 'false', style: { ...S.root, flex: 1, minHeight: 0 } },
-          mobileSidebarOpen && !activeGroup ? h('button', { type: 'button', className: 'bt-welcome-scrim', 'aria-label': '关闭导航', onClick: () => setMobileSidebarOpen(false) }) : null,
+          { className: 'bt-root bt-page', 'data-home': showWelcome ? 'true' : 'false', 'data-mobile-sidebar': mobileSidebarOpen ? 'true' : 'false', style: { ...S.root, flex: 1, minHeight: 0 } },
+          mobileSidebarOpen && showWelcome ? h('button', { type: 'button', className: 'bt-welcome-scrim', 'aria-label': '关闭导航', onClick: () => setMobileSidebarOpen(false) }) : null,
           h(GroupList, {
             state,
             dispatch,
             sidebarRef: mobileSidebarRef,
-            mobileNavigation: mobileSidebarOpen && !activeGroup,
+            mobileNavigation: mobileSidebarOpen && showWelcome,
             onShowWelcome: () => setMobileSidebarOpen(false),
             onCreate: openGroupCreate,
             onCreateBot: openBotCreate,
@@ -10724,7 +10726,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                     },
                   }),
                 )
-              : h(WelcomeScreen, {
+              : showWelcome ? h(WelcomeScreen, {
                   hasBots: state.bots.length > 0,
                   onCreateBot: openBotCreate,
                   onCreateGroup: () => openGroupCreate(),
@@ -10734,7 +10736,10 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                     if (state.sidebarCollapsed) dispatch({ type: 'toggleSidebar' });
                     setMobileSidebarOpen(true);
                   },
-                }),
+                })
+              : state.loading ? null : h('div', { style: S.emptyState },
+                  h('div', { style: S.emptyTitle }, '选择一个单聊或群聊开始对话'),
+                ),
           ),
           activeGroup
             ? state.rightPanelCollapsed === true

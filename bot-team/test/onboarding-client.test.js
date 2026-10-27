@@ -77,114 +77,103 @@ function pageFixture(overrides = {}) {
 }
 
 test('returning users still open the first conversation and retain an existing selection', () => {
-  assert.equal(client.initialState.homeSelected, false);
   const data = bootstrapData(stateWith());
   const loaded = client.reducer(client.initialState, { type: 'bootstrap', data });
   assert.equal(loaded.activeGroupId, team.groupId);
-  assert.equal(loaded.homeSelected, false);
   const selected = client.reducer(loaded, { type: 'selectGroup', groupId: direct.groupId });
   const refreshed = client.reducer(selected, { type: 'bootstrap', data });
   assert.equal(refreshed.activeGroupId, direct.groupId);
-  assert.equal(refreshed.homeSelected, false);
   const removed = client.reducer(refreshed, { type: 'bootstrap', data: { ...data, groups: [team] } });
   assert.equal(removed.activeGroupId, team.groupId, 'a removed conversation retains the existing fallback');
 });
 
-test('home closes dialogs and pending navigation without losing cached conversations or preferences', () => {
-  const before = stateWith({ dialog: { kind: 'settings' }, pendingDirectBotId: newBot.botId, sidebarCollapsed: true, rightPanelCollapsed: true });
+const emptyWorkspace = { bots: [], groups: [], members: [], activeGroupId: null };
+const welcomeCases = [
+  { name: 'empty workspace', overrides: emptyWorkspace, visible: true },
+  { name: 'initial loading', overrides: { ...emptyWorkspace, loading: true }, visible: false },
+  { name: 'Bot without a direct chat', overrides: { groups: [], members: [], activeGroupId: null }, visible: false },
+  { name: 'group without Bots', overrides: { bots: [], groups: [team], members: [], activeGroupId: null }, visible: false },
+  { name: 'Bot and direct chat', overrides: { groups: [direct], activeGroupId: null }, visible: false },
+  { name: 'Bots and groups without a selection', overrides: { activeGroupId: null }, visible: false },
+  { name: 'removed selection', overrides: { activeGroupId: 'removed-group' }, visible: false },
+];
+
+test('home navigation is available only in an empty workspace and preserves cached data and preferences', () => {
+  const before = stateWith({ ...emptyWorkspace, dialog: { kind: 'settings' }, sidebarCollapsed: true, rightPanelCollapsed: true });
   const snapshot = plain(before);
   const home = client.reducer(before, { type: 'showWelcome' });
-  assert.equal(home.homeSelected, true);
   assert.equal(home.activeGroupId, null);
   assert.equal(home.dialog, null);
-  assert.equal(home.pendingDirectBotId, null);
   for (const key of ['bots', 'groups', 'folders', 'members', 'messagesByGroup', 'hasMoreByGroup', 'statusByMember', 'discussions', 'chatDisplaySettings', 'sectionsCollapsed', 'sidebarCollapsed', 'rightPanelCollapsed']) {
-    assert.deepEqual(plain(home[key]), snapshot[key], `${key} survives home navigation`);
+    assert.deepEqual(plain(home[key]), snapshot[key], key + ' survives home navigation');
   }
   assert.deepEqual(plain(before), snapshot, 'the previous state is untouched');
-  const resumed = client.reducer(home, { type: 'selectGroup', groupId: team.groupId });
-  assert.equal(resumed.homeSelected, false);
-  assert.equal(resumed.activeGroupId, team.groupId);
-  assert.deepEqual(plain(resumed.messagesByGroup[team.groupId]), [message]);
-  assert.deepEqual(plain(resumed.discussions[team.groupId]), discussion);
-  assert.equal(resumed.hasMoreByGroup[team.groupId], true);
-});
-
-test('explicit home selection survives bootstrap refreshes, reordered conversations, and an empty response', () => {
-  const before = stateWith();
-  let home = client.reducer(before, { type: 'showWelcome' });
-  for (const groups of [before.groups, [direct, team], [], [newDirect, ...before.groups]]) {
-    home = client.reducer(home, { type: 'bootstrap', data: bootstrapData(before, { groups }) });
-    assert.equal(home.homeSelected, true);
-    assert.equal(home.activeGroupId, null, 'background refresh must not reopen a conversation');
-    assert.deepEqual(plain(home.messagesByGroup[team.groupId]), [message]);
+  for (const { name, overrides, visible } of welcomeCases) {
+    if (visible) continue;
+    const populated = stateWith({ ...overrides, dialog: { kind: 'settings' }, pendingDirectBotId: newBot.botId });
+    assert.equal(client.reducer(populated, { type: 'showWelcome' }), populated, name);
   }
-  const beforeInitialLoad = client.reducer(client.initialState, { type: 'showWelcome' });
-  const loaded = client.reducer(beforeInitialLoad, { type: 'bootstrap', data: bootstrapData(before) });
-  assert.equal(loaded.homeSelected, true, 'choosing home before the initial response also wins');
-  assert.equal(loaded.activeGroupId, null);
 });
 
-test('creating a Bot leaves home and selects its direct chat after a delayed bootstrap response', () => {
-  const before = stateWith();
-  const home = client.reducer(before, { type: 'showWelcome' });
-  const pending = client.reducer(home, { type: 'pendingDirect', botId: newBot.botId });
-  assert.equal(pending.homeSelected, false);
-  assert.equal(pending.pendingDirectBotId, newBot.botId);
-  const stale = client.reducer(pending, { type: 'bootstrap', data: bootstrapData(before) });
-  assert.equal(stale.pendingDirectBotId, newBot.botId, 'an older response cannot discard the pending Bot');
-  const data = bootstrapData(before, { bots: [bot, newBot], groups: [...before.groups, newDirect] });
-  const arrived = client.reducer(stale, { type: 'bootstrap', data });
-  assert.equal(arrived.activeGroupId, newDirect.groupId);
-  assert.equal(arrived.pendingDirectBotId, null);
-  assert.equal(arrived.homeSelected, false);
-  const precedence = client.reducer({ ...home, pendingDirectBotId: newBot.botId }, { type: 'bootstrap', data });
-  assert.equal(precedence.activeGroupId, newDirect.groupId, 'a successfully resolved direct-chat request has precedence');
-  assert.equal(precedence.homeSelected, false);
+test('refreshing an empty workspace opens an arriving conversation and ignores a stale home selection', () => {
+  const empty = client.reducer(client.initialState, { type: 'bootstrap', data: emptyWorkspace });
+  const home = client.reducer(empty, { type: 'showWelcome' });
+  for (const groups of [[team], [direct], [direct, team]]) {
+    const loaded = client.reducer({ ...home, homeSelected: true }, { type: 'bootstrap', data: bootstrapData(stateWith(), { groups }) });
+    assert.equal(loaded.activeGroupId, groups[0].groupId);
+  }
 });
 
-test('manual home or conversation selection wins over an in-flight direct-chat refresh', () => {
+test('creating a Bot selects its direct chat after a delayed bootstrap response', () => {
+  for (const before of [stateWith(emptyWorkspace), stateWith()]) {
+    const pending = client.reducer(before, { type: 'pendingDirect', botId: newBot.botId });
+    assert.equal(pending.pendingDirectBotId, newBot.botId);
+    const stale = client.reducer(pending, { type: 'bootstrap', data: bootstrapData(before) });
+    assert.equal(stale.pendingDirectBotId, newBot.botId, 'an older response cannot discard the pending Bot');
+    const data = bootstrapData(before, { bots: [...before.bots, newBot], groups: [...before.groups, newDirect] });
+    const arrived = client.reducer(stale, { type: 'bootstrap', data });
+    assert.equal(arrived.activeGroupId, newDirect.groupId);
+    assert.equal(arrived.pendingDirectBotId, null);
+  }
+});
+
+test('manual conversation selection wins over an in-flight direct-chat refresh', () => {
   const before = stateWith();
   const pending = client.reducer(before, { type: 'pendingDirect', botId: newBot.botId });
   const data = bootstrapData(before, { bots: [bot, newBot], groups: [newDirect, ...before.groups] });
-  for (const action of [{ type: 'showWelcome' }, { type: 'selectGroup', groupId: direct.groupId }]) {
-    const choice = client.reducer(pending, action);
-    assert.equal(choice.pendingDirectBotId, null);
-    const refreshed = client.reducer(choice, { type: 'bootstrap', data });
-    assert.equal(refreshed.activeGroupId, action.type === 'showWelcome' ? null : direct.groupId);
-    assert.equal(refreshed.homeSelected, action.type === 'showWelcome');
-  }
-  const home = client.reducer(pending, { type: 'showWelcome' });
-  const cancelled = client.reducer(home, { type: 'pendingDirect', botId: null });
-  assert.equal(cancelled.homeSelected, true, 'late request cleanup does not leave home');
+  const choice = client.reducer(pending, { type: 'selectGroup', groupId: direct.groupId });
+  assert.equal(choice.pendingDirectBotId, null);
+  const refreshed = client.reducer(choice, { type: 'bootstrap', data });
+  assert.equal(refreshed.activeGroupId, direct.groupId);
+  assert.equal(client.reducer(pending, { type: 'showWelcome' }), pending, 'an obsolete home callback cannot cancel navigation');
 });
 
-test('messages fetched before going home remain available when the conversation is reopened', () => {
-  const home = client.reducer(stateWith(), { type: 'showWelcome' });
+test('messages fetched before switching chats remain available when the conversation is reopened', () => {
+  const switched = client.reducer(stateWith(), { type: 'selectGroup', groupId: direct.groupId });
   const latest = { ...message, messageId: 'message-2', seq: 2, text: 'A delayed response' };
-  const delivered = client.reducer(home, { type: 'messages', groupId: team.groupId, messages: [message, latest], hasMore: true });
-  assert.equal(delivered.activeGroupId, null);
-  assert.equal(delivered.homeSelected, true);
+  const delivered = client.reducer(switched, { type: 'messages', groupId: team.groupId, messages: [message, latest], hasMore: true });
+  assert.equal(delivered.activeGroupId, direct.groupId);
   const resumed = client.reducer(delivered, { type: 'selectGroup', groupId: team.groupId });
   assert.deepEqual(plain(resumed.messagesByGroup[team.groupId]), [message, latest]);
   assert.equal(resumed.hasMoreByGroup[team.groupId], true);
 });
 
-test('the sidebar always offers an accessible home button, including the empty and collapsed states', () => {
+test('the sidebar offers an accessible home button only when both Bots and groups are empty', () => {
   for (const locale of ['zh', 'en']) {
     for (const sidebarCollapsed of [false, true]) {
-      for (const populated of [false, true]) {
+      for (const { name, overrides, visible } of welcomeCases) {
         const local = loadClient();
         local.setTestLocale(locale);
-        let state = stateWith({ sidebarCollapsed, ...(populated ? {} : { bots: [], groups: [], members: [], activeGroupId: null }) });
+        let state = stateWith({ ...overrides, sidebarCollapsed });
         const tree = local.render(local.GroupList, { state, dispatch: action => { state = local.reducer(state, action); } });
+        assert.equal(walk(tree).some(node => node.props?.['data-action'] === 'show-welcome'), visible, name);
+        if (!visible) continue;
         const home = actionButton(tree, 'show-welcome');
         const label = local.uiT('开始使用');
         assert.equal(home.props['aria-label'] || text(home), label);
         if (sidebarCollapsed) assert.equal(text(home).includes(label), false, 'the collapsed control has an accessible name without visible label text');
         else assert.ok(text(home).includes(label));
         home.props.onClick();
-        assert.equal(state.homeSelected, true);
         assert.equal(state.activeGroupId, null);
       }
     }
@@ -265,20 +254,37 @@ test('welcome and the complete guide translate visible and accessible copy into 
   }
 });
 
-test('pages without an active conversation render welcome with the right Bot library removed', () => {
-  for (const overrides of [
-    { bots: [], groups: [], members: [], activeGroupId: null },
-    { groups: [], members: [], activeGroupId: null },
-    { homeSelected: true, activeGroupId: null },
-    { homeSelected: true, activeGroupId: null, rightPanelCollapsed: true },
-    { activeGroupId: 'removed-group' },
-  ]) {
+test('welcome renders only after loading an empty workspace, without a right panel or composer', () => {
+  for (const { name, overrides, visible } of welcomeCases) {
     const fixture = pageFixture(overrides);
     const tree = fixture.render();
-    const welcome = component(tree, fixture.page.WelcomeScreen);
-    assert.equal(welcome.props.hasBots, fixture.state(tree).bots.length > 0);
+    assert.equal(walk(tree).some(node => node.type === fixture.page.WelcomeScreen), visible, name);
+    assert.equal(walk(tree).find(node => node.props?.className === 'bt-root bt-page').props['data-home'], String(visible), name);
     assert.equal(walk(tree).some(node => node.type === fixture.page.DirectPanel || node.type === fixture.page.MembersPanel || node.props?.id === 'bt-right-panel'), false);
     assert.equal(walk(tree).some(node => node.type === fixture.page.Composer), false);
+    if (!visible && !overrides.loading) assert.match(text(tree), /选择一个单聊或群聊开始对话/);
+  }
+});
+
+test('deleting all Bots and groups restores welcome and its entry, and incoming data hides both again', () => {
+  const fixture = pageFixture();
+  let tree = fixture.render();
+  for (const { bots, groups, visible } of [
+    { bots: [], groups: [team], visible: false },
+    { bots: [], groups: [], visible: true },
+    { bots: [bot], groups: [direct], visible: false },
+    { bots: [bot], groups: [], visible: false },
+    { bots: [], groups: [], visible: true },
+    { bots: [], groups: [team], visible: false },
+  ]) {
+    component(tree, fixture.page.GroupList).props.dispatch({
+      type: 'bootstrap', data: bootstrapData(fixture.state(tree), { bots, groups, members: [] }),
+    });
+    tree = fixture.render();
+    assert.equal(walk(tree).some(node => node.type === fixture.page.WelcomeScreen), visible);
+    const sidebar = fixture.surface.remount(fixture.surface.GroupList, component(tree, fixture.page.GroupList).props);
+    assert.equal(walk(sidebar).some(node => node.props?.['data-action'] === 'show-welcome'), visible);
+    assert.equal(fixture.state(tree).activeGroupId, groups[0]?.groupId ?? null);
   }
 });
 
@@ -300,7 +306,7 @@ test('active conversations keep their existing direct or group right panel and c
 test('home page buttons open the existing creation forms and close the guide using local navigation', () => {
   for (const source of ['welcome', 'guide']) {
     for (const action of ['create-bot', 'create-group']) {
-      const fixture = pageFixture({ homeSelected: true, activeGroupId: null });
+      const fixture = pageFixture(emptyWorkspace);
       let tree = fixture.render();
       let surface = fixture.welcome(tree);
       if (source === 'guide') {
@@ -320,7 +326,6 @@ test('home page buttons open the existing creation forms and close the guide usi
       tree = fixture.render();
       component(tree, fixture.page.WelcomeScreen);
       assert.equal(fixture.state(tree).dialog, null);
-      assert.equal(fixture.state(tree).homeSelected, true);
       assert.deepEqual(fixture.requests, [], 'choosing or cancelling a form does not submit creation');
     }
   }
@@ -329,7 +334,7 @@ test('home page buttons open the existing creation forms and close the guide usi
 test('successful creation from onboarding leaves home and opens the new conversation after refresh', () => {
   const newGroup = { ...team, groupId: 'team-new', title: 'New project' };
   for (const kind of ['bot', 'group']) {
-    const fixture = pageFixture({ homeSelected: true, activeGroupId: null });
+    const fixture = pageFixture(emptyWorkspace);
     let tree = fixture.render();
     actionButton(fixture.welcome(tree), 'quick-start').props.onClick();
     tree = fixture.render();
@@ -340,23 +345,25 @@ test('successful creation from onboarding leaves home and opens the new conversa
       ? { created: true, botId: newBot.botId }
       : { group: newGroup });
     tree = fixture.render();
-    assert.equal(fixture.state(tree).homeSelected, false, 'successful creation exits explicit home selection');
     assert.equal(fixture.state(tree).dialog, null);
     const selectedGroup = kind === 'bot' ? newDirect : newGroup;
     component(tree, fixture.page.GroupList).props.dispatch({
       type: 'bootstrap',
-      data: bootstrapData(fixture.state(tree), { bots: [bot, newBot], groups: [team, direct, selectedGroup] }),
+      data: bootstrapData(fixture.state(tree), { bots: kind === 'bot' ? [newBot] : [], groups: [selectedGroup] }),
     });
     tree = fixture.render();
     assert.equal(fixture.state(tree).activeGroupId, selectedGroup.groupId);
     assert.equal(fixture.state(tree).pendingDirectBotId, null);
+    assert.equal(walk(tree).some(node => node.type === fixture.page.WelcomeScreen), false);
+    const sidebar = fixture.surface.remount(fixture.surface.GroupList, component(tree, fixture.page.GroupList).props);
+    assert.equal(walk(sidebar).some(node => node.props?.['data-action'] === 'show-welcome'), false);
     assert.equal(component(tree, fixture.page.Composer).props.group.groupId, selectedGroup.groupId);
     assert.deepEqual(plain(fixture.state(tree).messagesByGroup[team.groupId]), [message]);
   }
 });
 
 test('closing quick start returns to home and the welcome sidebar callback restores navigation', () => {
-  const fixture = pageFixture({ homeSelected: true, activeGroupId: null, sidebarCollapsed: true });
+  const fixture = pageFixture({ ...emptyWorkspace, sidebarCollapsed: true });
   let tree = fixture.render();
   actionButton(fixture.welcome(tree), 'quick-start').props.onClick();
   tree = fixture.render();
@@ -364,7 +371,6 @@ test('closing quick start returns to home and the welcome sidebar callback resto
   component(guide, fixture.surface.Modal).props.onClose();
   tree = fixture.render();
   assert.equal(fixture.state(tree).dialog, null);
-  assert.equal(fixture.state(tree).homeSelected, true);
   const navigation = walk(fixture.welcome(tree)).find(node => node.type === 'button' && node.props['aria-label'] === '打开导航');
   assert.ok(navigation);
   navigation.props.onClick();
