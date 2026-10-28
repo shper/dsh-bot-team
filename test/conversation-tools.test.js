@@ -4,6 +4,7 @@ import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { BotTeamService } from '../host/service.js';
+import { offlineUpdateDependencies } from './update-check-fixture.js';
 import { BOT_TEAM_TOOL_NAMES, registerBotTeamTools } from '../host/tools.js';
 import { resolveConfig } from '../host/util.js';
 
@@ -47,7 +48,7 @@ async function fixture(t) {
     agents: { get: () => undefined, create() { calls.creates += 1; assert.fail('Tool tests must never create Agents or call a model'); } },
   };
   const config = resolveConfig({ dataDir: path.join(root, 'data'), defaultCwd: root, migrateLegacyLayout: false, enableModelTools: false });
-  const service = new BotTeamService(ctx, config);
+  const service = new BotTeamService(ctx, config, offlineUpdateDependencies);
   await service.ready;
   const unregister = registerBotTeamTools({ ctx, service, config: { ...config, enableModelTools: true }, logger: ctx.logger });
   assert.deepEqual([...definitions.keys()].sort(), [...BOT_TEAM_TOOL_NAMES].sort());

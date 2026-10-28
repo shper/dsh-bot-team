@@ -5,6 +5,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { BotTeamService } from '../host/service.js';
+import { offlineUpdateDependencies } from './update-check-fixture.js';
 import { resolveConfig } from '../host/util.js';
 
 const SAME_BYTES = new Uint8Array([104, 105]);
@@ -83,6 +84,7 @@ async function boot() {
       migrateLegacyLayout: false,
       smokeResultsDir: path.join(home, 'smoke'),
     }),
+    offlineUpdateDependencies,
   );
   await service.ready;
   return { service, home, ...fake };

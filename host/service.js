@@ -23,6 +23,7 @@ import { isDiscussionActive, MAX_DISCUSSION_ROUNDS } from './discussion-flow.js'
 import { readBotSessionHistory, readBotSessionLog, readMessageExecution } from './execution.js';
 import { serializeBotSessionLog } from './session-export.js';
 import { registerRoutes } from './routes.js';
+import { UpdateChecker } from './update-check.js';
 import { BOT_TEAM_TOOL_NAMES, registerBotTeamTools } from './tools.js';
 import { GroupBus, asString, fail, json, newId, now, trimmed } from './util.js';
 import {
@@ -134,11 +135,12 @@ function optionalText(value, max) {
 }
 
 export class BotTeamService {
-  constructor(ctx, config) {
+  constructor(ctx, config, dependencies = {}) {
     this.ctx = ctx;
     this.config = config;
     this.logger = ctx.logger;
     this.bus = new GroupBus();
+    this.updateChecker = new UpdateChecker({ currentVersion: PLUGIN_INFO.version, ...dependencies.updateCheck });
     this.repo = null;
     this.personas = null;
     this.pool = null;
@@ -153,6 +155,8 @@ export class BotTeamService {
     this.disposed = false;
 
     this.ready = this.init();
+    // Update detection is independent of chat startup and never delays ready.
+    void this.updateChecker.check();
     this.ready.catch((error) => {
       this.logger?.error?.(`bot-team: init failed: ${String(error && error.stack ? error.stack : error)}`);
     });
@@ -420,6 +424,13 @@ export class BotTeamService {
     return this.withReady(async () => json(await this.bootstrapPayload()));
   }
 
+  async handleUpdateHttp(request) {
+    const updateInfo = request.method === 'POST'
+      ? await this.updateChecker.check({ force: true })
+      : this.updateChecker.snapshot();
+    return json({ ok: true, updateInfo });
+  }
+
   async bootstrapPayload() {
     const usageByGroup = new Map();
     for (const group of this.repo.groups.values()) {
@@ -494,6 +505,7 @@ export class BotTeamService {
       modelCatalog: await this.getModelCatalog(),
       // A preference save may complete while model catalog discovery awaits I/O.
       chatDisplaySettings: this.getChatDisplaySettings(),
+      updateInfo: this.updateChecker?.snapshot(),
       smoke: this.smokeState,
     };
   }
@@ -3156,6 +3168,7 @@ export class BotTeamService {
   async dispose() {
     if (this.disposed) return;
     this.disposed = true;
+    this.updateChecker?.dispose();
     try {
       await this.routeDispose?.();
     } catch {

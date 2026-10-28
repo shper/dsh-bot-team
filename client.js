@@ -142,6 +142,7 @@ window.__ModuleLoader__.load({
     const EMPTY_MESSAGES = [];
     const ROUTES = {
       bootstrap: '/api/bot-team.bootstrap',
+      update: '/api/bot-team.update',
       messages: '/api/bot-team.messages',
       conversations: '/api/bot-team.conversations',
       execution: '/api/bot-team.message-execution',
@@ -347,6 +348,8 @@ window.__ModuleLoader__.load({
 
     const api = {
       bootstrap: (signal) => request(ROUTES.bootstrap, { method: 'GET', signal }),
+      updateInfo: (signal) => request(ROUTES.update, { method: 'GET', signal }),
+      checkUpdate: (signal) => request(ROUTES.update, { method: 'POST', signal }),
       messages: (groupId, beforeSeq) =>
         request(
           `${ROUTES.messages}?groupId=${encodeURIComponent(groupId)}&limit=120${
@@ -1650,6 +1653,35 @@ window.__ModuleLoader__.load({
       "Bot 库里的 Bot 都已在群里。先关闭此窗口，用「新建 Bot」创建一个。": "All Bots in the library are already in this group. Close this window and use “New Bot” to create one.",
       "Bot 是全局可复用的 Agent：每个 Bot 自动拥有一个单聊，也可以加入多个群，每个群内有独立会话与记忆。这里管理全局 Bot 库。": "Bots are globally reusable agents: each Bot automatically gets a direct chat and can join multiple groups, with an independent conversation and memory in each group. Manage the global Bot library here.",
       "Bot Team 设置": "Bot Team settings",
+      "版本更新": "Plugin updates",
+      "版本检测": "Check for updates",
+      "检测中…": "Checking…",
+      "正在检查新版本…": "Checking for a new version…",
+      "版本检测失败，请稍后重试。": "The update check failed. Please try again later.",
+      "发现可用更新": "An update is available",
+      "暂无可用更新。": "No updates available.",
+      "已完成版本检测": "Update check complete",
+      "尚未检查新版本": "Updates have not been checked yet",
+      "npm 最新版本": "Latest on npm",
+      "可更新版本": "Available update",
+      "当前 DSH": "Current DSH",
+      "无法识别": "Unknown",
+      "有可用更新": "Update available",
+      "Bot Team 设置 · 有可用更新": "Bot Team settings · Update available",
+      "npm 最新版本要求 DSH {range}，与当前 DSH 不兼容。": "The latest npm version requires DSH {range} and is incompatible with your current DSH.",
+      " 下方提供可兼容当前 DSH 的更新版本。": " A compatible update is offered below.",
+      " 请先升级 DSH，再检测插件更新。": " Upgrade DSH first, then check for plugin updates again.",
+      "无法确认新版本与当前 DSH 的兼容性，暂不推荐更新。": "Compatibility with your current DSH could not be confirmed. No update is recommended yet.",
+      "以上版本信息来自上次成功检测。": "The versions above are from the last successful check.",
+      "上次成功检测：{time}": "Last successful check: {time}",
+      "前往更新": "Go to update",
+      "查看更新说明": "View release notes",
+      "更新说明 · {version}": "Release notes · {version}",
+      "npm 版本详情": "Version on npm",
+      "在 DSH 插件管理中卸载 Bot Team，再使用以下包名安装，完成后重启 DSH。": "Uninstall Bot Team in DSH Plugins, install the package below, then restart DSH.",
+      "Bot Team 的数据、人格文件与默认工作目录。自定义目录以实际配置为准。": "Bot Team data, persona files, and default working directories. Custom paths follow your configuration.",
+      "Host 未返回版本检测信息。请重启 DSH 后重试。": "The Host returned no update information. Restart DSH and try again.",
+      "版本检测接口尚未加载。请完全退出并重新启动 DSH。": "The update API is not loaded yet. Fully quit and restart DSH.",
       "BOT.md 人格": "BOT.md persona",
       "Enter 发送 · Shift + Enter 换行 · @ 提及成员 · / 选择 Skill": "Enter to send · Shift + Enter for a new line · @ to mention members · / to select a Skill",
       "Enter 发送 · Shift + Enter 换行 · / 选择 Skill": "Enter to send · Shift + Enter for a new line · / to select a Skill",
@@ -2279,6 +2311,8 @@ window.__ModuleLoader__.load({
       members: [],
       modelCatalog: { groups: [], default: null },
       pluginInfo: null,
+      updateInfo: null,
+      updateRequestStatus: null,
       config: {},
       chatDisplaySettings: DEFAULT_CHAT_DISPLAY_SETTINGS,
       sidebarCollapsed: readSidebarCollapsed(),
@@ -2382,6 +2416,7 @@ window.__ModuleLoader__.load({
             members: data.members || [],
             modelCatalog: data.modelCatalog || { groups: [], default: null },
             pluginInfo: data.plugin || null,
+            updateInfo: newerUpdateInfo(state.updateInfo, data.updateInfo),
             config: data.config || {},
             capabilities: data.capabilities || {},
             chatDisplaySettings: normalizeChatDisplaySettings(data.chatDisplaySettings),
@@ -2534,6 +2569,10 @@ window.__ModuleLoader__.load({
         }
         case 'sidebarShowDirect':
           return { ...state, sidebarShowDirect: action.showDirect !== false };
+        case 'updateInfo':
+          return { ...state, updateInfo: newerUpdateInfo(state.updateInfo, action.updateInfo), updateRequestStatus: null };
+        case 'updateRequestStatus':
+          return { ...state, updateRequestStatus: action.status };
         case 'chatDisplaySettings':
           return { ...state, chatDisplaySettings: normalizeChatDisplaySettings(action.settings) };
         case 'interactions': {
@@ -4892,6 +4931,23 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
   .bt-about-info-row { grid-template-columns: minmax(0, 1fr); gap: 5px; padding: 8px 0; }
 }
 
+/* Update indicators share the active theme in both sidebar widths. */
+.bt-update-dot { display: inline-block; flex: none; width: 6px; height: 6px; margin-left: auto; border-radius: 50%; background: var(--bt-accent); }
+.bt-settings-button { position: relative; }
+.bt-settings-update-dot { position: absolute; top: 5px; right: 6px; box-shadow: 0 0 0 2px var(--bt-bg); }
+.bt-update-card { min-width: 0; padding: 14px 16px; border: 1px solid var(--bt-border-strong); border-radius: 14px; background: var(--bt-surface); }
+.bt-update-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+.bt-update-status { margin-top: 10px; color: var(--bt-text-2); font-size: 12px; line-height: 1.6; }
+.bt-update-versions { margin: 8px 0; }
+.bt-update-hint { margin: 8px 0 0; color: var(--bt-text-3); font-size: 11.5px; line-height: 1.7; overflow-wrap: anywhere; }
+.bt-update-error { margin: 8px 0 0; color: var(--bt-danger-text); font-size: 11.5px; line-height: 1.7; overflow-wrap: anywhere; }
+.bt-update-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 14px; font-size: 12px; }
+.bt-update-instructions { display: grid; gap: 8px; justify-items: start; }
+.bt-update-notes { margin-top: 12px; font-size: 12px; color: var(--bt-text-2); }
+.bt-update-notes summary { cursor: pointer; color: var(--bt-text-strong); }
+.bt-update-notes summary:focus-visible { outline: 2px solid var(--bt-accent); outline-offset: 3px; border-radius: 3px; }
+.bt-update-notes-body { max-height: 220px; overflow: auto; margin-top: 8px; line-height: 1.7; overflow-wrap: anywhere; }
+
 /* v0.7 settings dialog: quiet module nav, responsive one-column fallback. */
 .bt-root .bt-settings-nav-item:hover { background: var(--bt-hover) !important; color: var(--bt-text-strong) !important; filter: none; }
 .bt-root .bt-settings-nav-item:focus-visible { outline: 2px solid var(--bt-accent); outline-offset: 1px; }
@@ -5191,6 +5247,105 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         };
       }, [dispatch]);
       return refresh;
+    }
+
+    // Ignore late reads from an earlier check, but accept a restarted Host.
+    function newerUpdateInfo(previous, incoming) {
+      if (!incoming) return previous || null;
+      if (previous?.instanceId && previous.instanceId === incoming.instanceId
+        && Number.isFinite(previous.revision) && Number.isFinite(incoming.revision)
+        && incoming.revision < previous.revision) return previous;
+      return incoming;
+    }
+
+    function createUpdateController({ onChange, fetchStatus = api.updateInfo, check = api.checkUpdate,
+      schedule = setTimeout, cancel = clearTimeout } = {}) {
+      let disposed = false;
+      let generation = 0;
+      let timer = null;
+      let requestController = null;
+      let manualRequest = null;
+      let snapshot = null;
+      const publish = (value, local = false) => {
+        snapshot = newerUpdateInfo(snapshot, value);
+        onChange?.(snapshot, local);
+      };
+      const load = (manual = false) => {
+        if (disposed) return Promise.resolve(snapshot);
+        if (manualRequest) return manualRequest;
+        const current = ++generation;
+        if (timer !== null) cancel(timer);
+        timer = null;
+        requestController?.abort();
+        const controller = new AbortController();
+        requestController = controller;
+        if (manual) publish({ ...snapshot, status: 'checking', error: null }, true);
+        const task = (async () => {
+          try {
+            const response = await (manual ? check : fetchStatus)(controller.signal);
+            if (disposed || current !== generation) return snapshot;
+            if (!response?.updateInfo) throw new Error(uiT('Host 未返回版本检测信息。请重启 DSH 后重试。'));
+            publish(response.updateInfo);
+            // Only poll the Host's cached state while its background npm request runs.
+            if (snapshot.status === 'checking' || snapshot.status === 'idle') {
+              timer = schedule(() => { timer = null; void load(); }, 1500);
+            }
+          } catch (error) {
+            if (disposed || current !== generation || controller.signal.aborted) return snapshot;
+            const message = error?.code === 'route-not-found'
+              ? uiT('版本检测接口尚未加载。请完全退出并重新启动 DSH。')
+              : String(error?.message || error);
+            publish({ ...snapshot, status: 'error', error: message }, true);
+          } finally {
+            if (requestController === controller) requestController = null;
+          }
+          return snapshot;
+        })();
+        if (manual) {
+          manualRequest = task;
+          void task.finally(() => { if (manualRequest === task) manualRequest = null; });
+        }
+        return task;
+      };
+      return {
+        refresh: () => load(),
+        check: () => load(true),
+        dispose() {
+          disposed = true;
+          generation += 1;
+          requestController?.abort();
+          if (timer !== null) cancel(timer);
+        },
+      };
+    }
+
+    function useUpdateInfo(dispatch, hostInfo) {
+      const controller = React.useRef(null);
+      const refresh = React.useCallback(() => controller.current?.refresh(), []);
+      const check = React.useCallback(() => controller.current?.check(), []);
+      React.useEffect(() => {
+        const current = createUpdateController({ onChange: (updateInfo, local) => {
+          // Browser transport failures have no Host revision. Keep them separate
+          // so a concurrent bootstrap cannot swallow an error or disable retry.
+          dispatch(local
+            ? { type: 'updateRequestStatus', status: { status: updateInfo.status, error: updateInfo.error } }
+            : { type: 'updateInfo', updateInfo });
+        } });
+        controller.current = current;
+        void current.refresh();
+        const focus = () => { void current.refresh(); };
+        window.addEventListener?.('focus', focus);
+        return () => {
+          window.removeEventListener?.('focus', focus);
+          current.dispose();
+          if (controller.current === current) controller.current = null;
+        };
+      }, [dispatch]);
+      React.useEffect(() => {
+        // A bootstrap may observe a check started by a different window.
+        if (hostInfo?.status === 'checking') void refresh();
+      }, [hostInfo?.instanceId, hostInfo?.revision, hostInfo?.status, refresh]);
+      return { refresh, check };
     }
 
     function useSse(groupId, dispatch, onExecutionUpdate) {
@@ -6327,18 +6482,81 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
     const SETTINGS_TABS = [
       { id: 'messages', label: '消息设置', icon: 'message' },
       { id: 'sidebar', label: '侧边栏设置', icon: 'sidebar' },
+      { id: 'storage', label: '数据存储', icon: 'storage' },
       { id: 'about', label: '关于', icon: 'info' },
     ];
     const ABOUT_DESCRIPTION = '在 DSH Web GUI 中运行单聊与多 Agent 群聊：每个 Bot 自动拥有独立的单聊窗口；群聊支持自定义分组、拖拽排序与展开/收起；Bot 可配置自己的模型、BOT.md 人格和完整工具能力。';
     const ABOUT_FEATURES = ['单聊自动创建', '群聊分组与拖拽排序', '展开 / 收起', 'BOT.md 人格', '任务与评审'];
     const ABOUT_GITHUB_URL = 'https://github.com/shper/dsh-bot-team';
-    const ABOUT_DATA_NOTES = [
+    const STORAGE_DATA_NOTES = [
       { label: '数据存储', path: '$DSH_HOME/storages/dsh-bot-team' },
       { label: 'Bot 会话', text: '使用真实的 DSH session。' },
       { label: '人格文件', path: '$DSH_HOME/dsh-bot-team/bots/<botId>/BOT.md' },
       { label: '单聊工作目录', path: '$DSH_HOME/dsh-bot-team/direct/<botId>/' },
       { label: '群聊工作目录', path: '$DSH_HOME/dsh-bot-team/groups/<groupId>/' },
     ];
+
+    function renderUpdatePanel({ updateInfo, onCheckUpdate, onOpenUpdate }) {
+      const update = updateInfo || {};
+      const checking = update.status === 'checking';
+      const hasUpdate = !!(update.hasUpdate && update.availableVersion);
+      const status = checking ? '正在检查新版本…'
+        : update.status === 'error' ? '版本检测失败，请稍后重试。'
+        : hasUpdate ? '发现可用更新'
+        : update.status === 'ready' && update.compatibility === 'compatible' ? '暂无可用更新。'
+        : update.status === 'ready' ? '已完成版本检测' : '尚未检查新版本';
+      const values = [
+        { label: 'npm 最新版本', value: update.latestVersion || '—' },
+        { label: '可更新版本', value: update.availableVersion || '—', accent: hasUpdate },
+        { label: '当前 DSH', value: update.runtimeVersion || uiT('无法识别') },
+      ];
+      const checkedDate = update.checkedAt ? new Date(update.checkedAt) : null;
+      const checkedLabel = checkedDate && Number.isFinite(checkedDate.getTime())
+        ? checkedDate.toLocaleString(isEnglishUi() ? 'en-US' : 'zh-CN') : null;
+      return h('section', { className: 'bt-update-card', 'aria-label': '版本更新' },
+        h('div', { className: 'bt-update-heading' },
+          h('span', { style: { fontSize: 13, fontWeight: 600, color: 'var(--bt-text-strong)' } }, '版本更新'),
+          h('button', { type: 'button', style: S.smallBtn, disabled: checking || !onCheckUpdate,
+            onClick: onCheckUpdate, 'data-action': 'check-update' }, checking ? '检测中…' : '版本检测'),
+        ),
+        h('div', { role: 'status', 'aria-live': 'polite', className: 'bt-update-status',
+          'data-status': update.status || 'idle' }, status),
+        h('dl', { className: 'bt-update-versions' }, values.map(row =>
+          h('div', { key: row.label, className: 'bt-about-info-row' },
+            h('dt', { className: 'bt-about-info-label' }, row.label),
+            h('dd', { className: 'bt-about-info-value' }, h('code', {
+              className: 'bt-about-value-chip' + (row.accent ? ' bt-about-version' : ''), raw: true,
+            }, row.value)),
+          ),
+        )),
+        update.compatibility === 'incompatible' ? h('p', { className: 'bt-update-hint' },
+          uiT('npm 最新版本要求 DSH {range}，与当前 DSH 不兼容。', { range: update.requiredDsh || '—' }),
+          hasUpdate ? ' 下方提供可兼容当前 DSH 的更新版本。' : ' 请先升级 DSH，再检测插件更新。',
+        ) : null,
+        update.compatibility === 'unknown' ? h('p', { className: 'bt-update-hint' },
+          '无法确认新版本与当前 DSH 的兼容性，暂不推荐更新。',
+        ) : null,
+        update.releaseNotes ? h('details', { className: 'bt-update-notes', open: true },
+          h('summary', null, uiT('更新说明 · {version}', { version: update.releaseNotesVersion || update.availableVersion || update.latestVersion })),
+          h('div', { className: 'bt-update-notes-body' }, withRaw(() => renderMarkdown(update.releaseNotes))),
+        ) : null,
+        update.status === 'error' && update.error ? h('p', { className: 'bt-update-error', raw: true }, update.error) : null,
+        update.status === 'error' && update.checkedAt ? h('p', { className: 'bt-update-hint' }, '以上版本信息来自上次成功检测。') : null,
+        checkedLabel ? h('p', { className: 'bt-update-hint' }, uiT('上次成功检测：{time}', { time: checkedLabel })) : null,
+        h('div', { className: 'bt-update-actions' },
+          h('button', { type: 'button', style: S.primaryBtn, disabled: !hasUpdate || !onOpenUpdate,
+            'data-action': 'open-update', onClick: onOpenUpdate }, '前往更新'),
+          h('a', { className: 'bt-about-link', href: ABOUT_GITHUB_URL + '/blob/main/CHANGELOG.md',
+            target: '_blank', rel: 'noreferrer noopener' }, '查看更新说明'),
+          update.updateUrl ? h('a', { className: 'bt-about-link', href: update.updateUrl,
+            target: '_blank', rel: 'noreferrer noopener' }, 'npm 版本详情') : null,
+        ),
+        hasUpdate ? h('div', { className: 'bt-update-instructions' },
+          h('p', { className: 'bt-update-hint' }, '在 DSH 插件管理中卸载 Bot Team，再使用以下包名安装，完成后重启 DSH。'),
+          h('code', { className: 'bt-about-value-chip', raw: true }, 'dsh-bot-team@' + update.availableVersion),
+        ) : null,
+      );
+    }
 
     function SettingsNavIcon({ name }) {
       const common = {
@@ -6360,6 +6578,12 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           h('path', { d: 'M9 4v16' }),
         );
       }
+      if (name === 'storage') {
+        return h('svg', common,
+          h('ellipse', { cx: 12, cy: 5, rx: 8, ry: 3 }),
+          h('path', { d: 'M4 5v14c0 4 16 4 16 0V5M4 12c0 4 16 4 16 0' }),
+        );
+      }
       if (name === 'info') {
         return h(
           'svg',
@@ -6377,7 +6601,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       );
     }
 
-    function ChatSettingsDialog({ settings, sidebarShowDirect = true, onClose, onSaved, pluginInfo, initialTab = 'messages' }) {
+    function ChatSettingsDialog({ settings, sidebarShowDirect = true, onClose, onSaved, pluginInfo, updateInfo, onCheckUpdate, onOpenUpdate, initialTab = 'messages' }) {
       // Keep only local edits: untouched fields follow settings saved in other tabs.
       const [edits, setEdits] = React.useState({});
       const [directEdit, setDirectEdit] = React.useState(null);
@@ -6574,7 +6798,20 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               ),
             ),
           )),
-          h('dl', { className: 'bt-about-info-card' }, ABOUT_DATA_NOTES.map(note =>
+          renderUpdatePanel({ updateInfo, onCheckUpdate, onOpenUpdate }),
+        ),
+      );
+
+      const storagePanel = h('div', {
+        key: 'storage', role: 'tabpanel', id: 'bt-settings-panel-storage',
+        'aria-labelledby': 'bt-settings-tab-storage', style: S.settingsPanel,
+      },
+        h('div', { style: S.settingsPanelHead },
+          h('div', { style: S.settingsPanelTitle }, '数据存储'),
+          h('div', { style: S.settingsPanelHint }, 'Bot Team 的数据、人格文件与默认工作目录。自定义目录以实际配置为准。'),
+        ),
+        h('div', { style: { marginTop: 12 } },
+          h('dl', { className: 'bt-about-info-card' }, STORAGE_DATA_NOTES.map(note =>
             h('div', { key: note.label, className: 'bt-about-info-row' },
               h('dt', { className: 'bt-about-info-label' }, note.label),
               h('dd', { className: 'bt-about-info-value' }, note.path
@@ -6586,7 +6823,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         ),
       );
 
-      const footer = tab !== 'about'
+      const footer = tab === 'messages' || tab === 'sidebar'
         ? h(React.Fragment, null,
             h('button', { key: 'reset', type: 'button', style: { ...S.smallBtn, marginRight: 'auto' }, disabled: busy, onClick: () => { if (tab === 'sidebar') setDirectEdit(true); else setEdits({ ...DEFAULT_CHAT_DISPLAY_SETTINGS }); setError(''); } }, '恢复默认'),
             h('button', { key: 'cancel', type: 'button', style: S.smallBtn, disabled: busy, onClick: onClose }, '取消'),
@@ -6625,12 +6862,13 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               },
               h('span', { style: S.settingsNavIcon(tab === item.id) }, h(SettingsNavIcon, { name: item.icon })),
               h('span', null, item.label),
+              item.id === 'about' && updateInfo?.hasUpdate ? h('span', { className: 'bt-update-dot', 'aria-label': '有可用更新', title: '有可用更新' }) : null,
             )),
           ),
           h(
             'div',
             { style: S.settingsContent },
-            tab === 'messages' ? messagesPanel : tab === 'sidebar' ? sidebarPanel : aboutPanel,
+            tab === 'messages' ? messagesPanel : tab === 'sidebar' ? sidebarPanel : tab === 'storage' ? storagePanel : aboutPanel,
             error ? h('div', { role: 'alert', style: { ...S.fieldHint, color: 'var(--bt-danger-text)', marginTop: 12 } }, uiT('保存失败：{error}', { error })) : null,
           ),
         ),
@@ -7648,9 +7886,9 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               type: 'button',
               className: 'bt-sidebar-action bt-settings-button',
               style: actionStyle,
-              title: 'Bot Team 设置',
-              'aria-label': 'Bot Team 设置',
-              onClick: () => dispatch({ type: 'dialog', dialog: { kind: 'settings' } }),
+              title: state.updateInfo?.hasUpdate ? 'Bot Team 设置 · 有可用更新' : 'Bot Team 设置',
+              'aria-label': state.updateInfo?.hasUpdate ? 'Bot Team 设置 · 有可用更新' : 'Bot Team 设置',
+              onClick: () => dispatch({ type: 'dialog', dialog: { kind: 'settings', initialTab: state.updateInfo?.hasUpdate ? 'about' : 'messages' } }),
             },
             h('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true, focusable: false, style: actionIconStyle },
               h('path', { d: 'M4 7h6m4 0h6M4 17h2m4 0h10' }),
@@ -7658,6 +7896,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               h('circle', { cx: 8, cy: 17, r: 2 }),
             ),
             collapsed ? null : h('span', null, '设置'),
+            state.updateInfo?.hasUpdate ? h('span', { className: 'bt-update-dot bt-settings-update-dot', 'aria-hidden': true }) : null,
           ),
         ),
         menu && menuItems.length > 0 ? h(SidebarMenu, { menu, items: menuItems, onClose: closeMenu }) : null,
@@ -12103,6 +12342,9 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       }));
       useLocaleRevision();
       const refresh = useBootstrap(dispatch);
+      const updates = useUpdateInfo(dispatch, state.updateInfo);
+      const settingsOpen = state.dialog?.kind === 'settings';
+      React.useEffect(() => { if (settingsOpen) void updates.refresh(); }, [settingsOpen, updates.refresh]);
       const [userProfile, setUserProfile] = React.useState(null);
 
       React.useEffect(() => {
@@ -12860,23 +13102,26 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                         h(
                           'svg',
                           {
-                            width: 16,
-                            height: 16,
+                            width: 18,
+                            height: 18,
                             viewBox: '0 0 24 24',
                             fill: 'none',
                             stroke: 'currentColor',
-                            strokeWidth: 1.7,
+                            strokeWidth: 1.75,
                             strokeLinecap: 'round',
                             strokeLinejoin: 'round',
                             'aria-hidden': true,
                             focusable: false,
-                            style: S.sidebarActionIcon,
+                            style: S.sidebarToggleIcon,
                           },
-                          h('rect', { x: 3, y: 4, width: 18, height: 16, rx: 3 }),
-                          h('path', { d: 'M15 4v16' }),
-                          state.rightPanelCollapsed === true
-                            ? h('path', { d: 'M13.5 9.5 11 12l2.5 2.5' })
-                            : h('path', { d: 'M12.5 9.5 15 12l-2.5 2.5' }),
+                          h('path', {
+                            d: 'M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4Z',
+                            fill: 'currentColor',
+                            fillOpacity: state.rightPanelCollapsed === true ? 0 : 0.18,
+                            stroke: 'none',
+                          }),
+                          h('rect', { x: 3, y: 3, width: 18, height: 18, rx: 2 }),
+                          h('path', { d: 'M15 3v18' }),
                         ),
                       ),
                       h(
@@ -13191,6 +13436,10 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               settings: state.chatDisplaySettings,
               sidebarShowDirect: state.sidebarShowDirect,
               pluginInfo: state.pluginInfo,
+              updateInfo: state.updateRequestStatus ? { ...state.updateInfo, ...state.updateRequestStatus } : state.updateInfo,
+              initialTab: dialog.initialTab,
+              onCheckUpdate: updates.check,
+              onOpenUpdate: () => { appCtx?.layout?.selectPanel('plugins'); closeDialog(); },
               onClose: closeDialog,
               onSaved: (settings, showDirect) => {
                 dispatch({ type: 'chatDisplaySettings', settings });
@@ -13291,7 +13540,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
     }
 
     return {
-      inject: ['slots', 'locale', 'uiWorkspace', 'remote', 'remote.account'],
+      inject: ['slots', 'locale', 'layout', 'uiWorkspace', 'remote', 'remote.account'],
       apply(ctx) {
         appCtx = ctx;
         ctx.effect(() => ctx.locale.register(LOCALE_NS, { zh: UI_ZH, en: UI_EN }), 'bot-team: dictionaries');

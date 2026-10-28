@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, realpath, rm, stat, symlink, writeFile } from 'node:fs/
 import os from 'node:os';
 import path from 'node:path';
 import { BotTeamService } from '../host/service.js';
+import { offlineUpdateDependencies } from './update-check-fixture.js';
 import { openRepository } from '../host/domain.js';
 import { renderGroupContext } from '../host/prompt.js';
 import { resolveConfig } from '../host/util.js';
@@ -53,7 +54,7 @@ async function fixture(t) {
     agents: { get: () => undefined },
   };
   const config = resolveConfig({ dataDir: path.join(root, 'data'), migrateLegacyLayout: false });
-  const service = new BotTeamService(ctx, config);
+  const service = new BotTeamService(ctx, config, offlineUpdateDependencies);
   await service.ready;
   const project = path.join(root, 'My Project');
   await mkdir(project);
@@ -103,7 +104,7 @@ test('project selection persists for direct and group chats, broadcasts, and res
   const legacy = { ...service.repo.getGroup(normal.groupId) };
   delete legacy.projectWorkspaceCwd;
   await service.repo.putGroup(legacy);
-  const restored = new BotTeamService(ctx, config);
+  const restored = new BotTeamService(ctx, config, offlineUpdateDependencies);
   await restored.ready;
   assert.equal(restored.repo.getGroup(normal.groupId).projectWorkspaceCwd, project);
   await restored.dispose();

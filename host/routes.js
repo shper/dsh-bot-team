@@ -2,7 +2,8 @@
  * Host ↔ Client transport: authenticated exact Fetch routes under the `/api`
  * fence (M0-verified). Reads use GET, writes POST JSON, live updates SSE.
  *
- *   GET  /api/bot-team.bootstrap   — bots / groups / members / model catalog
+ *   GET  /api/bot-team.bootstrap   — bots / groups / members / model catalog / update snapshot
+ *   GET/POST /api/bot-team.update  — read snapshot / await a manual update check
  *   GET  /api/bot-team.messages    — timeline page (?groupId=&afterSeq=&beforeSeq=&limit=)
  *   GET  /api/bot-team.events      — SSE frames for one group
  *   GET  /api/bot-team.message-execution — recorded execution for one Bot reply
@@ -17,6 +18,7 @@
  */
 export const ROUTES = {
   bootstrap: '/api/bot-team.bootstrap',
+  update: '/api/bot-team.update',
   messages: '/api/bot-team.messages',
   conversations: '/api/bot-team.conversations',
   execution: '/api/bot-team.message-execution',
@@ -40,6 +42,12 @@ export function registerRoutes(ctx, service) {
     methods: ['GET'],
     requestBody: 'buffered',
     fetch: () => service.handleBootstrap(),
+  });
+  register({
+    path: ROUTES.update,
+    methods: ['GET', 'POST'],
+    requestBody: 'buffered',
+    fetch: (request) => service.handleUpdateHttp(request),
   });
   register({
     path: ROUTES.messages,

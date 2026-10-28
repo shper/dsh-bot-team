@@ -4,6 +4,7 @@ import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { BotTeamService } from '../host/service.js';
+import { offlineUpdateDependencies } from './update-check-fixture.js';
 import { openRepository } from '../host/domain.js';
 import { isCurrentMemberSession } from '../host/conversations.js';
 import { resolveConfig } from '../host/util.js';
@@ -58,7 +59,7 @@ async function fixture(t) {
     agents: { get: () => undefined, create() { calls.creates += 1; assert.fail('New conversations must not create an Agent or call a model'); } },
   };
   const config = resolveConfig({ dataDir: path.join(root, 'data'), defaultCwd: root, migrateLegacyLayout: false, autoDispatchReady: true });
-  const service = new BotTeamService(ctx, config);
+  const service = new BotTeamService(ctx, config, offlineUpdateDependencies);
   await service.ready;
   const bot = await service.createBot({ name: 'Alpha', provider: 'mock', model: 'mock' });
   const second = await service.createBot({ name: 'Beta', provider: 'mock', model: 'mock' });

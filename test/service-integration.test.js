@@ -4,6 +4,7 @@ import { mkdtemp, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { BotTeamService } from '../host/service.js';
+import { offlineUpdateDependencies } from './update-check-fixture.js';
 import { resolveConfig } from '../host/util.js';
 import { loadClient, walk } from './client-harness.js';
 
@@ -53,7 +54,7 @@ test('bootstrap stays available when optional native services are absent from a 
   }
   const service = new BotTeamService(ctx, resolveConfig({
     dataDir: path.join(home, 'data'), defaultCwd: home, migrateLegacyLayout: false,
-  }));
+  }), offlineUpdateDependencies);
   t.after(async () => {
     await service.dispose();
     await rm(home, { recursive: true, force: true });
@@ -82,7 +83,7 @@ test('random Bot illustration colors survive saving, reopening and renaming', as
   const { ctx } = fakeCtx(path.join(home, 'storages'));
   const service = new BotTeamService(ctx, resolveConfig({
     dataDir: path.join(home, 'data'), defaultCwd: home, migrateLegacyLayout: false,
-  }));
+  }), offlineUpdateDependencies);
   t.after(async () => {
     await service.dispose();
     await rm(home, { recursive: true, force: true });
@@ -129,7 +130,7 @@ test('Bot and group preset selections stay distinct and survive saving and reope
   const { ctx } = fakeCtx(path.join(home, 'storages'));
   const service = new BotTeamService(ctx, resolveConfig({
     dataDir: path.join(home, 'data'), defaultCwd: home, migrateLegacyLayout: false,
-  }));
+  }), offlineUpdateDependencies);
   t.after(async () => {
     await service.dispose();
     await rm(home, { recursive: true, force: true });
@@ -201,7 +202,7 @@ test('bootstrap and health omit hourly quotas while the real engine enforces the
     migrateLegacyLayout: false,
     maxTurnsPerHour: 120,
     dailyTokenBudget: 1000,
-  }));
+  }), offlineUpdateDependencies);
   t.after(async () => {
     await service.dispose();
     await rm(home, { recursive: true, force: true });
@@ -242,10 +243,11 @@ test('the real service boots, registers its routes/tools, and drives direct chat
       migrateLegacyLayout: false,
       smokeResultsDir: path.join(home, 'smoke'),
     }),
+    offlineUpdateDependencies,
   );
   try {
     await service.ready;
-    assert.equal(routes.length, 13, 'bootstrap/messages/conversations/execution/session-history/session-export/events/action/health/file/upload/skills/export-pdf routes');
+    assert.equal(routes.length, 14, 'bootstrap/update/messages/conversations/execution/session-history/session-export/events/action/health/file/upload/skills/export-pdf routes');
     assert.deepEqual(
       routes.map((route) => route.path).sort(),
       [
@@ -261,6 +263,7 @@ test('the real service boots, registers its routes/tools, and drives direct chat
         '/api/bot-team.session-export',
         '/api/bot-team.session-history',
         '/api/bot-team.skills',
+        '/api/bot-team.update',
         '/api/bot-team.upload',
       ],
     );

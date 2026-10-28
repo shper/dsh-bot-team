@@ -70,6 +70,13 @@
     "prepublishOnly": "npm run check && npm test"
   },
   "dependencies": {
-    "fontkit": "^2.0.4"
+    "fontkit": "^2.0.4",
+    "semver": "^7.8.5"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-app-boot": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-app-boot": { "optional": true }
   }
 }

@@ -94,7 +94,7 @@ test('settings button is available with no groups, alongside the existing Bot ma
   const settingsButton = walk(tree).find(node => node.props?.['aria-label'] === 'Bot Team 设置');
   assert.ok(settingsButton);
   settingsButton.props.onClick();
-  assert.deepEqual(plain(actions[0]), { type: 'dialog', dialog: { kind: 'settings' } });
+  assert.deepEqual(plain(actions[0]), { type: 'dialog', dialog: { kind: 'settings', initialTab: 'messages' } });
   button(tree, 'Bot 管理').props.onClick();
   assert.equal(actions[1].dialog.kind, 'bots');
 });
@@ -211,13 +211,13 @@ test('dialog has 4 accessible mode groups, previews edits, saves once and return
   assert.deepEqual(plain(fixture.saved[0]), sent.payload.settings);
 });
 
-test('settings dialog has 消息设置 / 侧边栏设置 / 关于 tab modules and about shows description, version and developer', () => {
+test('settings dialog separates storage and about while preserving message controls', () => {
   const fixture = dialogFixture({
     pluginInfo: { packageName: '@local/bot-team-test', version: '9.9.9', author: '测试开发者' },
   });
   const initial = fixture.render();
   const tabs = walk(initial).filter(node => node.props?.role === 'tab');
-  assert.deepEqual(plain(tabs.map(node => text(node))), ['消息设置', '侧边栏设置', '关于']);
+  assert.deepEqual(plain(tabs.map(node => text(node))), ['消息设置', '侧边栏设置', '数据存储', '关于']);
   assert.equal(tabs[0].props['aria-selected'], true);
   assert.equal(tabs[1].props['aria-selected'], false);
   assert.equal(button(initial, '保存设置').props.disabled, true);
@@ -225,7 +225,17 @@ test('settings dialog has 消息设置 / 侧边栏设置 / 关于 tab modules an
   button(initial, '关于').props.onClick();
   const about = fixture.render();
   const aboutTabs = walk(about).filter(node => node.props?.role === 'tab');
-  assert.equal(aboutTabs[2].props['aria-selected'], true);
+  assert.equal(aboutTabs[3].props['aria-selected'], true);
+  assert.doesNotMatch(text(about), /\$DSH_HOME/);
+  assert.ok(button(about, '版本检测'));
+  button(about, '数据存储').props.onClick();
+  const storage = fixture.render();
+  assert.match(text(storage), /\$DSH_HOME\/storages\/dsh-bot-team/);
+  assert.match(text(storage), /\$DSH_HOME\/dsh-bot-team\/bots\/<botId>\/BOT[.]md/);
+  assert.equal(button(storage, '保存设置'), undefined);
+  assert.equal(button(storage, '恢复默认'), undefined);
+  assert.ok(button(storage, '关闭'));
+  button(storage, '关于').props.onClick();
   assert.match(text(about), /插件说明、版本号与开发者信息/);
   assert.match(text(about), /单聊与多 Agent 群聊/);
   assert.match(text(about), /9\.9\.9/);

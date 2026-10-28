@@ -150,6 +150,7 @@ test('the Host PDF route returns a downloadable PDF and a readable 404', { skip:
   const { mkdtemp, rm } = await import('node:fs/promises');
   const os = await import('node:os');
   const { BotTeamService } = await import('../host/service.js');
+  const { offlineUpdateDependencies } = await import('./update-check-fixture.js');
   const { resolveConfig } = await import('../host/util.js');
   const home = await mkdtemp(path.join(os.tmpdir(), 'bot-team-pdf-service-'));
   const service = new BotTeamService(
@@ -161,6 +162,7 @@ test('the Host PDF route returns a downloadable PDF and a readable 404', { skip:
       migrateLegacyLayout: false,
       smokeResultsDir: path.join(home, 'smoke'),
     }),
+    offlineUpdateDependencies,
   );
   try {
     await service.ready;
