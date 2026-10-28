@@ -9059,6 +9059,13 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         h(
           'div',
           { style: S.directPanel },
+          renderTokenUsageCard({
+            label: '本单聊累计 Token',
+            usage,
+            runningCount: running ? 1 : 0,
+            className: 'bt-direct-usage',
+            style: { ...S.memberCard, marginBottom: 0 },
+          }),
           h(
             'div',
             { style: S.directCard },
@@ -9088,13 +9095,6 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                 : null,
             ),
           ),
-          renderTokenUsageCard({
-            label: '本单聊累计 Token',
-            usage,
-            runningCount: running ? 1 : 0,
-            className: 'bt-direct-usage',
-            style: { ...S.memberCard, marginBottom: 0 },
-          }),
           h(
             'div',
             { style: S.directNote },
