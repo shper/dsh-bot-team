@@ -15,6 +15,7 @@
  */
 import { parseMentionsFromText } from './prompt.js';
 import { currentConversationId, conversationIdOf } from './conversations.js';
+import { MAX_DISCUSSION_ROUNDS } from './discussion-flow.js';
 
 export const BOT_TEAM_TOOL_NAMES = [
   'bot_team_list',
@@ -511,7 +512,7 @@ export function registerBotTeamTools({ ctx, service, config, logger }) {
           description: 'Bot names to include; defaults to every available member. An explicit empty list is invalid.',
         },
         format: { type: 'string', enum: ['classic', 'structured'], description: 'Discussion format. Defaults to classic.' },
-        rounds: { type: 'integer', minimum: 1, maximum: 5, description: 'Classic: 1–5 rounds, default 2. Structured: 2–5 rounds, default 3.' },
+        rounds: { type: 'integer', minimum: 1, maximum: MAX_DISCUSSION_ROUNDS, description: `Classic: 1–${MAX_DISCUSSION_ROUNDS} rounds, default 2. Structured: 2–${MAX_DISCUSSION_ROUNDS} rounds, default 3.` },
         summarize: { type: 'boolean', description: 'End with a 共识/分歧/待决 summary. Defaults to true.' },
         summaryMember: { type: 'string', description: 'Summary bot name in this group. Defaults to the first participant.' },
         perspectives: { type: 'object', additionalProperties: { type: 'string' }, description: 'Map participant bot names to their perspective or focus.' },
@@ -551,8 +552,8 @@ export function registerBotTeamTools({ ctx, service, config, logger }) {
       });
       if (new Set(perspectiveEntries.map(([id]) => id)).size !== perspectiveEntries.length) invalidDiscussionInput('同一成员的视角不可重复');
       const roundsRaw = Number(args.rounds);
-      const rounds = format === 'classic' ? (Number.isInteger(roundsRaw) ? Math.min(Math.max(roundsRaw, 1), 5) : 2) : (args.rounds ?? 3);
-      if (format === 'structured' && (!Number.isInteger(rounds) || rounds < 2 || rounds > 5)) invalidDiscussionInput('structured rounds 必须是 2 到 5 之间的整数');
+      const rounds = format === 'classic' ? (Number.isInteger(roundsRaw) ? Math.min(Math.max(roundsRaw, 1), MAX_DISCUSSION_ROUNDS) : 2) : (args.rounds ?? 3);
+      if (format === 'structured' && (!Number.isInteger(rounds) || rounds < 2 || rounds > MAX_DISCUSSION_ROUNDS)) invalidDiscussionInput('structured rounds 必须是 2 到 ' + MAX_DISCUSSION_ROUNDS + ' 之间的整数');
       const discussion = await dispatchDiscussion('discussion.start', compactObject({
         groupId: group.groupId, topic: String(args.topic || ''), mode: 'discussion', format,
         membershipIds, rounds, summarize: args.summarize !== false, summaryMembershipId,
@@ -577,7 +578,7 @@ export function registerBotTeamTools({ ctx, service, config, logger }) {
         judge: { type: 'string', description: 'Optional judge bot name, different from both sides.' },
         proPosition: { type: 'string', description: 'Optional position the pro side should defend.' },
         conPosition: { type: 'string', description: 'Optional position the con side should defend.' },
-        rounds: { type: 'integer', minimum: 1, maximum: 3, description: 'Question-and-answer rounds. Defaults to 2.' },
+        rounds: { type: 'integer', minimum: 1, maximum: MAX_DISCUSSION_ROUNDS, description: `Question-and-answer rounds: 1–${MAX_DISCUSSION_ROUNDS}. Defaults to 2.` },
         ...discussionCommonParameters,
       },
       required: ['groupId', 'topic', 'pro', 'con'],
@@ -596,7 +597,7 @@ export function registerBotTeamTools({ ctx, service, config, logger }) {
       if (proMembershipId === conMembershipId) invalidDiscussionInput('正方和反方必须是不同成员');
       if ([proMembershipId, conMembershipId].includes(judgeMembershipId)) invalidDiscussionInput('裁判必须独立于正方和反方');
       const rounds = args.rounds ?? 2;
-      if (!Number.isInteger(rounds) || rounds < 1 || rounds > 3) invalidDiscussionInput('辩论 rounds 必须是 1 到 3 之间的整数');
+      if (!Number.isInteger(rounds) || rounds < 1 || rounds > MAX_DISCUSSION_ROUNDS) invalidDiscussionInput('辩论 rounds 必须是 1 到 ' + MAX_DISCUSSION_ROUNDS + ' 之间的整数');
       const discussion = await dispatchDiscussion('discussion.start', compactObject({
         groupId: group.groupId, topic: String(args.topic || ''), mode: 'debate',
         proMembershipId, conMembershipId, judgeMembershipId,

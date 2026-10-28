@@ -1028,6 +1028,10 @@ window.__ModuleLoader__.load({
       "快速 · 2 轮": "Quick · 2 rounds",
       "标准 · 3 轮": "Standard · 3 rounds",
       "深入 · 5 轮": "Deep · 5 rounds",
+      "自定义…": "Custom…",
+      "自定义轮数": "Custom rounds",
+      "支持 {min}–{max} 轮": "Supports {min}–{max} rounds",
+      "轮数必须为 {min} 到 {max} 之间的整数": "Rounds must be an integer from {min} to {max}",
       "请选择有效的讨论轮数": "Choose a valid round count",
       "引用消息最多 20 条": "Reference at most 20 messages",
       "结构化讨论至少需要两位成员": "Structured discussion requires at least two members",
@@ -1489,6 +1493,7 @@ window.__ModuleLoader__.load({
       "所有 Bot 均具备完整工具权限": "All Bots have full tool access",
       "它的单聊与全部单聊消息也会一并删除。": "Its direct chat and all direct chat messages will be deleted too.",
       "讨论": "Discussion",
+      "讨论/辩论": "Discussion / Debate",
       "讨论结束": "Discussion ended",
       "讨论停止": "Discussion stopped",
       "讨论议题": "Discussion topic",
@@ -11684,11 +11689,16 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
     }
     function createDiscussionDraft(members, defaultTopic) {
       const enabled = members.filter(member => member.enabled !== false).map(member => member.membershipId);
-      return { mode: 'discussion', format: 'structured', topic: defaultTopic || '', membershipIds: enabled, rounds: 3, discussionRounds: 3, debateRounds: 2, summarize: true,
+      return { mode: 'discussion', format: 'structured', topic: defaultTopic || '', membershipIds: enabled, rounds: 3, discussionRounds: 3, debateRounds: 2, customRounds: false, discussionCustomRounds: false, debateCustomRounds: false, summarize: true,
         summaryMembershipId: enabled[0] || '', proMembershipId: enabled[0] || '', conMembershipId: enabled[1] || '', judgeMembershipId: '',
         proPosition: '', conPosition: '', goal: '', background: '', responseLength: 'standard', language: 'auto', perspectives: {}, references: '' };
     }
     function discussionRoundOptions(draft) { return draft.mode === 'debate' ? [1, 2, 3] : draft.format === 'structured' ? [2, 3, 5] : [1, 2, 3, 4, 5]; }
+    function discussionRoundRange(draft) { return { min: draft.mode === 'discussion' && draft.format === 'structured' ? 2 : 1, max: 20 }; }
+    function validDiscussionRounds(draft) {
+      const rounds = Number(draft.rounds), { min, max } = discussionRoundRange(draft);
+      return Number.isInteger(rounds) && rounds >= min && rounds <= max;
+    }
     function buildDiscussionStartPayload(group, expectedConversationId, draft) {
       const participants = draft.mode === 'debate' ? [draft.proMembershipId, draft.conMembershipId, draft.judgeMembershipId] : [...draft.membershipIds, draft.summaryMembershipId];
       return { groupId: group.groupId, expectedConversationId, topic: draft.topic.trim(), mode: draft.mode,
@@ -11704,7 +11714,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
     function validateDiscussionDraft(draft, candidates) {
       if (!draft.topic.trim()) return '请输入讨论议题';
       if (draft.topic.trim().length > 2000) return '讨论议题最多 2000 字符';
-      if (!discussionRoundOptions(draft).includes(Number(draft.rounds))) return '请选择有效的讨论轮数';
+      if (!validDiscussionRounds(draft)) return uiT('轮数必须为 {min} 到 {max} 之间的整数', discussionRoundRange(draft));
       if (parseDiscussionReferences(draft.references).length > 20) return '引用消息最多 20 条';
       const available = id => candidates.some(entry => entry.member.membershipId === id && entry.member.enabled !== false);
       if (draft.mode === 'debate') {
@@ -11740,7 +11750,12 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       const set = (key, value) => setDraft(current => {
         const next = { ...current, [key]: value };
         if (key === 'rounds') next[current.mode + 'Rounds'] = value;
-        if (key === 'format' && !discussionRoundOptions(next).includes(next.rounds)) next.rounds = next.discussionRounds = value === 'structured' ? 3 : 2;
+        if (key === 'format') {
+          if (!current.customRounds && !validDiscussionRounds(next)) next.rounds = value === 'structured' ? 3 : 2;
+          next.customRounds = current.customRounds || !discussionRoundOptions(next).includes(Number(next.rounds));
+          next.discussionRounds = next.rounds;
+          next.discussionCustomRounds = next.customRounds;
+        }
         return next;
       });
       const validation = validateDiscussionDraft(draft, candidates);
@@ -11769,7 +11784,15 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           setError(String(reason?.message || reason));
         } finally { busyRef.current = false; setBusy(false); }
       };
-      const switchMode = mode => setDraft(current => ({ ...current, [current.mode + 'Rounds']: current.rounds, mode, rounds: current[mode + 'Rounds'] || 3 }));
+      const switchMode = mode => setDraft(current => mode === current.mode ? current : ({
+        ...current, [current.mode + 'Rounds']: current.rounds, [current.mode + 'CustomRounds']: current.customRounds, mode,
+        rounds: current[mode + 'Rounds'], customRounds: current[mode + 'CustomRounds'],
+      }));
+      const selectRounds = value => setDraft(current => ({
+        ...current, customRounds: value === 'custom', [current.mode + 'CustomRounds']: value === 'custom',
+        ...(value === 'custom' ? {} : { rounds: Number(value), [current.mode + 'Rounds']: Number(value) }),
+      }));
+      const roundRange = discussionRoundRange(draft);
       return h(Modal, { title: '发起讨论或辩论', className: 'bt-discussion-dialog', width: 640, onClose,
         footer: [h('button', { key: 'cancel', type: 'button', style: S.ghostBtn, onClick: onClose }, '取消'),
           h('button', { key: 'ok', type: 'button', style: S.primaryBtn, disabled: busy || stale || !!validation, onClick: () => void submit() }, draft.mode === 'debate' ? '开始辩论' : '开始讨论')] },
@@ -11790,11 +11813,18 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               index >= 0 ? h('div', { className: 'bt-discussion-actions' }, [-1, 1].map(direction => h('button', { key: direction, type: 'button', style: S.smallBtn,
                 disabled: direction < 0 ? index === 0 : index === draft.membershipIds.length - 1, 'aria-label': uiT(direction < 0 ? '上移 {name}' : '下移 {name}', { name: bot.name }), onClick: () => moveMember(member.membershipId, direction) }, direction < 0 ? '↑' : '↓'))) : null); }))
             : h('div', { className: 'bt-discussion-grid' }, selectMember('proMembershipId', '正方成员', [draft.conMembershipId, draft.judgeMembershipId]), selectMember('conMembershipId', '反方成员', [draft.proMembershipId, draft.judgeMembershipId]), input('proPosition', '正方立场', true), input('conPosition', '反方立场', true), selectMember('judgeMembershipId', '裁判（可选）', [draft.proMembershipId, draft.conMembershipId], true)),
-          h('div', { className: 'bt-discussion-grid' }, labelField('rounds', '轮数', h('select', { id: 'bt-discussion-rounds', style: S.select, value: draft.rounds, onChange: event => set('rounds', Number(event.target.value)) }, discussionRoundOptions(draft).map(value => h('option', { key: value, value }, draft.mode === 'discussion' && draft.format === 'structured' ? uiT({ 2: '快速 · 2 轮', 3: '标准 · 3 轮', 5: '深入 · 5 轮' }[value]) : pluralUi('1 轮', '{count} 轮', value))))),
+          h('div', { className: 'bt-discussion-grid' }, labelField('rounds', '轮数', h(React.Fragment, null,
+            h('select', { id: 'bt-discussion-rounds', style: S.select, value: draft.customRounds ? 'custom' : draft.rounds, onChange: event => selectRounds(event.target.value) },
+              discussionRoundOptions(draft).map(value => h('option', { key: value, value }, draft.mode === 'discussion' && draft.format === 'structured' ? uiT({ 2: '快速 · 2 轮', 3: '标准 · 3 轮', 5: '深入 · 5 轮' }[value]) : pluralUi('1 轮', '{count} 轮', value))),
+              h('option', { value: 'custom' }, '自定义…')),
+            draft.customRounds ? h(React.Fragment, null,
+              labelField('customRounds', '自定义轮数', h('input', { id: 'bt-discussion-customRounds', type: 'number', inputMode: 'numeric', style: S.input, min: roundRange.min, max: roundRange.max, step: 1, required: true, autoFocus: true,
+                value: draft.rounds, onChange: event => set('rounds', event.target.value), 'aria-invalid': !validDiscussionRounds(draft), 'aria-describedby': 'bt-discussion-rounds-hint' })),
+              h('p', { id: 'bt-discussion-rounds-hint', className: 'bt-discussion-hint' }, uiT('支持 {min}–{max} 轮', roundRange))) : null)),
             draft.mode === 'discussion' ? selectMember('summaryMembershipId', '小结与总结成员') : null),
           draft.mode === 'discussion' ? h('label', { className: 'bt-discussion-check' }, h('input', { type: 'checkbox', checked: draft.summarize, onChange: event => set('summarize', event.target.checked) }), '结束后生成最终总结') : null,
           h('p', { className: 'bt-discussion-hint' }, draft.mode === 'debate' ? '双方开篇、交叉问答、总结陈词；设置裁判后生成裁决。' : draft.format === 'structured' ? '按观点、质询、收敛推进，每两轮之间生成小结。' : '按选定顺序逐轮自由讨论。'),
-          h('p', { className: 'bt-discussion-estimate', role: 'status' }, uiT('预计 {count} 次模型发言', { count: discussionEstimate(draft) })),
+          validDiscussionRounds(draft) ? h('p', { className: 'bt-discussion-estimate', role: 'status' }, uiT('预计 {count} 次模型发言', { count: discussionEstimate(draft) })) : null,
           draft.topic.trim() && validation ? h('p', { role: 'status', className: 'bt-discussion-hint' }, validation) : null,
           h('details', { className: 'bt-discussion-advanced' }, h('summary', null, '高级设置'),
             draft.mode === 'discussion' ? labelField('format', '讨论形式', h('select', { id: 'bt-discussion-format', style: S.select, value: draft.format, onChange: event => set('format', event.target.value) }, h('option', { value: 'structured' }, '结构化讨论'), h('option', { value: 'classic' }, '经典自由讨论'))) : null,
@@ -12696,7 +12726,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                         : h(
                             'button',
                             { type: 'button', className: 'bt-header-btn', style: S.headerBtn, onClick: openDiscussion, title: hasCurrentDiscussion ? '查看当前讨论' : '发起讨论或辩论' },
-                            hasCurrentDiscussion ? '查看当前讨论' : '讨论',
+                            hasCurrentDiscussion ? '查看当前讨论' : '讨论/辩论',
                           ),
                       h(
                         'button',

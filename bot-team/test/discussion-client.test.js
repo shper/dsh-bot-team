@@ -38,7 +38,7 @@ test('new setup defaults to structured three rounds and enabled members only', (
   const enabled = walk(tree).filter(node => node.type === 'input' && node.props.type === 'checkbox' && node.props.checked);
   assert.equal(enabled.length, 4, 'three enabled members and final summary');
   assert.match(text(tree), /预计 12 次模型发言/);
-  assert.deepEqual(plain(field(tree, 'bt-discussion-rounds').props.children.map(node => node.props.value)), [2, 3, 5]);
+  assert.deepEqual(plain(field(tree, 'bt-discussion-rounds').props.children.map(node => node.props.value)), [2, 3, 5, 'custom']);
   assert.ok(walk(tree).some(node => node.type === 'details' && node.props.className === 'bt-discussion-advanced'));
 });
 
@@ -228,11 +228,75 @@ test('narrow-screen discussion styles keep controls visible, wrap fields and use
 
 test('approved round presets adapt to format and preserve per-mode drafts', () => {
   const c = dialog(); c.change('topic', 'Topic'); c.change('rounds', 5); button(c.render(), '1v1 辩论').props.onClick();
-  assert.equal(field(c.render(), 'bt-discussion-rounds').props.value, 2); assert.deepEqual(plain(field(c.render(), 'bt-discussion-rounds').props.children.map(node => node.props.value)), [1, 2, 3]);
+  assert.equal(field(c.render(), 'bt-discussion-rounds').props.value, 2); assert.deepEqual(plain(field(c.render(), 'bt-discussion-rounds').props.children.map(node => node.props.value)), [1, 2, 3, 'custom']);
   c.change('rounds', 1); button(c.render(), '多成员讨论').props.onClick(); assert.equal(field(c.render(), 'bt-discussion-rounds').props.value, 5);
-  c.change('format', 'classic'); assert.deepEqual(plain(field(c.render(), 'bt-discussion-rounds').props.children.map(node => node.props.value)), [1, 2, 3, 4, 5]);
-  c.change('rounds', 4); c.change('format', 'structured'); assert.equal(field(c.render(), 'bt-discussion-rounds').props.value, 3);
+  c.change('format', 'classic'); assert.deepEqual(plain(field(c.render(), 'bt-discussion-rounds').props.children.map(node => node.props.value)), [1, 2, 3, 4, 5, 'custom']);
+  c.change('rounds', 4); c.change('format', 'structured'); assert.equal(field(c.render(), 'bt-discussion-rounds').props.value, 'custom');
+  assert.equal(field(c.render(), 'bt-discussion-customRounds').props.value, 4);
   button(c.render(), '1v1 辩论').props.onClick(); assert.equal(field(c.render(), 'bt-discussion-rounds').props.value, 1);
+});
+
+test('custom rounds submit the selected integer and update estimates in every mode', async () => {
+  for (const [mode, format, estimate] of [['discussion', 'structured', 80], ['discussion', 'classic', 61], ['debate', 'structured', 84]]) {
+    const c = dialog(); c.change('topic', 'Custom rounds');
+    if (mode === 'debate') button(c.render(), '1v1 辩论').props.onClick();
+    else c.change('format', format);
+    c.change('rounds', 'custom');
+    const input = field(c.render(), 'bt-discussion-customRounds');
+    assert.equal(input.props.type, 'number'); assert.equal(input.props.max, 20); assert.equal(input.props.step, 1);
+    assert.equal(input.props.min, mode === 'discussion' && format === 'structured' ? 2 : 1);
+    c.change('customRounds', '20');
+    assert.ok(text(c.render()).includes('预计 ' + estimate + ' 次模型发言'));
+    const start = button(c.render(), mode === 'debate' ? '开始辩论' : '开始讨论');
+    assert.equal(start.props.disabled, false); start.props.onClick(); await tick();
+    const payload = actionRequests(c.requests)[0].payload;
+    assert.equal(payload.rounds, 20); assert.equal(payload.mode, mode); assert.equal(payload.format, format);
+  }
+});
+
+test('custom rounds reject empty, fractional and out-of-range values before dispatch', async () => {
+  for (const mode of ['discussion', 'debate']) {
+    const c = dialog(); c.change('topic', 'Bounds');
+    if (mode === 'debate') button(c.render(), '1v1 辩论').props.onClick();
+    c.change('rounds', 'custom');
+    const invalid = ['', '0', '-1', '2.5', '21', 'Infinity', 'NaN', ...(mode === 'discussion' ? ['1'] : [])];
+    for (const value of invalid) {
+      c.change('customRounds', value);
+      const tree = c.render(), start = button(tree, mode === 'debate' ? '开始辩论' : '开始讨论');
+      assert.equal(start.props.disabled, true, value); assert.equal(field(tree, 'bt-discussion-customRounds').props['aria-invalid'], true);
+      assert.doesNotMatch(text(tree), /预计 .* 次模型发言/); start.props.onClick(); await tick();
+    }
+    assert.equal(actionRequests(c.requests).length, 0);
+    c.change('customRounds', mode === 'debate' ? '1' : '2');
+    assert.equal(button(c.render(), mode === 'debate' ? '开始辩论' : '开始讨论').props.disabled, false);
+  }
+});
+
+test('custom round values survive tabs and format changes without silently replacing empty drafts', () => {
+  const c = dialog(); c.change('topic', 'Draft'); c.change('rounds', 'custom'); c.change('customRounds', '10');
+  button(c.render(), '1v1 辩论').props.onClick();
+  assert.equal(field(c.render(), 'bt-discussion-rounds').props.value, 2);
+  c.change('rounds', 'custom'); c.change('customRounds', '6');
+  button(c.render(), '多成员讨论').props.onClick();
+  assert.equal(field(c.render(), 'bt-discussion-customRounds').props.value, '10');
+  c.change('format', 'classic'); assert.equal(field(c.render(), 'bt-discussion-customRounds').props.value, '10');
+  c.change('format', 'structured'); c.change('customRounds', '');
+  button(c.render(), '1v1 辩论').props.onClick(); assert.equal(field(c.render(), 'bt-discussion-customRounds').props.value, '6');
+  button(c.render(), '多成员讨论').props.onClick(); assert.equal(field(c.render(), 'bt-discussion-customRounds').props.value, '');
+  assert.equal(button(c.render(), '开始讨论').props.disabled, true);
+  c.change('rounds', 5); assert.equal(field(c.render(), 'bt-discussion-customRounds'), undefined);
+  assert.equal(button(c.render(), '开始讨论').props.disabled, false);
+  c.change('format', 'classic'); c.change('rounds', 1); c.change('format', 'structured');
+  assert.equal(field(c.render(), 'bt-discussion-rounds').props.value, 3);
+});
+
+test('custom round fields expose localized limits and accessible validation', () => {
+  const c = dialog(); c.client.setTestLocale('en'); c.change('topic', 'Custom'); c.change('rounds', 'custom'); c.change('customRounds', '21');
+  const tree = c.render(), input = field(tree, 'bt-discussion-customRounds');
+  assert.ok(walk(tree).some(node => node.type === 'label' && node.props.htmlFor === input.props.id && text(node) === 'Custom rounds'));
+  assert.equal(input.props['aria-describedby'], 'bt-discussion-rounds-hint');
+  assert.match(text(tree), /Supports 2–20 rounds/);
+  assert.match(text(tree), /Rounds must be an integer from 2 to 20/);
 });
 
 test('structured requires two participants and excludes dormant perspectives from payload', async () => {
@@ -251,7 +315,7 @@ test('stopping offers a fresh guarded stop check and preserves detailed failure 
 test('new conversation clears active ownership while keeping historical details available', () => {
   const c = loadClient(); const discussion = record(); const state = c.reducer({ ...c.initialState, loading: false, groups: [{ ...group, activeDiscussion: discussion }], activeGroupId: 'g1', discussions: { g1: discussion } }, { type: 'conversationState', groupId: 'g1', data: { currentConversationId: 'c2', conversationVersion: 2 } });
   assert.equal(state.groups[0].activeDiscussion, null);
-  const page = loadClient({ state }); let tree = page.render(page.BotTeamPage); assert.equal(button(tree, '查看当前讨论'), undefined); button(tree, '讨论').props.onClick(); tree = page.render(page.BotTeamPage); assert.ok(walk(tree).some(node => node.type === page.DiscussionDialog));
+  const page = loadClient({ state }); let tree = page.render(page.BotTeamPage); assert.equal(button(tree, '查看当前讨论'), undefined); button(tree, '讨论/辩论').props.onClick(); tree = page.render(page.BotTeamPage); assert.ok(walk(tree).some(node => node.type === page.DiscussionDialog));
 });
 
 test('newer group discussion snapshots advance revisions without waiting for another event', () => {

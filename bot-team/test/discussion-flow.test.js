@@ -4,6 +4,7 @@ import {
   normalizeDiscussionInput,
   createDiscussionPlan,
   DISCUSSION_ACTIVE_STATUSES,
+  MAX_DISCUSSION_ROUNDS,
   isDiscussionActive,
 } from '../host/discussion-flow.js';
 import {
@@ -160,12 +161,13 @@ test('context IDs are unique, limited to twenty, and must exist in the same grou
   }
 });
 
-test('round counts are strict integers with mode-specific bounds', () => {
+test('round counts accept up to twenty strict integers with mode-specific minimums', () => {
   const repo = fixture();
+  assert.equal(MAX_DISCUSSION_ROUNDS, 20);
   const variants = [
-    { options: {}, min: 1, max: 5 },
-    { options: { format: 'structured' }, min: 2, max: 5 },
-    { options: { mode: 'debate', proMembershipId: 'm1', conMembershipId: 'm2' }, min: 1, max: 3 },
+    { options: {}, min: 1, max: 20 },
+    { options: { format: 'structured' }, min: 2, max: 20 },
+    { options: { mode: 'debate', proMembershipId: 'm1', conMembershipId: 'm2' }, min: 1, max: 20 },
   ];
   for (const { options, min, max } of variants) {
     for (let rounds = min; rounds <= max; rounds += 1) assert.equal(normalizeDiscussionInput(repo, input({ ...options, rounds })).rounds, rounds);
@@ -177,7 +179,7 @@ test('round counts are strict integers with mode-specific bounds', () => {
 
 test('classic rounds retain original per-member loop order and stable fresh steps', () => {
   const repo = fixture();
-  for (let rounds = 1; rounds <= 5; rounds += 1) {
+  for (let rounds = 1; rounds <= 20; rounds += 1) {
     const config = normalizeDiscussionInput(repo, input({ rounds, summaryMembershipId: 'm3', summarize: true }));
     const plan = createDiscussionPlan(config);
     assert.equal(plan.length, 2 * rounds + 1);
@@ -198,7 +200,7 @@ test('classic rounds retain original per-member loop order and stable fresh step
 
 test('structured rounds have exact viewpoint, challenge, converge and checkpoint counts', () => {
   const repo = fixture();
-  for (let rounds = 2; rounds <= 5; rounds += 1) {
+  for (let rounds = 2; rounds <= 20; rounds += 1) {
     for (const summarize of [true, false]) {
       const config = normalizeDiscussionInput(repo, input({ format: 'structured', rounds, summarize, summaryMembershipId: 'm3' }));
       const plan = createDiscussionPlan(config);
@@ -239,7 +241,7 @@ test('debate normalization requires distinct valid sides and an independent opti
 
 test('debate has two openings, four steps per round, two closings and judge independent of summarize', () => {
   const repo = fixture();
-  for (let rounds = 1; rounds <= 3; rounds += 1) {
+  for (let rounds = 1; rounds <= 20; rounds += 1) {
     for (const judgeMembershipId of [null, 'm3']) {
       for (const summarize of [true, false]) {
         const plan = createDiscussionPlan(normalizeDiscussionInput(repo, debateInput({ rounds, judgeMembershipId, summarize })));
@@ -279,6 +281,28 @@ test('every debate question targets the latest substantive statement from its op
     assert.notEqual(target.membershipId, question.membershipId);
     assert.ok(['opening', 'answer'].includes(target.phase));
     assert.ok(plan.indexOf(target) < plan.indexOf(question));
+  }
+});
+
+test('long debates keep questions anchored to the latest opponent statement through round twenty', () => {
+  const repo = fixture();
+  for (const rounds of [6, 10, 20]) {
+    const plan = createDiscussionPlan(normalizeDiscussionInput(repo, debateInput({ rounds, judgeMembershipId: 'm3' })));
+    const questions = plan.filter(step => step.phase === 'question');
+    assert.equal(questions.length, 2 * rounds);
+    assert.equal(plan.length, 5 + 4 * rounds);
+    for (const question of questions) {
+      const preceding = plan.slice(0, plan.indexOf(question));
+      const latestOpponent = preceding.filter(step => step.membershipId !== question.membershipId
+        && ['opening', 'answer'].includes(step.phase)).at(-1);
+      assert.equal(question.targetStepId, latestOpponent.stepId, `round ${question.round}, ${question.side}`);
+    }
+    assert.deepEqual(questions.slice(-2).map(step => [step.side, step.targetStepId]), [
+      ['con', 'step-' + (4 * rounds - 2)], ['pro', 'step-' + (4 * rounds - 4)],
+    ]);
+    assert.deepEqual(plan.slice(-3).map(step => [step.phase, step.membershipId, step.round]), [
+      ['closing', 'm1', rounds], ['closing', 'm2', rounds], ['judgement', 'm3', rounds],
+    ]);
   }
 });
 

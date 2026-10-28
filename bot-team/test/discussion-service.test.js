@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { BotTeamService } from '../host/service.js';
+import { normalizeDiscussionInput } from '../host/discussion-flow.js';
 
 function fixture() {
   const group = { groupId: 'g', kind: 'group', activeConversationId: 'c2', conversationVersion: 2 };
@@ -56,6 +57,46 @@ test('discussion start passes new configuration and preserves traditional defaul
   await assert.rejects(service.startDiscussion({ groupId: 'g', topic: 'x'.repeat(2001), format: 'structured' }), error => error.code === 'invalid-input');
   await assert.rejects(service.startDiscussion({ groupId: 'g', topic: 123, mode: 'debate' }), error => error.code === 'invalid-input');
   assert.equal(calls.length, 2, 'invalid modern topics are not silently truncated or dispatched');
+});
+
+test('API starts forward six, ten and twenty rounds to the flow in every mode', async () => {
+  const { service, calls } = fixture();
+  service.repo.getBot = botId => ({ botId, name: botId });
+  service.engine.startDiscussion = async input => {
+    calls.push(['start', input]);
+    return normalizeDiscussionInput(service.repo, input);
+  };
+  const variants = [
+    { options: {}, summarize: false },
+    { options: { mode: 'discussion', format: 'classic' }, summarize: false },
+    { options: { mode: 'discussion', format: 'structured' }, summarize: true },
+    { options: { mode: 'debate', proMembershipId: 'm1', conMembershipId: 'm2' }, summarize: false },
+  ];
+  for (const { options, summarize } of variants) {
+    for (const rounds of [6, 10, 20]) {
+      const result = await service.dispatch('discussion.start', { groupId: 'g', topic: 'Long discussion',
+        membershipIds: ['m1', 'm2'], expectedConversationId: 'c2', ...options, rounds }, { external: true });
+      assert.equal(calls.at(-1)[1].rounds, rounds);
+      assert.equal(result.rounds, rounds);
+      assert.equal(result.summarize, summarize);
+    }
+  }
+  for (const options of variants.slice(2).map(variant => variant.options)) {
+    for (const rounds of [21, 2.5]) {
+      await assert.rejects(service.dispatch('discussion.start', { groupId: 'g', topic: 'Invalid rounds',
+        membershipIds: ['m1', 'm2'], expectedConversationId: 'c2', ...options, rounds }, { external: true }),
+      { code: 'invalid-input' });
+    }
+  }
+});
+
+test('classic service normalization preserves coercion and defaults with the raised clamp', async () => {
+  const { service, calls } = fixture();
+  for (const [inputRounds, expected] of [[undefined, 2], ['6', 6], [0, 1], [99, 20], [2.5, 2]]) {
+    await service.startDiscussion({ groupId: 'g', topic: 'Classic', rounds: inputRounds });
+    assert.equal(calls.at(-1)[1].rounds, expected);
+    assert.equal(calls.at(-1)[1].summarize, false);
+  }
 });
 
 test('historical details include only the exact group and conversation and report deleted sources', async () => {

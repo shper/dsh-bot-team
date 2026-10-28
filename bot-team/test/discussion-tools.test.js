@@ -142,8 +142,47 @@ test('classic defaults remain two rounds, all available members and a summary, t
   assert.deepEqual(f.calls.dispatch.map(call => call.action), ['discussion.start', 'discussion.get']);
   assert.equal(result.discussion.settled, false); assert.equal(f.calls.wait.length, 0);
   await f.discuss({ rounds: 99, summarize: false, members: [' @ALPHA '] });
-  assert.equal(startInput(f).rounds, 5); assert.equal(startInput(f).summarize, false);
+  assert.equal(startInput(f).rounds, 20); assert.equal(startInput(f).summarize, false);
   assert.deepEqual(startInput(f).membershipIds, ['alpha']);
+});
+
+test('discussion and debate schemas advertise the twenty-round ceiling', t => {
+  const f = fixture(t);
+  for (const name of ['bot_team_discuss', 'bot_team_debate']) {
+    const rounds = f.definitions.get(name).parameters.properties.rounds;
+    assert.equal(rounds.type, 'integer');
+    assert.equal(rounds.minimum, 1);
+    assert.equal(rounds.maximum, 20);
+    assert.match(rounds.description, /1–20/);
+  }
+  assert.match(f.definitions.get('bot_team_discuss').parameters.properties.rounds.description, /Structured: 2–20 rounds, default 3/);
+});
+
+test('tools forward longer rounds through modern service and legacy engine admission', async t => {
+  for (const legacy of [false, true]) {
+    const f = fixture(t, { legacy });
+    for (const rounds of [6, 10, 20]) {
+      for (const format of ['classic', 'structured']) {
+        const result = await f.discuss({ format, rounds });
+        assert.equal(startInput(f).rounds, rounds);
+        assert.equal(startInput(f).summarize, true);
+        assert.equal(result.discussion.rounds, rounds);
+      }
+      const result = await f.debate({ rounds, judge: 'Judge' });
+      assert.equal(startInput(f).rounds, rounds);
+      assert.equal(startInput(f).summarize, true);
+      assert.equal(startInput(f).judgeMembershipId, 'judge');
+      assert.equal(result.discussion.rounds, rounds);
+    }
+  }
+});
+
+test('classic tools retain compatible coercion and defaulting', async t => {
+  const f = fixture(t);
+  for (const [rounds, expected] of [['10', 10], [0, 1], [2.5, 2]]) {
+    await f.discuss({ rounds });
+    assert.equal(startInput(f).rounds, expected);
+  }
 });
 
 test('structured discussion maps names and perspectives to member IDs and accepts explicit same-group history', async t => {
@@ -166,7 +205,8 @@ test('unknown, ambiguous, duplicate and empty member choices fail before startin
     { summaryMember: 'Missing' }, { perspectives: { Missing: 'Cost' } },
     { members: ['Alpha'], perspectives: { Beta: 'Risk' } }, { perspectives: { Alpha: 7 } },
     { perspectives: { Alpha: 'Cost', '@alpha': 'Risk' } }, { perspectives: [] },
-    { format: 'structured', members: ['Alpha'] }, { format: 'structured', rounds: 1 }, { format: 'unknown' },
+    { format: 'structured', members: ['Alpha'] }, { format: 'structured', rounds: 1 },
+    { format: 'structured', rounds: 21 }, { format: 'structured', rounds: 2.5 }, { format: 'structured', rounds: '3' }, { format: 'unknown' },
   ]) await assert.rejects(f.discuss(args), { code: 'invalid-input' });
   f.addMember('ALPHA', 'duplicate');
   await assert.rejects(f.discuss({ members: ['Alpha'] }), /有歧义/);
@@ -175,7 +215,7 @@ test('unknown, ambiguous, duplicate and empty member choices fail before startin
   await assert.rejects(f.invoke('bot_team_send', { groupId: 'group', text: 'hello', mentions: ['Missing'] }), /不在群里/);
 });
 
-test('debate maps independent sides and optional judge with a strict one-to-three round budget', async t => {
+test('debate maps independent sides and optional judge with a strict one-to-twenty round budget', async t => {
   const f = fixture(t); const result = await f.debate();
   assert.equal(startInput(f).mode, 'debate'); assert.equal(startInput(f).rounds, 2);
   assert.equal(startInput(f).proMembershipId, 'alpha'); assert.equal(startInput(f).conMembershipId, 'beta');
@@ -187,7 +227,7 @@ test('debate maps independent sides and optional judge with a strict one-to-thre
   assert.equal(startInput(f).responseLength, 'short'); assert.equal(startInput(f).language, 'en');
   const count = f.calls.start.length;
   for (const args of [{ pro: 'Missing' }, { con: 'Missing' }, { judge: 'Missing' }, { con: '@alpha' }, { judge: 'Beta' },
-    { rounds: 0 }, { rounds: 4 }, { rounds: 1.5 }, { rounds: '2' }]) {
+    { rounds: 0 }, { rounds: 21 }, { rounds: 1.5 }, { rounds: '2' }]) {
     await assert.rejects(f.debate(args), { code: 'invalid-input' });
   }
   assert.equal(f.calls.start.length, count);

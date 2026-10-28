@@ -1,4 +1,6 @@
 /** Pure validation and step planning for version 2 discussions. */
+export const MAX_DISCUSSION_ROUNDS = 20;
+
 export const DISCUSSION_ACTIVE_STATUSES = Object.freeze([
   'running', 'pausing', 'paused', 'finalizing', 'stopping',
 ]);
@@ -60,10 +62,9 @@ export function normalizeDiscussionInput(repo, input) {
   if (input.summarize !== undefined && typeof input.summarize !== 'boolean') invalid('summarize 必须是布尔值');
   const summarize = input.summarize === undefined ? mode === 'discussion' && format === 'structured' : input.summarize;
   const minRounds = mode === 'discussion' && format === 'structured' ? 2 : 1;
-  const maxRounds = mode === 'debate' ? 3 : 5;
   const rounds = input.rounds === undefined ? (minRounds === 2 ? 3 : 2) : input.rounds;
-  if (!Number.isInteger(rounds) || rounds < minRounds || rounds > maxRounds) {
-    invalid('rounds 必须是 ' + minRounds + ' 到 ' + maxRounds + ' 之间的整数');
+  if (!Number.isInteger(rounds) || rounds < minRounds || rounds > MAX_DISCUSSION_ROUNDS) {
+    invalid('rounds 必须是 ' + minRounds + ' 到 ' + MAX_DISCUSSION_ROUNDS + ' 之间的整数');
   }
   const expectedConversationId = input.expectedConversationId === undefined ? undefined
     : text(input.expectedConversationId, 'expectedConversationId', { required: true });

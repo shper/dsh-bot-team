@@ -19,7 +19,7 @@ import { AgentPool } from './agents.js';
 import { BackgroundInteractions } from './background-interactions.js';
 import { BotSessionVisibility } from './session-visibility.js';
 import { Engine } from './engine.js';
-import { isDiscussionActive } from './discussion-flow.js';
+import { isDiscussionActive, MAX_DISCUSSION_ROUNDS } from './discussion-flow.js';
 import { readBotSessionHistory, readBotSessionLog, readMessageExecution } from './execution.js';
 import { serializeBotSessionLog } from './session-export.js';
 import { registerRoutes } from './routes.js';
@@ -1583,7 +1583,7 @@ export class BotTeamService {
     }
     const topic = requireText(input.topic, '讨论议题', 2000);
     const roundsRaw = Number(input.rounds);
-    const rounds = modern ? input.rounds : (Number.isInteger(roundsRaw) ? Math.min(Math.max(roundsRaw, 1), 5) : 2);
+    const rounds = modern ? input.rounds : (Number.isInteger(roundsRaw) ? Math.min(Math.max(roundsRaw, 1), MAX_DISCUSSION_ROUNDS) : 2);
     const fields = ['mode', 'format', 'goal', 'background', 'summaryMembershipId', 'proMembershipId',
       'conMembershipId', 'judgeMembershipId', 'proPosition', 'conPosition', 'responseLength', 'language',
       'perspectives', 'contextMessageIds', 'requestId'];
