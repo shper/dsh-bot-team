@@ -78,7 +78,12 @@ const BOT_COLORS = ['#2f7ed8', '#8b5cf6', '#0d9488', '#d97706', '#db2777', '#4f4
 
 // Avatar grammar: preset seeds are robot mascots, art IDs are the bundled SVG pack.
 const AVATAR_PRESET_RE = /^preset:[a-z0-9-]{1,40}$/;
-const AVATAR_ART_IDS = new Set(['planet', 'rocket', 'cloud', 'bolt', 'leaf', 'flame', 'star', 'moon', 'wave', 'flower']);
+const AVATAR_ART_IDS = new Set([
+  // Keep the original illustrations valid for saved Bot and group records.
+  'planet', 'rocket', 'cloud', 'bolt', 'leaf', 'flame', 'star', 'moon', 'wave', 'flower',
+  'bot-orbit', 'bot-spark', 'bot-circuit', 'bot-pixel', 'bot-scout', 'bot-assistant', 'bot-core', 'bot-android',
+  'group-team', 'group-bots', 'group-network', 'group-dialogue', 'group-lab', 'group-huddle', 'group-swarm', 'group-community',
+]);
 const MAX_AVATAR_CHARS = 800000;
 
 function normalizeAvatar(value) {

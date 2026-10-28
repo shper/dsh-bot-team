@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { BotTeamService } from '../host/service.js';
 import { resolveConfig } from '../host/util.js';
+import { loadClient, walk } from './client-harness.js';
 
 /** The DSH services the Host half touches during startup (no agents are run). */
 function fakeCtx(storageRoot) {
@@ -41,6 +42,73 @@ function fakeCtx(storageRoot) {
   };
   return { ctx, routes, tools };
 }
+
+test('Bot and group preset selections stay distinct and survive saving and reopening', async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'bot-team-avatar-'));
+  const { ctx } = fakeCtx(path.join(home, 'storages'));
+  const service = new BotTeamService(ctx, resolveConfig({
+    dataDir: path.join(home, 'data'), defaultCwd: home, migrateLegacyLayout: false,
+  }));
+  t.after(async () => {
+    await service.dispose();
+    await rm(home, { recursive: true, force: true });
+  });
+  await service.ready;
+  const noop = () => {};
+  const client = loadClient();
+  const modelCatalog = { groups: [{ id: 'deepseek', models: [{ id: 'deepseek-chat' }] }] };
+  const presetButtons = (tree) => {
+    const picker = walk(tree).find(node => node.props?.role === 'group' && node.props['aria-label'] === '预置头像');
+    assert.ok(picker, 'preset picker is named for assistive technology');
+    return walk(picker).filter(node => node.type === 'button');
+  };
+  const assertArt = (kind, record, id) => {
+    const node = kind === 'bot' ? client.Avatar({ bot: record }) : client.GroupAvatar({ group: record });
+    const art = walk(node).find(child => typeof child.type === 'function' && child.props.id === id);
+    assert.ok(art, 'saved preset resolves to its illustration');
+    assert.equal(art.type(art.props).type, 'svg');
+  };
+  const selectedIds = [];
+  const records = {};
+  for (const kind of ['bot', 'group']) {
+    const component = kind === 'bot' ? client.BotFormDialog : client.GroupFormDialog;
+    const props = { onClose: noop, onSaved: noop, modelCatalog, folders: [] };
+    const buttons = presetButtons(client.remount(component, props));
+    assert.ok(buttons.length >= 6, 'each entity offers its own selection');
+    const ids = buttons.map(button => button.props.key);
+    assert.ok(ids.every(id => id.startsWith(kind + '-')), 'picker contains only its own category');
+    selectedIds.push(ids);
+    let record;
+    for (const id of ids) {
+      presetButtons(client.render(component, props)).find(button => button.props.key === id).props.onClick();
+      const tree = client.render(component, props);
+      const preview = walk(tree).find(node => node.type === (kind === 'bot' ? client.Avatar : client.GroupAvatar));
+      const avatar = preview.props[kind].avatar;
+      assert.equal(avatar, 'art:' + id);
+      assert.deepEqual(presetButtons(tree).filter(button => button.props['aria-pressed']).map(button => button.props.key), [id]);
+      record = record
+        ? await service.dispatch(kind + '.update', { [kind + 'Id']: record[kind + 'Id'], avatar })
+        : await service.dispatch(kind + '.create', { name: 'Avatar Bot', title: 'Avatar group', provider: 'deepseek', model: 'deepseek-chat', avatar });
+      const boot = await service.bootstrapPayload();
+      const saved = boot[kind === 'bot' ? 'bots' : 'groups'].find(entry => entry[kind + 'Id'] === record[kind + 'Id']);
+      assert.equal(saved.avatar, avatar);
+      const reopened = client.remount(component, { ...props, [kind]: saved });
+      assert.equal(presetButtons(reopened).find(button => button.props['aria-pressed']).props.key, id);
+      assertArt(kind, saved, id);
+    }
+    records[kind] = record;
+  }
+  assert.equal(selectedIds[0].some(id => selectedIds[1].includes(id)), false);
+  for (const id of ['planet', 'rocket', 'cloud', 'bolt', 'leaf', 'flame', 'star', 'moon', 'wave', 'flower']) {
+    for (const kind of ['bot', 'group']) {
+      const saved = await service.dispatch(kind + '.update', { [kind + 'Id']: records[kind][kind + 'Id'], avatar: 'art:' + id });
+      assert.equal(saved.avatar, 'art:' + id, 'legacy illustrations still save');
+      assertArt(kind, saved, id);
+    }
+  }
+  await assert.rejects(service.updateBot({ botId: records.bot.botId, avatar: 'art:bot-unknown' }), /未知的插画头像/);
+  await assert.rejects(service.updateGroup({ groupId: records.group.groupId, avatar: 'art:group-unknown' }), /未知的插画头像/);
+});
 
 test('bootstrap and health omit hourly quotas while the real engine enforces the daily budget', async (t) => {
   t.mock.method(Date, 'now', () => new Date(2026, 9, 27, 12).getTime());
