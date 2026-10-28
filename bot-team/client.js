@@ -4122,7 +4122,9 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
 .bt-library-detail { min-width: 0; }
 .bt-library-detail dt { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .bt-library-detail dd { margin: 0; min-width: 0; min-height: 26px; display: flex; align-items: center; gap: 5px; }
-.bt-library-group { display: inline-flex; align-items: center; flex: 0 1 auto; gap: 5px; min-width: 0; max-width: 150px; box-sizing: border-box; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--bt-accent-border); background: var(--bt-accent-soft); color: var(--bt-accent); font-size: 11px; line-height: 1.5; }
+.bt-library-groups { position: relative; }
+.bt-library-group-measure { position: absolute; inset: 0; display: flex; align-items: center; gap: inherit; overflow: hidden; visibility: hidden; pointer-events: none; }
+.bt-library-group { display: inline-flex; align-items: center; flex: none; gap: 5px; min-width: 0; max-width: 150px; box-sizing: border-box; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--bt-accent-border); background: var(--bt-accent-soft); color: var(--bt-accent); font-size: 11px; line-height: 1.5; }
 .bt-library-group-more { flex: none; cursor: help; }
 .bt-library-group-more:focus-visible { outline: 2px solid var(--bt-accent); outline-offset: 2px; }
 .bt-library-group svg { width: 13px; height: 13px; flex: none; }
@@ -9839,6 +9841,58 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
     }
 
 
+    function BotLibraryGroups({ groups }) {
+      const rowRef = React.useRef(null);
+      const measureRef = React.useRef(null);
+      const [visibleCount, setVisibleCount] = React.useState(0);
+      React.useEffect(() => {
+        const row = rowRef.current;
+        const measure = measureRef.current;
+        if (!row || !measure) return undefined;
+        const tags = Array.from(measure.children);
+        const more = tags.pop();
+        const update = () => {
+          const available = row.getBoundingClientRect().width;
+          const bounds = tags.map((tag) => tag.getBoundingClientRect());
+          const start = bounds[0].left;
+          const end = bounds[bounds.length - 1].right;
+          let count = tags.length;
+          if (end - start > available) {
+            const moreBounds = more.getBoundingClientRect();
+            const reserved = moreBounds.left - end + moreBounds.width;
+            count = bounds.findIndex((bound) => bound.right - start + reserved > available);
+          }
+          setVisibleCount(count);
+        };
+        update();
+        if (typeof ResizeObserver === 'function') {
+          const observer = new ResizeObserver(update);
+          observer.observe(row);
+          for (const tag of measure.children) observer.observe(tag);
+          return () => observer.disconnect();
+        }
+        window.addEventListener('resize', update);
+        return () => window.removeEventListener('resize', update);
+      }, [groups]);
+      const groupTag = (group) => h('span', { key: group.groupId, className: 'bt-library-group', title: group.title, rawTitle: true },
+        h(WelcomeIcon, { name: 'group' }),
+        h('span', { raw: true }, group.title),
+      );
+      const groupTitles = groups.map((group) => group.title).join(isEnglishUi() ? ', ' : '、');
+      return h('dd', { className: 'bt-library-groups', ref: rowRef },
+        groups.length ? groups.slice(0, visibleCount).map(groupTag) : h('span', { className: 'bt-library-ungrouped' }, '未加入群聊'),
+        groups.length > visibleCount ? h('span', {
+          className: 'bt-library-group bt-library-group-more',
+          title: groupTitles, raw: true, tabIndex: 0,
+          'aria-label': `${uiT('所属群聊')}: ${groupTitles}`,
+        }, '…') : null,
+        groups.length ? h('span', { className: 'bt-library-group-measure', ref: measureRef, 'aria-hidden': true },
+          groups.map(groupTag),
+          h('span', { className: 'bt-library-group bt-library-group-more' }, '…'),
+        ) : null,
+      );
+    }
+
     function renderBotLibraryDialog({ bots, members, groups, onClose, onCreate, onEdit, onChanged }) {
       const [busyId, setBusyId] = React.useState('');
       const [error, setError] = React.useState('');
@@ -9908,8 +9962,6 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               ),
               h('ul', { className: 'bt-library-list', 'aria-label': '全部 Bot' }, bots.map((bot) => {
                 const inGroups = groupChatsOf(bot.botId);
-                const visibleGroups = inGroups.slice(0, 3);
-                const groupTitles = inGroups.map((group) => group.title).join(isEnglishUi() ? ', ' : '、');
                 const runtimeLabel = `${bot.provider || '—'} / ${bot.model || '—'}`;
                 const deleting = busyId === bot.botId;
                 return h('li', { key: bot.botId, className: 'bt-library-card', 'aria-busy': deleting },
@@ -9923,18 +9975,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                       h('dl', { className: 'bt-library-details' },
                         h('div', { className: 'bt-library-detail' },
                           h('dt', null, '所属群聊'),
-                          h('dd', null, inGroups.length
-                            ? visibleGroups.map((group) => h('span', { key: group.groupId, className: 'bt-library-group', title: group.title, rawTitle: true },
-                                h(WelcomeIcon, { name: 'group' }),
-                                h('span', { raw: true }, group.title),
-                              ))
-                            : h('span', { className: 'bt-library-ungrouped' }, '未加入群聊'),
-                            inGroups.length > visibleGroups.length ? h('span', {
-                              className: 'bt-library-group bt-library-group-more',
-                              title: groupTitles, raw: true, tabIndex: 0,
-                              'aria-label': `${uiT('所属群聊')}: ${groupTitles}`,
-                            }, '…') : null,
-                          ),
+                          h(BotLibraryGroups, { groups: inGroups }),
                         ),
                       ),
                     ),
