@@ -76,7 +76,7 @@ const ATTACHMENT_ID_RE = /^sha256:[0-9a-f]{64}$/;
 
 const BOT_COLORS = ['#2f7ed8', '#8b5cf6', '#0d9488', '#d97706', '#db2777', '#4f46e5', '#65a30d', '#dc2626'];
 
-// Avatar grammar: preset seeds are robot mascots, art IDs are the bundled SVG pack.
+// Avatar grammar: preset seeds are mascots; bundled Bot art may include a stable palette ID.
 const AVATAR_PRESET_RE = /^preset:[a-z0-9-]{1,40}$/;
 const AVATAR_ART_IDS = new Set([
   // Keep the original illustrations valid for saved Bot and group records.
@@ -84,6 +84,7 @@ const AVATAR_ART_IDS = new Set([
   'bot-orbit', 'bot-spark', 'bot-circuit', 'bot-pixel', 'bot-scout', 'bot-assistant', 'bot-core', 'bot-android',
   'group-team', 'group-bots', 'group-network', 'group-dialogue', 'group-lab', 'group-huddle', 'group-swarm', 'group-community',
 ]);
+const AVATAR_ART_PALETTES = new Set(['sky', 'violet', 'mint', 'orange', 'pink', 'indigo', 'teal', 'slate']);
 const MAX_AVATAR_CHARS = 800000;
 
 function normalizeAvatar(value) {
@@ -96,9 +97,13 @@ function normalizeAvatar(value) {
     return text;
   }
   if (text.startsWith('art:')) {
-    const id = text.slice('art:'.length);
-    if (!AVATAR_ART_IDS.has(id)) throw new ServiceError('invalid-input', '未知的插画头像');
-    return `art:${id}`;
+    const match = /^art:([a-z0-9-]+)(?::([a-z0-9-]+))?$/.exec(text);
+    if (!match || !AVATAR_ART_IDS.has(match[1])) throw new ServiceError('invalid-input', '未知的插画头像');
+    const [, id, paletteId] = match;
+    if (paletteId && (!id.startsWith('bot-') || !AVATAR_ART_PALETTES.has(paletteId))) {
+      throw new ServiceError('invalid-input', '未知的头像配色');
+    }
+    return text;
   }
   if (text.startsWith('data:image/')) {
     if (text.length > MAX_AVATAR_CHARS) throw new ServiceError('invalid-input', '头像图片过大');

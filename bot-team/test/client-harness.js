@@ -51,6 +51,7 @@ export function loadClient(options = {}) {
     },
   };
   const context = vm.createContext({
+    Math: Object.assign(Object.create(Math), { random: options.random || Math.random }),
     window: {
       __ModuleLoader__: { load(value) { definition = value; } },
       localStorage: options.localStorage,

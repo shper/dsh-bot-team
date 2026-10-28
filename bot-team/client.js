@@ -7008,14 +7008,14 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       'radial-gradient(circle at 30% 82%, rgba(255,255,255,0.18), transparent 42%)',
     ];
     const ROBOT_PALETTES = [
-      { bg: '#eef6ff', c1: '#38bdf8', c2: '#2563eb', accent: '#f59e0b' },
-      { bg: '#f5f3ff', c1: '#a78bfa', c2: '#7c3aed', accent: '#22d3ee' },
-      { bg: '#ecfdf5', c1: '#34d399', c2: '#0d9488', accent: '#f59e0b' },
-      { bg: '#fff7ed', c1: '#fb923c', c2: '#ea580c', accent: '#2563eb' },
-      { bg: '#fdf2f8', c1: '#f472b6', c2: '#db2777', accent: '#facc15' },
-      { bg: '#eef2ff', c1: '#818cf8', c2: '#4f46e5', accent: '#34d399' },
-      { bg: '#f0fdfa', c1: '#2dd4bf', c2: '#0f766e', accent: '#fb7185' },
-      { bg: '#f8fafc', c1: '#94a3b8', c2: '#475569', accent: '#38bdf8' },
+      { id: 'sky', bg: '#eef6ff', c1: '#38bdf8', c2: '#2563eb', accent: '#f59e0b' },
+      { id: 'violet', bg: '#f5f3ff', c1: '#a78bfa', c2: '#7c3aed', accent: '#22d3ee' },
+      { id: 'mint', bg: '#ecfdf5', c1: '#34d399', c2: '#0d9488', accent: '#f59e0b' },
+      { id: 'orange', bg: '#fff7ed', c1: '#fb923c', c2: '#ea580c', accent: '#2563eb' },
+      { id: 'pink', bg: '#fdf2f8', c1: '#f472b6', c2: '#db2777', accent: '#facc15' },
+      { id: 'indigo', bg: '#eef2ff', c1: '#818cf8', c2: '#4f46e5', accent: '#34d399' },
+      { id: 'teal', bg: '#f0fdfa', c1: '#2dd4bf', c2: '#0f766e', accent: '#fb7185' },
+      { id: 'slate', bg: '#f8fafc', c1: '#94a3b8', c2: '#475569', accent: '#38bdf8' },
     ];
     const ART_AVATARS = [
       {
@@ -7136,83 +7136,83 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         id: 'bot-orbit',
         label: '轨道',
         bg: '#f0edff',
-        draw: () => [
-          h('ellipse', { cx: 50, cy: 51, rx: 39, ry: 24, fill: 'none', stroke: '#b5a5ea', strokeWidth: 5, transform: 'rotate(-28 50 51)' }),
-          h('rect', { x: 23, y: 22, width: 54, height: 58, rx: 26, fill: '#8b76d5' }),
+        draw: (palette) => [
+          h('ellipse', { cx: 50, cy: 51, rx: 39, ry: 24, fill: 'none', stroke: palette?.c2 || '#b5a5ea', strokeWidth: 5, transform: 'rotate(-28 50 51)' }),
+          h('rect', { x: 23, y: 22, width: 54, height: 58, rx: 26, fill: palette?.c1 || '#8b76d5' }),
           h('rect', { x: 29, y: 37, width: 42, height: 29, rx: 14, fill: '#26354b' }),
-          h('path', { d: 'M40 48 V54 M60 48 V54', stroke: '#d3f7ee', strokeWidth: 5, strokeLinecap: 'round' }),
-          h('circle', { cx: 80, cy: 30, r: 7, fill: '#efb55d' }),
-          h('rect', { x: 44, y: 72, width: 12, height: 4, rx: 2, fill: '#e5ddff' }),
+          h('path', { d: 'M40 48 V54 M60 48 V54', stroke: palette?.bg || '#d3f7ee', strokeWidth: 5, strokeLinecap: 'round' }),
+          h('circle', { cx: 80, cy: 30, r: 7, fill: palette?.accent || '#efb55d' }),
+          h('rect', { x: 44, y: 72, width: 12, height: 4, rx: 2, fill: palette?.bg || '#e5ddff' }),
         ],
       },
       {
         id: 'bot-spark',
         label: '灵光',
         bg: '#fff3df',
-        draw: () => [
-          h('path', { d: 'M51 8 L40 26 H50 L46 36 L62 18 H52 L57 8 Z', fill: '#db8d35' }),
-          h('rect', { x: 12, y: 47, width: 10, height: 18, rx: 5, fill: '#d99443' }),
-          h('rect', { x: 78, y: 47, width: 10, height: 18, rx: 5, fill: '#d99443' }),
-          h('rect', { x: 20, y: 30, width: 60, height: 51, rx: 19, fill: '#efb55d' }),
+        draw: (palette) => [
+          h('path', { d: 'M51 8 L40 26 H50 L46 36 L62 18 H52 L57 8 Z', fill: palette?.accent || '#db8d35' }),
+          h('rect', { x: 12, y: 47, width: 10, height: 18, rx: 5, fill: palette?.c2 || '#d99443' }),
+          h('rect', { x: 78, y: 47, width: 10, height: 18, rx: 5, fill: palette?.c2 || '#d99443' }),
+          h('rect', { x: 20, y: 30, width: 60, height: 51, rx: 19, fill: palette?.c1 || '#efb55d' }),
           h('rect', { x: 28, y: 41, width: 44, height: 29, rx: 11, fill: '#26354b' }),
-          h('circle', { cx: 40, cy: 53, r: 4, fill: '#fff0c7' }),
-          h('path', { d: 'M56 54 L60 50 L64 54', fill: 'none', stroke: '#fff0c7', strokeWidth: 4, strokeLinecap: 'round', strokeLinejoin: 'round' }),
-          h('path', { d: 'M45 62 Q50 66 55 62', fill: 'none', stroke: '#fff0c7', strokeWidth: 3, strokeLinecap: 'round' }),
+          h('circle', { cx: 40, cy: 53, r: 4, fill: palette?.bg || '#fff0c7' }),
+          h('path', { d: 'M56 54 L60 50 L64 54', fill: 'none', stroke: palette?.bg || '#fff0c7', strokeWidth: 4, strokeLinecap: 'round', strokeLinejoin: 'round' }),
+          h('path', { d: 'M45 62 Q50 66 55 62', fill: 'none', stroke: palette?.bg || '#fff0c7', strokeWidth: 3, strokeLinecap: 'round' }),
         ],
       },
       {
         id: 'bot-circuit',
         label: '电路',
         bg: '#e6f5ef',
-        draw: () => [
-          h('path', { d: 'M36 17 V25 M64 17 V25 M17 39 H25 M17 61 H25 M75 39 H83 M75 61 H83 M36 75 V83 M64 75 V83', stroke: '#429d8d', strokeWidth: 6, strokeLinecap: 'round' }),
-          h('rect', { x: 22, y: 22, width: 56, height: 56, rx: 13, fill: '#5bb5a1' }),
+        draw: (palette) => [
+          h('path', { d: 'M36 17 V25 M64 17 V25 M17 39 H25 M17 61 H25 M75 39 H83 M75 61 H83 M36 75 V83 M64 75 V83', stroke: palette?.c2 || '#429d8d', strokeWidth: 6, strokeLinecap: 'round' }),
+          h('rect', { x: 22, y: 22, width: 56, height: 56, rx: 13, fill: palette?.c1 || '#5bb5a1' }),
           h('rect', { x: 29, y: 30, width: 42, height: 40, rx: 9, fill: '#26354b' }),
-          h('rect', { x: 36, y: 41, width: 8, height: 10, rx: 3, fill: '#b8f1d7' }),
-          h('rect', { x: 56, y: 41, width: 8, height: 10, rx: 3, fill: '#b8f1d7' }),
-          h('path', { d: 'M43 60 H57', stroke: '#b8f1d7', strokeWidth: 4, strokeLinecap: 'round' }),
+          h('rect', { x: 36, y: 41, width: 8, height: 10, rx: 3, fill: palette?.bg || '#b8f1d7' }),
+          h('rect', { x: 56, y: 41, width: 8, height: 10, rx: 3, fill: palette?.bg || '#b8f1d7' }),
+          h('path', { d: 'M43 60 H57', stroke: palette?.bg || '#b8f1d7', strokeWidth: 4, strokeLinecap: 'round' }),
         ],
       },
       {
         id: 'bot-pixel',
         label: '像素',
         bg: '#fff0ec',
-        draw: () => [
-          h('path', { d: 'M45 13 H55 V25 H70 V32 H80 V43 H87 V62 H80 V75 H69 V82 H31 V75 H20 V62 H13 V43 H20 V32 H30 V25 H45 Z', fill: '#dc877c' }),
+        draw: (palette) => [
+          h('path', { d: 'M45 13 H55 V25 H70 V32 H80 V43 H87 V62 H80 V75 H69 V82 H31 V75 H20 V62 H13 V43 H20 V32 H30 V25 H45 Z', fill: palette?.c1 || '#dc877c' }),
           h('path', { d: 'M34 36 H66 V43 H73 V65 H66 V72 H34 V65 H27 V43 H34 Z', fill: '#26354b' }),
-          h('rect', { x: 35, y: 46, width: 10, height: 10, fill: '#ffe6cb' }),
-          h('rect', { x: 55, y: 46, width: 10, height: 10, fill: '#ffe6cb' }),
-          h('rect', { x: 44, y: 62, width: 12, height: 4, fill: '#ffe6cb' }),
+          h('rect', { x: 35, y: 46, width: 10, height: 10, fill: palette?.bg || '#ffe6cb' }),
+          h('rect', { x: 55, y: 46, width: 10, height: 10, fill: palette?.bg || '#ffe6cb' }),
+          h('rect', { x: 44, y: 62, width: 12, height: 4, fill: palette?.bg || '#ffe6cb' }),
         ],
       },
       {
         id: 'bot-scout',
         label: '侦察',
         bg: '#e9f3fd',
-        draw: () => [
-          h('path', { d: 'M63 30 L72 17', stroke: '#4d88b8', strokeWidth: 5, strokeLinecap: 'round' }),
-          h('circle', { cx: 74, cy: 14, r: 6, fill: '#efb55d' }),
-          h('rect', { x: 10, y: 44, width: 12, height: 20, rx: 6, fill: '#4d88b8' }),
-          h('rect', { x: 78, y: 44, width: 12, height: 20, rx: 6, fill: '#4d88b8' }),
-          h('rect', { x: 19, y: 29, width: 62, height: 49, rx: 23, fill: '#78add5' }),
+        draw: (palette) => [
+          h('path', { d: 'M63 30 L72 17', stroke: palette?.c2 || '#4d88b8', strokeWidth: 5, strokeLinecap: 'round' }),
+          h('circle', { cx: 74, cy: 14, r: 6, fill: palette?.accent || '#efb55d' }),
+          h('rect', { x: 10, y: 44, width: 12, height: 20, rx: 6, fill: palette?.c2 || '#4d88b8' }),
+          h('rect', { x: 78, y: 44, width: 12, height: 20, rx: 6, fill: palette?.c2 || '#4d88b8' }),
+          h('rect', { x: 19, y: 29, width: 62, height: 49, rx: 23, fill: palette?.c1 || '#78add5' }),
           h('rect', { x: 26, y: 38, width: 48, height: 30, rx: 15, fill: '#26354b' }),
-          h('circle', { cx: 41, cy: 53, r: 10, fill: '#b9e8ef' }),
+          h('circle', { cx: 41, cy: 53, r: 10, fill: palette?.bg || '#b9e8ef' }),
           h('circle', { cx: 41, cy: 53, r: 5, fill: '#26354b' }),
-          h('path', { d: 'M59 52 H64', stroke: '#b9e8ef', strokeWidth: 5, strokeLinecap: 'round' }),
+          h('path', { d: 'M59 52 H64', stroke: palette?.bg || '#b9e8ef', strokeWidth: 5, strokeLinecap: 'round' }),
         ],
       },
       {
         id: 'bot-assistant',
         label: '助理',
         bg: '#f9edf3',
-        draw: () => [
-          h('path', { d: 'M19 52 V43 A31 31 0 0 1 81 43 V54', fill: 'none', stroke: '#7b668e', strokeWidth: 7, strokeLinecap: 'round' }),
-          h('rect', { x: 24, y: 26, width: 52, height: 54, rx: 22, fill: '#cb98b4' }),
+        draw: (palette) => [
+          h('path', { d: 'M19 52 V43 A31 31 0 0 1 81 43 V54', fill: 'none', stroke: palette?.c2 || '#7b668e', strokeWidth: 7, strokeLinecap: 'round' }),
+          h('rect', { x: 24, y: 26, width: 52, height: 54, rx: 22, fill: palette?.c1 || '#cb98b4' }),
           h('rect', { x: 30, y: 38, width: 40, height: 28, rx: 12, fill: '#26354b' }),
-          h('path', { d: 'M39 49 V53 M60 49 V53', stroke: '#ffe7f2', strokeWidth: 5, strokeLinecap: 'round' }),
-          h('rect', { x: 12, y: 44, width: 12, height: 22, rx: 6, fill: '#7b668e' }),
-          h('rect', { x: 76, y: 44, width: 12, height: 22, rx: 6, fill: '#7b668e' }),
-          h('path', { d: 'M82 61 V68 Q82 73 73 73 H57', fill: 'none', stroke: '#7b668e', strokeWidth: 5, strokeLinecap: 'round' }),
+          h('path', { d: 'M39 49 V53 M60 49 V53', stroke: palette?.bg || '#ffe7f2', strokeWidth: 5, strokeLinecap: 'round' }),
+          h('rect', { x: 12, y: 44, width: 12, height: 22, rx: 6, fill: palette?.c2 || '#7b668e' }),
+          h('rect', { x: 76, y: 44, width: 12, height: 22, rx: 6, fill: palette?.c2 || '#7b668e' }),
+          h('path', { d: 'M82 61 V68 Q82 73 73 73 H57', fill: 'none', stroke: palette?.c2 || '#7b668e', strokeWidth: 5, strokeLinecap: 'round' }),
           h('rect', { x: 48, y: 69, width: 14, height: 8, rx: 4, fill: '#26354b' }),
         ],
       },
@@ -7220,26 +7220,26 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         id: 'bot-core',
         label: '智核',
         bg: '#e7f4f3',
-        draw: () => [
-          h('path', { d: 'M50 13 L80 30 V68 L50 86 L20 68 V30 Z', fill: '#509d9b' }),
+        draw: (palette) => [
+          h('path', { d: 'M50 13 L80 30 V68 L50 86 L20 68 V30 Z', fill: palette?.c1 || '#509d9b' }),
           h('path', { d: 'M50 22 L72 35 V63 L50 76 L28 63 V35 Z', fill: '#26354b' }),
-          h('path', { d: 'M38 43 V51 M62 43 V51', stroke: '#a9eee0', strokeWidth: 6, strokeLinecap: 'round' }),
-          h('path', { d: 'M43 61 H57', stroke: '#a9eee0', strokeWidth: 4, strokeLinecap: 'round' }),
-          h('circle', { cx: 50, cy: 21, r: 4, fill: '#e7c47a' }),
-          h('path', { d: 'M12 43 V57 M88 43 V57', stroke: '#509d9b', strokeWidth: 5, strokeLinecap: 'round' }),
+          h('path', { d: 'M38 43 V51 M62 43 V51', stroke: palette?.bg || '#a9eee0', strokeWidth: 6, strokeLinecap: 'round' }),
+          h('path', { d: 'M43 61 H57', stroke: palette?.bg || '#a9eee0', strokeWidth: 4, strokeLinecap: 'round' }),
+          h('circle', { cx: 50, cy: 21, r: 4, fill: palette?.accent || '#e7c47a' }),
+          h('path', { d: 'M12 43 V57 M88 43 V57', stroke: palette?.c1 || '#509d9b', strokeWidth: 5, strokeLinecap: 'round' }),
         ],
       },
       {
         id: 'bot-android',
         label: '仿生',
         bg: '#eff0fb',
-        draw: () => [
-          h('path', { d: 'M18 88 V81 Q18 65 38 65 H62 Q82 65 82 81 V88 Z', fill: '#7d8ac5' }),
-          h('rect', { x: 43, y: 58, width: 14, height: 15, rx: 5, fill: '#536491' }),
-          h('rect', { x: 27, y: 14, width: 46, height: 49, rx: 20, fill: '#a0addd' }),
+        draw: (palette) => [
+          h('path', { d: 'M18 88 V81 Q18 65 38 65 H62 Q82 65 82 81 V88 Z', fill: palette?.c2 || '#7d8ac5' }),
+          h('rect', { x: 43, y: 58, width: 14, height: 15, rx: 5, fill: palette?.c2 || '#536491' }),
+          h('rect', { x: 27, y: 14, width: 46, height: 49, rx: 20, fill: palette?.c1 || '#a0addd' }),
           h('rect', { x: 34, y: 26, width: 32, height: 26, rx: 13, fill: '#26354b' }),
-          h('path', { d: 'M42 36 V41 M58 36 V41', stroke: '#e2e9ff', strokeWidth: 4, strokeLinecap: 'round' }),
-          h('path', { d: 'M38 71 L50 81 L62 71', fill: 'none', stroke: '#dce3fc', strokeWidth: 4, strokeLinecap: 'round', strokeLinejoin: 'round' }),
+          h('path', { d: 'M42 36 V41 M58 36 V41', stroke: palette?.bg || '#e2e9ff', strokeWidth: 4, strokeLinecap: 'round' }),
+          h('path', { d: 'M38 71 L50 81 L62 71', fill: 'none', stroke: palette?.bg || '#dce3fc', strokeWidth: 4, strokeLinecap: 'round', strokeLinejoin: 'round' }),
           h('circle', { cx: 50, cy: 81, r: 4, fill: '#26354b' }),
         ],
       },
@@ -7365,6 +7365,14 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
     ];
     const ART_MAP = Object.fromEntries([...ART_AVATARS, ...BOT_ART_AVATARS, ...GROUP_ART_AVATARS].map((art) => [art.id, art]));
 
+    function parseArtAvatar(value) {
+      const match = /^art:([a-z0-9-]+)(?::([a-z0-9-]+))?$/.exec(value);
+      if (!match || !Object.hasOwn(ART_MAP, match[1])) return null;
+      const paletteId = match[2];
+      if (paletteId && (!match[1].startsWith('bot-') || !ROBOT_PALETTES.some(palette => palette.id === paletteId))) return null;
+      return { id: match[1], paletteId };
+    }
+
     function hashSeed(text) {
       let hash = 2166136261;
       for (let index = 0; index < text.length; index += 1) {
@@ -7454,9 +7462,11 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
     }
 
     /** One hand-drawn SVG illustration from the selectable art pack. */
-    function ArtAvatar({ id, size = 22, radius = '50%' }) {
+    function ArtAvatar({ id, paletteId, size = 22, radius = '50%' }) {
       const art = ART_MAP[id];
       if (!art) return null;
+      const palette = ROBOT_PALETTES.find(entry => entry.id === paletteId);
+      const background = palette?.bg || art.bg;
       return h(
         'svg',
         {
@@ -7469,12 +7479,12 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             borderRadius: radius,
             overflow: 'hidden',
             flex: '0 0 auto',
-            background: art.bg,
+            background,
             border: '1px solid rgba(16,24,40,0.06)',
           },
         },
-        h('rect', { width: 100, height: 100, fill: art.bg }),
-        h('g', null, ...art.draw()),
+        h('rect', { width: 100, height: 100, fill: background }),
+        h('g', null, ...art.draw(palette)),
       );
     }
 
@@ -7535,8 +7545,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         return h('img', { src: avatar, alt: label, rawTitle: true, style: S.avatarImage(size) });
       }
       if (avatar.startsWith('art:')) {
-        const artId = avatar.slice('art:'.length);
-        if (ART_MAP[artId]) return h(ArtAvatar, { id: artId, size });
+        const art = parseArtAvatar(avatar);
+        if (art) return h(ArtAvatar, { ...art, size });
       }
       if (bot) {
         const seed = avatar.startsWith('preset:') ? avatar : bot.name || bot.botId || 'bot';
@@ -7553,8 +7563,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       if (avatar.startsWith('data:image/')) {
         content = h('img', { src: avatar, alt: title, rawTitle: true, style: S.groupAvatarImage(size) });
       } else if (avatar.startsWith('art:')) {
-        const artId = avatar.slice('art:'.length);
-        if (ART_MAP[artId]) content = h(ArtAvatar, { id: artId, size, radius });
+        const art = parseArtAvatar(avatar);
+        if (art) content = h(ArtAvatar, { ...art, size, radius });
       }
       if (!content) {
         const gradient = avatarGradient(avatar.startsWith('preset:') ? avatar : title);
@@ -10113,6 +10123,12 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       };
 
       const randomizeAvatar = () => {
+        const art = BOT_ART_AVATARS[Math.floor(Math.random() * (BOT_ART_AVATARS.length + 1))];
+        if (art) {
+          const palette = ROBOT_PALETTES[Math.floor(Math.random() * ROBOT_PALETTES.length)];
+          setAvatar(`art:${art.id}:${palette.id}`);
+          return;
+        }
         const seed = `r-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
         setAvatar(`preset:${seed}`);
       };
@@ -10263,8 +10279,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                   type: 'button',
                   title: art.label,
                   'aria-label': art.label,
-                  'aria-pressed': avatar === `art:${art.id}`,
-                  style: { ...S.artOption(avatar === `art:${art.id}`), width: 36, height: 36, flex: '0 0 auto' },
+                  'aria-pressed': parseArtAvatar(avatar)?.id === art.id,
+                  style: { ...S.artOption(parseArtAvatar(avatar)?.id === art.id), width: 36, height: 36, flex: '0 0 auto' },
                   onClick: () => setAvatar(`art:${art.id}`),
                 },
                 h(ArtAvatar, { id: art.id, size: 30 }),

@@ -43,6 +43,53 @@ function fakeCtx(storageRoot) {
   return { ctx, routes, tools };
 }
 
+test('random Bot illustration colors survive saving, reopening and renaming', async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'bot-team-avatar-colors-'));
+  const { ctx } = fakeCtx(path.join(home, 'storages'));
+  const service = new BotTeamService(ctx, resolveConfig({
+    dataDir: path.join(home, 'data'), defaultCwd: home, migrateLegacyLayout: false,
+  }));
+  t.after(async () => {
+    await service.dispose();
+    await rm(home, { recursive: true, force: true });
+  });
+  await service.ready;
+  const client = loadClient();
+  const reopenedClient = loadClient();
+  const svg = (renderer, bot) => {
+    const node = renderer.Avatar({ bot });
+    return JSON.parse(JSON.stringify(node.type(node.props)));
+  };
+  const ids = ['bot-orbit', 'bot-spark', 'bot-circuit', 'bot-pixel', 'bot-scout', 'bot-assistant', 'bot-core', 'bot-android'];
+  const palettes = ['sky', 'violet', 'mint', 'orange', 'pink', 'indigo', 'teal', 'slate'];
+  let bot;
+  for (const id of ids) {
+    bot = await service.createBot({ name: id, provider: 'deepseek', model: 'deepseek-chat', avatar: 'art:' + id + ':sky' });
+    assert.equal(bot.avatar, 'art:' + id + ':sky');
+    for (const palette of palettes) {
+      const avatar = 'art:' + id + ':' + palette;
+      await service.updateBot({ botId: bot.botId, avatar });
+      const boot = await service.bootstrapPayload();
+      const saved = boot.bots.find(entry => entry.botId === bot.botId);
+      assert.equal(saved.avatar, avatar);
+      assert.deepEqual(svg(reopenedClient, { ...saved, name: 'Renamed Bot' }), svg(client, saved));
+    }
+  }
+  const previous = service.repo.getBot(bot.botId).avatar;
+  for (const avatar of [
+    'art:bot-orbit:unknown', 'art:bot-orbit:', 'art:bot-orbit:sky:extra',
+    'art:bot-unknown:sky', 'art:constructor:sky', 'art:bot-orbit:Sky',
+    'art:group-team:sky', 'art:planet:sky',
+  ]) {
+    await assert.rejects(service.updateBot({ botId: bot.botId, avatar }), /未知的/);
+    assert.equal(service.repo.getBot(bot.botId).avatar, previous, 'invalid colors cannot alter a saved avatar');
+  }
+  const trimmed = await service.updateBot({ botId: bot.botId, avatar: '  art:bot-orbit:mint  ' });
+  assert.equal(trimmed.avatar, 'art:bot-orbit:mint');
+  const legacy = await service.updateBot({ botId: bot.botId, avatar: 'preset:r-previous' });
+  assert.equal(legacy.avatar, 'preset:r-previous');
+});
+
 test('Bot and group preset selections stay distinct and survive saving and reopening', async (t) => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'bot-team-avatar-'));
   const { ctx } = fakeCtx(path.join(home, 'storages'));
