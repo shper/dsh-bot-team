@@ -3671,22 +3671,6 @@ window.__ModuleLoader__.load({
       folderEmpty: { fontSize: 10.5, color: 'var(--bt-text-3)', padding: '1px 10px 5px', lineHeight: 1.6 },
       ungroupedHead: { display: 'flex', alignItems: 'center', gap: 4, padding: '4px 6px 2px', color: 'var(--bt-text-3)' },
       ungroupedLabel: { fontSize: 10.5, fontWeight: 500, flex: 1, minWidth: 0 },
-      rowMenu: {
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        width: 20,
-        height: 20,
-        padding: 0,
-        border: 0,
-        borderRadius: 5,
-        background: 'transparent',
-        color: 'var(--bt-text-3)',
-        cursor: 'pointer',
-        flex: '0 0 auto',
-        fontSize: 13,
-        lineHeight: 1,
-      },
       dropBefore: { boxShadow: 'inset 0 2px 0 var(--bt-accent)' },
       dropAfter: { boxShadow: 'inset 0 -2px 0 var(--bt-accent)' },
       dropFolder: { background: 'var(--bt-accent-soft)', boxShadow: 'inset 0 0 0 1px var(--bt-accent-border)' },
@@ -4081,12 +4065,9 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
 .bt-root .bt-section-action:hover, .bt-root .bt-folder-menu:hover { background: var(--bt-hover) !important; color: var(--bt-text-2) !important; filter: none; }
 .bt-root .bt-section-toggle:focus-visible, .bt-root .bt-folder-toggle:focus-visible,
 .bt-root .bt-section-action:focus-visible, .bt-root .bt-folder-menu:focus-visible { outline: 2px solid var(--bt-accent); outline-offset: 1px; }
-.bt-root .bt-row-menu, .bt-root .bt-folder-menu { opacity: 0; }
+.bt-root .bt-folder-menu { opacity: 0; }
 .bt-root .bt-folder-head:hover .bt-folder-menu,
-.bt-root .bt-folder-head:focus-within .bt-folder-menu,
-.bt-root .bt-group-item:hover .bt-row-menu,
-.bt-root .bt-group-item:focus-within .bt-row-menu { opacity: 1; }
-.bt-root .bt-row-menu:hover { background: var(--bt-hover) !important; color: var(--bt-text-2) !important; filter: none; }
+.bt-root .bt-folder-head:focus-within .bt-folder-menu { opacity: 1; }
 .bt-root .bt-folder-head > .bt-folder-toggle { cursor: pointer; }
 .bt-root .bt-folder-head[data-drop="true"] { background: var(--bt-accent-soft); box-shadow: inset 0 0 0 1px var(--bt-accent-border); }
 .bt-root .bt-group-item { position: relative; }
@@ -4288,7 +4269,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
 @media (hover: none) {
   .bt-root .bt-msg-actions { opacity: 1; pointer-events: auto; position: static; margin-bottom: 4px; border: 0; background: transparent; box-shadow: none; }
   .bt-root .bt-msg[data-own="true"] .bt-msg-actions { margin-left: auto; }
-  .bt-root .bt-row-menu, .bt-root .bt-folder-menu { opacity: 1; }
+  .bt-root .bt-folder-menu { opacity: 1; }
 }
 @media (prefers-reduced-motion: reduce) {
   .bt-root .bt-cursor, .bt-root .bt-typing-dot, .bt-root .bt-menu, .bt-root .bt-msg-menu, .bt-root .bt-msg-flash .bt-bubble { animation: none !important; }
@@ -5798,8 +5779,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       const toggleSection = (key) => dispatch({ type: 'sectionCollapsed', key, collapsed: !isCollapsed(key) });
       const selectGroup = (group) => dispatch({ type: 'selectGroup', groupId: group.groupId });
       const onGroupKeyDown = (group) => (event) => {
-        // Nested row-menu buttons own their own Enter/Space; do not also select
-        // the conversation when the menu button has focus.
+        // Only select the conversation when the row itself has focus.
         if (event.target !== event.currentTarget) return;
         if (event.key !== 'Enter' && event.key !== ' ') return;
         event.preventDefault();
@@ -6079,24 +6059,6 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         : [];
 
       // ── row renderers ──────────────────────────────────────────────────
-      const rowMenuButton = (label, onClick, extraStyle) =>
-        h(
-          'button',
-          {
-            type: 'button',
-            className: 'bt-row-menu',
-            style: { ...S.rowMenu, ...(extraStyle || null) },
-            title: label,
-            'aria-label': label,
-            onClick: (event) => {
-              event.stopPropagation();
-              onClick(event);
-            },
-            onMouseDown: (event) => event.stopPropagation(),
-          },
-          '···',
-        );
-
       const renderGroupRow = (group) => {
         const active = group.groupId === state.activeGroupId;
         const last = group.lastMessage;
@@ -6161,7 +6123,6 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                 : null,
             ),
           ),
-          rowMenuButton(uiT('{name} 操作', { name: group.title }), (event) => openMenu(event, 'group', group.groupId)),
         );
       };
 
@@ -6228,7 +6189,6 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               h('span', { style: { ...S.groupItemPreview }, }, preview),
             ),
           ),
-          rowMenuButton(uiT('{name} 单聊操作', { name: entry.bot.name }), (event) => openMenu(event, 'direct', entry.bot.botId)),
         );
       };
 

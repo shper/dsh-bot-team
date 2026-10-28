@@ -140,11 +140,7 @@ test('expanded sidebar renders 单聊 then 群聊 with a folder and 未分组; f
   assert.ok(buttonByLabel(tree, '新建 Bot'));
   assert.ok(buttonByLabel(tree, '新建群 / 话题'));
 
-  // Row menus are real buttons with names, not unlabeled glyphs.
-  assert.equal(allByClass(tree, 'bt-row-menu').length, 5);
-  for (const button of allByClass(tree, 'bt-row-menu')) {
-    assert.ok(button.props['aria-label'].length > 0);
-  }
+  assert.equal(allByClass(tree, 'bt-row-menu').length, 0, 'chat management uses the row context menu');
 });
 
 test('single-chat and group-chat sections and each folder collapse through the reducer', () => {
@@ -440,7 +436,7 @@ test('an old Host shows a restart hint instead of single chats it cannot create 
   const tree = render({ config: { schemaVersion: 5 } });
   assert.match(text(tree), /Host 仍是旧版本/);
   assert.equal(allByClass(tree, 'bt-group-item bt-direct-item').length, 0);
-  assert.equal(allByClass(tree, 'bt-row-menu').length, 3, 'only group rows keep a row menu');
+  assert.equal(allByClass(tree, 'bt-row-menu').length, 0, 'group management uses the row context menu');
   assert.equal(buttonByLabel(tree, '新建分组'), undefined, 'folder creation is hidden until the Host is upgraded');
 });
 
