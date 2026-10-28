@@ -4087,7 +4087,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
 .bt-library-card-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .bt-library-identity { flex: 1; min-width: 0; }
 .bt-library-name { margin: 0; font-size: 14px; font-weight: 650; line-height: 1.4; color: var(--bt-text-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bt-library-provider { margin-top: 3px; font-size: 11px; line-height: 1.5; color: var(--bt-text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bt-library-provider { max-width: 100%; font-size: 11px; line-height: 1.5; color: var(--bt-text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bt-library-actions { display: flex; align-items: center; flex: none; gap: 5px; }
 .bt-library-action { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 34px; height: 34px; padding: 0 10px; border: 1px solid var(--bt-border-strong); border-radius: 8px; background: var(--bt-surface); color: var(--bt-text-2); cursor: pointer; font: inherit; font-size: 12px; white-space: nowrap; }
 .bt-library-action svg { width: 16px; height: 16px; flex: none; }
@@ -4098,6 +4098,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
 .bt-library-detail { min-width: 0; }
 .bt-library-detail dt { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .bt-library-detail dd { margin: 0; min-width: 0; min-height: 26px; display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
+.bt-library-detail .bt-library-runtime { flex-direction: column; align-items: flex-start; gap: 4px; }
 .bt-library-model { display: inline-block; max-width: 100%; box-sizing: border-box; padding: 4px 8px; border-radius: 6px; background: var(--bt-bg-subtle); border: 1px solid var(--bt-border); color: var(--bt-text-2); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bt-library-group { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; box-sizing: border-box; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--bt-accent-border); background: var(--bt-accent-soft); color: var(--bt-accent); font-size: 11px; line-height: 1.5; }
 .bt-library-group svg { width: 13px; height: 13px; flex: none; }
@@ -9659,13 +9660,15 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                     h(Avatar, { bot, size: 44 }),
                     h('div', { className: 'bt-library-identity' },
                       h('h3', { className: 'bt-library-name', title: bot.name, raw: true }, bot.name),
-                      h('div', { className: 'bt-library-provider', title: bot.provider, raw: true }, bot.provider),
                     ),
                   ),
                   h('dl', { className: 'bt-library-details' },
                     h('div', { className: 'bt-library-detail' },
                       h('dt', null, '模型'),
-                      h('dd', null, h('code', { className: 'bt-library-model', title: bot.model, raw: true }, bot.model || '—')),
+                      h('dd', { className: 'bt-library-runtime' },
+                        h('div', { className: 'bt-library-provider', title: bot.provider, raw: true }, bot.provider),
+                        h('code', { className: 'bt-library-model', title: bot.model, raw: true }, bot.model || '—'),
+                      ),
                     ),
                     h('div', { className: 'bt-library-detail' },
                       h('dt', null, '所属群聊'),
