@@ -4520,8 +4520,13 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
 .bt-library-card:hover, .bt-library-card:focus-within { border-color: var(--bt-accent-border); box-shadow: 0 3px 12px rgba(0,0,0,.05); }
 .bt-library-card-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .bt-library-identity { flex: 1; min-width: 0; }
-.bt-library-heading { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
-.bt-library-name { flex: 0 1 auto; max-width: 40%; margin: 0; font-size: 14px; font-weight: 650; line-height: 1.4; color: var(--bt-text-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bt-library-heading { display: flex; align-items: baseline; gap: 20px; min-width: 0; }
+.bt-library-profile { display: flex; align-items: baseline; gap: 8px; flex: 0 0 auto; min-width: 0; max-width: 40%; }
+.bt-library-profile-signed { max-width: 60%; }
+.bt-library-profile-signed .bt-library-name { max-width: 45%; }
+.bt-library-name { flex: 0 0 auto; max-width: 100%; margin: 0; font-size: 14px; font-weight: 650; line-height: 1.4; color: var(--bt-text-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bt-library-separator { flex: none; color: var(--bt-text-3); font-size: 12px; }
+.bt-library-signature { min-width: 0; color: var(--bt-text-2); font-size: 12px; line-height: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bt-library-runtime { flex: 0 1 auto; min-width: 0; font-size: 11px; line-height: 1.5; color: var(--bt-text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bt-library-actions { display: flex; align-items: center; flex: none; gap: 5px; }
 .bt-library-action { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 34px; height: 34px; padding: 0 10px; border: 1px solid var(--bt-border-strong); border-radius: 8px; background: var(--bt-surface); color: var(--bt-text-2); cursor: pointer; font: inherit; font-size: 12px; white-space: nowrap; }
@@ -4557,8 +4562,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
   .bt-bot-library .bt-modal-footer { padding: 14px 16px !important; gap: 12px !important; }
   .bt-library-card { padding: 14px; gap: 10px; }
   .bt-library-card-head { grid-column: 1 / -1; gap: 9px; }
-  .bt-library-heading { flex-direction: column; align-items: flex-start; gap: 2px; }
-  .bt-library-name, .bt-library-runtime { max-width: 100%; }
+  .bt-library-heading { flex-direction: column; align-items: flex-start; gap: 4px; }
+  .bt-library-profile, .bt-library-runtime { max-width: 100%; }
   .bt-library-actions { grid-column: 2; gap: 2px; }
   .bt-library-action { padding: 0 7px; }
   .bt-library-delete { padding: 0; }
@@ -10856,13 +10861,18 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               h('ul', { className: 'bt-library-list', 'aria-label': '全部 Bot' }, bots.map((bot) => {
                 const inGroups = groupChatsOf(bot.botId);
                 const runtimeLabel = `${bot.provider || '—'} / ${bot.model || '—'}`;
+                const signature = typeof bot.signature === 'string' ? bot.signature.trim() : '';
                 const deleting = busyId === bot.botId;
                 return h('li', { key: bot.botId, className: 'bt-library-card', 'aria-busy': deleting },
                   h('div', { className: 'bt-library-card-head' },
                     h(Avatar, { bot, size: 44 }),
                     h('div', { className: 'bt-library-identity' },
                       h('div', { className: 'bt-library-heading' },
-                        h('h3', { className: 'bt-library-name', title: bot.name, raw: true }, bot.name),
+                        h('div', { className: `bt-library-profile${signature ? ' bt-library-profile-signed' : ''}` },
+                          h('h3', { className: 'bt-library-name', title: bot.name, raw: true }, bot.name),
+                          signature ? h('span', { className: 'bt-library-separator', 'aria-hidden': true }, '｜') : null,
+                          signature ? h('span', { className: 'bt-library-signature', title: signature, raw: true }, signature) : null,
+                        ),
                         h('span', { className: 'bt-library-runtime', title: runtimeLabel, raw: true }, runtimeLabel),
                       ),
                       h('dl', { className: 'bt-library-details' },
