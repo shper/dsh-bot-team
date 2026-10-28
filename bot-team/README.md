@@ -10,6 +10,8 @@
 
 **当前开发改动：新建会话 `/new`（本地实现与回归已完成）**。单聊可重新开始该 Bot 的对话上下文；群聊为本群全部成员一起开始新段，包括当前停用的成员。聊天、成员、设置、项目文件和历史日志保留，新建本身不调用模型、不重置每日预算。可用输入框 **+ → 指令 → 新建会话**、顶部 **··· → 新建会话**，或完整输入 `/new`。详见下方使用说明和 [实施方案](<../docs/新建会话-new-实施方案.md>)。
 
+**当前开发改动：讨论与辩论（未发布）**。界面默认结构化讨论，至少 2 位参与者，可选快速 2 轮、标准 3 轮或深入 5 轮；另提供正反各 1 人、可选独立裁判的辩论。支持暂停、继续、失败重试、提前收束、停止和补充材料；经典工具调用仍默认 2 轮。完整流程、10 个模型工具及 API 契约见[讨论与辩论](<../docs/讨论与辩论.md>)。本地修改需 **disable → enable** 重新加载 Host，再刷新现有 GUI；这里不表示已发布或当前真实页面已加载。
+
 每个 Bot 使用**真实的 DSH 后台会话**（每个群成员分别持有 session，同一逻辑会话内也可能因项目目录或 preset 变化而轮换，不进入主会话列表），可以单独设置：
 
 - **模型**：provider / model / reasoning effort / maxTokens（通过当前 Bot 会话的配置与请求覆盖生效；保留冷恢复与热重载后的设置，不因初始化 Bot 改写宿主全局默认）；
@@ -43,8 +45,8 @@
 3. 群聊里右侧「+ 添加」把 Bot 拉入；没有 Bot 时点「+ 新建 Bot」创建（可同时选头像/上传图片、写 BOT.md 人格与工作规范，`插入模板` 里有 9 套现成人格可选）。
 4. 群聊输入框里用 `@` 选择成员后发送；被 @ 的 Bot 会并行开始回复，输出实时流式显示。单聊里**不需要 @**，每条消息都会直接发给该 Bot。输入框左下角 **+** 打开与 DSH 一致的分组命令菜单（文件 / 文件夹 / 技能 / 提及 / 停止 / 导出 / 设置）；直接键入 `/` 也能选择 Skill（`/skill-name` 会在该轮加载对应 Skill 指令）。消息按作者分组，悬停或右键可回复/复制/评审，支持引用原消息与「回到底部 / N 条新消息」。
 5. 输入框底部「停止」可中断当前群所有进行中的回复。
-6. **模型工具**：在任意普通会话里也能用 `bot_team_list` / `bot_team_create_group` / `bot_team_send` / `bot_team_review` / `bot_team_discuss` 操作群聊（Bot 成员自身被 deny，防递归）。
-7. **更多**：评审（结论徽标 + 让作者修改）、多轮讨论（进度/总结/停止）、Markdown（表格/删除线/代码块）、历史上翻、群导出 Markdown/HTML、成员「查看会话」、群 workspace 与 token 用量。
+6. **模型工具**：当前工作区共 10 个：`bot_team_list` / `bot_team_create_group` / `bot_team_send` / `bot_team_review` / `bot_team_discuss` / `bot_team_debate` / `bot_team_discussion_control` / `bot_team_task_create` / `bot_team_task_list` / `bot_team_task_update`。普通会话可调用，Bot 成员自身被 deny，防止递归。
+7. **更多**：评审（结论徽标 + 让作者修改）、结构化/经典讨论与 1v1 辩论（阶段/小结/裁决/暂停/恢复/重试/收束/停止/补充材料）、Markdown（表格/删除线/代码块）、历史上翻、群导出 Markdown/HTML、成员「查看会话」、群 workspace 与 token 用量。
 8. **硬化**：每群每日 token 预算（`dailyTokenBudget`，不再按小时限制回复轮数）、所有 Bot 统一 workspace-write 沙箱（受群工作目录限制）、domain schema 迁移（meta/schema）、`GET /api/bot-team.health`。
 9. **任务管理（模型工具/API）**：通过 `bot_team_task_create/list/update` 创建、查询与派发任务，跟踪 Bot 交付、评审、验收和返工；消息上仍显示任务状态标记。群聊右侧已移除任务面板和「新建任务」入口。
 10. **任务依赖/优先级**：任务支持 `priority`（排序）与 `dependsOn`（DAG 依赖、环检测、未验收阻塞派发、验收后自动解锁），通过模型工具或 HTTP action 设置。
@@ -117,6 +119,8 @@
 
 ## 数据与配置
 
+当前工作区将存储 schema 升至 v8。旧讨论保留 classic 轮次和原消息，不从历史消息推造步骤；新流程使用 `protocolVersion: 2` 保存步骤与尝试。崩溃恢复后的未结束 v2 流程进入 `paused`，检查原生执行后才可继续或重试；暂停期间仍阻止同群新流程、`/new` 和项目切换。讨论角色只作用于本次提示，仍复用成员原 session，不保证角色隔离。详见[恢复与边界](<../docs/讨论与辩论.md#恢复与已知边界>)。
+
 `cordis.patch.yml` 的 `config`：
 
 | 字段 | 默认 | 说明 |
@@ -148,6 +152,7 @@ HTTP 通道（全部在 `/api` 登录态栅栏内）：
 - `GET /api/bot-team.session-export?groupId=…&sessionId=…`（原生持久日志 JSONL 下载）
 - `GET /api/bot-team.events?groupId=…`（SSE）
 - `POST /api/bot-team.action`（`conversation.new`（`groupId` + `expectedConversationId` + `requestId`）/ `group.create` / `group.reorder` / `folder.create` / `folder.update` / `folder.delete` / `folder.reorder` / `direct.open` / `bot.create` / `member.add` / `message.post` / `message.stop` / `message.delete`（`groupId` + `messageId`）/ `persona.write` / `settings.chatDisplay.update` …）
+- 讨论/辩论使用同一 action 入口：`discussion.start` / `discussion.get` / `discussion.control`，以 `{ action, payload }` 发送；写操作带 `expectedConversationId`，控制可带 `expectedRevision` 与 `requestId`。见[调用示例与字段](<../docs/讨论与辩论.md#http-action-接口>)。
 - `GET|PUT /api/bot-team.file`（`kind=bot`；兼容 `soul` / `agent`）
 - `POST /api/bot-team.upload?name=…&groupId=…`（原始字节；返回 `attachmentId` / `name` / `bytes`）
 - `GET /api/bot-team.skills?groupId=…&memberId=…`（当前工作区中 `userInvocable` 的 Skill；首次调用会准备一个 Bot 会话读取其工作区）

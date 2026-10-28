@@ -19,6 +19,7 @@ import { AgentPool } from './agents.js';
 import { BackgroundInteractions } from './background-interactions.js';
 import { BotSessionVisibility } from './session-visibility.js';
 import { Engine } from './engine.js';
+import { isDiscussionActive } from './discussion-flow.js';
 import { readBotSessionHistory, readBotSessionLog, readMessageExecution } from './execution.js';
 import { serializeBotSessionLog } from './session-export.js';
 import { registerRoutes } from './routes.js';
@@ -202,6 +203,7 @@ export class BotTeamService {
       config: this.config,
       logger: this.logger,
       quotaGuard: (groupId) => this.checkQuota(groupId),
+      discussionGuard: (discussion) => this.assertDiscussionNativeIdle(discussion),
       workspaceGuard: (groupId) => this.assertWorkspaceStable(groupId),
       taskHook: async (job, message, status) => {
         await this.onTaskJobFinished(job, message, status);
@@ -436,7 +438,7 @@ export class BotTeamService {
       const members = this.repo.membersOf(group.groupId);
       const lastMessage = this.repo.lastMessageOf(group.groupId);
       const discussions = this.repo.discussionsOf(group.groupId).filter((item) => this.isCurrentRecord(item));
-      const activeDiscussion = discussions.find((discussion) => discussion.status === 'running') || null;
+      const activeDiscussion = discussions.find(isDiscussionActive) || null;
       const latestDiscussion = discussions[0] || null;
       return {
         ...group,
@@ -1007,7 +1009,7 @@ export class BotTeamService {
     if (action === 'conversation.new') return this.newConversation(input);
     const groupIds = this.actionGroupIds(action, input);
     const executing = ['message.post', 'message.retry', 'message.stop', 'review.request', 'review.revise',
-      'discussion.start', 'discussion.stop', 'interaction.respond', 'task.create', 'task.dispatch',
+      'discussion.start', 'discussion.stop', 'discussion.control', 'interaction.respond', 'task.create', 'task.dispatch',
       'task.dispatch_ready', 'task.review', 'task.accept', 'task.request_changes', 'task.revise', 'task.update', 'task.cancel'].includes(action);
     if (executing) {
       for (const groupId of groupIds) this.assertExpectedConversation(groupId, input.expectedConversationId, external);
@@ -1078,7 +1080,11 @@ export class BotTeamService {
       case 'discussion.start':
         return this.startDiscussion(input);
       case 'discussion.stop':
-        return this.engine.stopDiscussion(String(input.discussionId || ''));
+        return this.stopDiscussion(input);
+      case 'discussion.control':
+        return this.controlDiscussion(input);
+      case 'discussion.get':
+        return this.getDiscussion(input);
       case 'task.create':
         return this.createTask(input);
       case 'task.dispatch':
@@ -1570,25 +1576,126 @@ export class BotTeamService {
     const group = this.repo.getGroup(groupId);
     if (!group) throw new ServiceError('not-found', '群不存在');
     if (isDirectGroup(group)) throw new ServiceError('invalid-input', '单聊不支持多轮讨论，请使用群聊');
+    this.assertExpectedConversation(groupId, input.expectedConversationId);
+    const modern = input.mode === 'debate' || input.format === 'structured';
+    if (modern && (typeof input.topic !== 'string' || input.topic.length > 2000)) {
+      throw new ServiceError('invalid-input', '讨论议题必须是字符串且不能超过 2000 字');
+    }
     const topic = requireText(input.topic, '讨论议题', 2000);
     const roundsRaw = Number(input.rounds);
-    const rounds = Number.isInteger(roundsRaw) ? Math.min(Math.max(roundsRaw, 1), 5) : 2;
-    const membershipIds = Array.isArray(input.membershipIds)
-      ? input.membershipIds.filter((value) => typeof value === 'string')
-      : this.repo.membersOf(groupId).map((member) => member.membershipId);
+    const rounds = modern ? input.rounds : (Number.isInteger(roundsRaw) ? Math.min(Math.max(roundsRaw, 1), 5) : 2);
+    const fields = ['mode', 'format', 'goal', 'background', 'summaryMembershipId', 'proMembershipId',
+      'conMembershipId', 'judgeMembershipId', 'proPosition', 'conPosition', 'responseLength', 'language',
+      'perspectives', 'contextMessageIds', 'requestId'];
+    const config = Object.fromEntries(fields.filter(key => input[key] !== undefined).map(key => [key, input[key]]));
     try {
       return await this.engine.startDiscussion({
-        groupId,
-        topic,
-        membershipIds,
-        rounds,
-        summarize: input.summarize === true,
+        ...config, groupId, topic, rounds,
+        ...(input.membershipIds !== undefined ? { membershipIds: input.membershipIds } : {}),
+        ...(input.summarize !== undefined ? { summarize: input.summarize } : modern ? {} : { summarize: false }),
         expectedConversationId: input.expectedConversationId,
       });
     } catch (error) {
-      if (error && error.code) throw new ServiceError(error.code, String(error.message));
+      if (error?.code) throw new ServiceError(error.code, String(error.message), error.details);
       throw error;
     }
+  }
+
+  requireDiscussion(input) {
+    const discussion = this.repo.getDiscussion(String(input.discussionId || ''));
+    if (!discussion || (input.groupId !== undefined && input.groupId !== discussion.groupId)) {
+      throw new ServiceError('not-found', '讨论不存在或不属于当前群');
+    }
+    return discussion;
+  }
+
+  /** Read a single run, including older conversations, without changing its state. */
+  getDiscussion(input) {
+    const discussion = this.requireDiscussion(input);
+    const conversationId = conversationIdOf(this.repo, discussion);
+    const transcript = this.repo.messagesOf(discussion.groupId).filter(message =>
+      message.groupId === discussion.groupId && conversationIdOf(this.repo, message) === conversationId
+      && message.meta?.discussionId === discussion.discussionId);
+    const finalMessage = [...transcript].reverse().find(message => {
+      if (message.status !== 'done' || message.meta?.summary !== true) return false;
+      if (discussion.protocolVersion < 2 || !message.meta.stepId) return true;
+      const step = discussion.steps?.find(item => item.stepId === message.meta.stepId);
+      return step?.status === 'done' && (!step.messageIds?.length || step.messageIds.includes(message.messageId));
+    });
+    const finalStep = [...(discussion.steps || [])].reverse().find(step => step.status === 'done' && ['summary', 'judgement'].includes(step.phase));
+    // The runner assembles all native turns of the accepted logical attempt.
+    // Keep its result readable even when an original message was later deleted.
+    const summary = finalStep && typeof discussion.summary === 'string' ? discussion.summary : finalMessage?.text;
+    const available = new Set(transcript.map(message => message.messageId));
+    const missingMessageIds = [...new Set((discussion.steps || []).flatMap(step => step.messageIds || []))]
+      .filter(id => !available.has(id));
+    return structuredClone({ discussion, transcript,
+      ...(summary !== undefined ? { summary: String(summary || '') } : {}),
+      ...(['pro', 'con', 'tie', 'insufficient'].includes(discussion.verdict) ? { verdict: discussion.verdict } : {}),
+      missingMessageIds,
+    });
+  }
+
+  async controlDiscussion(input) {
+    const discussion = this.requireDiscussion(input);
+    this.assertCurrentRecord(discussion);
+    this.assertExpectedConversation(discussion.groupId, input.expectedConversationId);
+    this.assertWorkspaceStable(discussion.groupId);
+    if (input.expectedRevision !== undefined && (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0)) {
+      throw new ServiceError('invalid-input', '讨论版本无效，请刷新后重试');
+    }
+    const operation = String(input.operation || '');
+    if (!['pause', 'resume', 'retry', 'finish', 'stop', 'add_context'].includes(operation)) {
+      throw new ServiceError('invalid-input', '不支持的讨论操作');
+    }
+    if (input.requestId !== undefined && (typeof input.requestId !== 'string' || !input.requestId.trim() || input.requestId.length > 160)) {
+      throw new ServiceError('invalid-input', '讨论请求标识无效');
+    }
+    try {
+      return await this.engine.controlDiscussion({
+        discussionId: discussion.discussionId, groupId: discussion.groupId, operation,
+        expectedConversationId: input.expectedConversationId, expectedRevision: input.expectedRevision,
+        requestId: input.requestId, text: input.text, contextMessageIds: input.contextMessageIds,
+      });
+    } catch (error) {
+      if (error?.code) throw new ServiceError(error.code, String(error.message), error.details);
+      throw error;
+    }
+  }
+
+  async stopDiscussion(input) {
+    const discussion = this.repo.getDiscussion(String(input.discussionId || ''));
+    if (!discussion) return { stopped: false };
+    if (discussion.protocolVersion >= 2) {
+      const current = await this.controlDiscussion({ ...input, operation: 'stop' });
+      return { stopped: current.status === 'stopped', discussion: current };
+    }
+    this.requireDiscussion(input);
+    this.assertCurrentRecord(discussion);
+    return this.engine.stopDiscussion(discussion.discussionId);
+  }
+
+  /** Inspect only participating member sessions; do not cancel unrelated work. */
+  async assertDiscussionNativeIdle(discussion) {
+    const membershipIds = new Set(discussion.memberIds || []);
+    const sessionIds = new Set((discussion.steps || []).flatMap(step => (step.attempts || []).map(attempt => attempt.sessionId)).filter(Boolean));
+    const members = new Map([...this.repo.members].filter(([id, member]) => member.groupId === discussion.groupId && membershipIds.has(id)));
+    for (const member of members.values()) if (member.sessionId) sessionIds.add(member.sessionId);
+    const scopedRepo = Object.create(this.repo);
+    scopedRepo.members = members;
+    scopedRepo.sessionBindings = new Map([...(this.repo.sessionBindings || [])].filter(([, binding]) =>
+      binding.groupId === discussion.groupId && (membershipIds.has(binding.membershipId) || sessionIds.has(binding.sessionId))));
+    const scopedPool = Object.create(this.pool || null);
+    scopedPool.owned = new Map([...(this.pool?.owned || [])].filter(([agent, ownership]) => membershipIds.has(ownership.membershipId) || sessionIds.has(agent.id)));
+    scopedPool.isPreparingGroup = () => [...(this.pool?.preparing?.keys() || []), ...(this.pool?.submitting?.keys() || []),
+      ...[...(this.pool?.overlayPreparing?.values() || [])].map(value => value.membershipId)].some(id => membershipIds.has(id));
+    const scopedInteractions = {
+      entries: new Map([...(this.interactions?.entries || [])].filter(([, entry]) => membershipIds.has(entry.view?.membershipId) || sessionIds.has(entry.view?.sessionId))),
+      responding: new Set([...(this.interactions?.responding || [])].filter(entry => membershipIds.has(entry.view?.membershipId) || sessionIds.has(entry.view?.sessionId))),
+    };
+    const blockers = (await collectNativeConversationBlockers({ ctx: this.ctx, repo: scopedRepo, pool: scopedPool,
+      groupId: discussion.groupId, interactions: scopedInteractions })).filter(blocker => !blocker.membershipId || membershipIds.has(blocker.membershipId));
+    if (blockers.length) throw new ServiceError('native-busy', '讨论成员的原生活动尚未结束，暂不能重新派发', { blockers });
   }
 
   /**

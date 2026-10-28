@@ -556,6 +556,7 @@ window.__ModuleLoader__.load({
       next.groups = state.groups.map(group => group.groupId !== groupId ? group : {
         ...group, activeConversationId: id, currentConversationId: id, conversationVersion: version, conversationStateConflict: false,
         currentConversation: conversation || (changed ? null : group.currentConversation),
+        ...(changed ? { activeDiscussion: null } : {}),
         ...(incoming.canStartConversation !== undefined ? { canStartConversation: incoming.canStartConversation, conversationBlockers: incoming.conversationBlockers || [] } : {}),
       });
       next.conversationConflicts = { ...state.conversationConflicts, [groupId]: false };
@@ -749,6 +750,7 @@ window.__ModuleLoader__.load({
     // event forms at render time (and in exports) so historic data follows a
     // language switch without rewriting persisted messages.
     const SYSTEM_MESSAGE_PATTERNS = [
+      [/^开始辩论：([\s\S]+)$/, m => uiT('开始辩论：{topic}', { topic: m[1] })],
       [/^讨论「(.+?)」总结失败\/中断，已结束。$/, (m) => uiT('讨论「{topic}」总结失败/中断，已结束。', { topic: m[1] })],
       [/^讨论「(.+?)」因成员执行失败而停止。$/, (m) => uiT('讨论「{topic}」因成员执行失败而停止。', { topic: m[1] })],
       [/^讨论「(.+?)」已停止：(.+)$/, (m) => uiT('讨论「{topic}」已停止：{message}', { topic: m[1], message: m[2] })],
@@ -770,7 +772,11 @@ window.__ModuleLoader__.load({
       })],
     ];
 
-    function translateSystemText(text) {
+    function translateSystemText(text, meta) {
+      if (meta?.event === 'start' && meta.discussionId) {
+        const topic = meta.topic || String(text || '').replace(/^开始(?:讨论|辩论)：/, '');
+        return uiT(meta.mode === 'debate' ? '开始辩论：{topic}' : '开始讨论：{topic}', { topic });
+      }
       if (!isEnglishUi()) return String(text || '');
       const source = String(text || '');
       for (const [pattern, render] of SYSTEM_MESSAGE_PATTERNS) {
@@ -808,16 +814,16 @@ window.__ModuleLoader__.load({
         }
         const message = entry.message;
         const author = authorNameOf(message, bots);
-        const badges = [];
-        if (message.meta && message.meta.round) badges.push(uiT('第 {round} 轮', { round: message.meta.round }));
-        if (message.meta && message.meta.summary) badges.push(uiT('讨论总结'));
+        const badges = discussionMessageLabels(message);
         if (message.meta && message.meta.verdict === 'pass') badges.push(uiT('评审通过'));
         if (message.meta && message.meta.verdict === 'changes') badges.push(uiT('需修改'));
         if (message.status && message.status !== 'done') badges.push(message.status);
         lines.push(`## [#${message.seq}] ${author}${badges.length ? ` · ${badges.join(' · ')}` : ''}`);
         lines.push('');
+        const discussionMetadata = discussionExportMetadata(message);
+        if (discussionMetadata) lines.push('> ' + discussionMetadata.replace(/\n/g, ' '), '');
         if (message.kind === 'system' || (message.author && message.author.type === 'system')) {
-          lines.push(`> ${translateSystemText(message.text).replace(/\n/g, '\n> ')}`);
+          lines.push(`> ${translateSystemText(message.text, message.meta).replace(/\n/g, '\n> ')}`);
         } else {
           lines.push(String(message.text || ''));
         }
@@ -939,12 +945,10 @@ window.__ModuleLoader__.load({
           if (entry.conversation) return '<section class="conversation"><h2>' + escapeHtml(conversationLabel(entry.conversation)) + '</h2><p>' + escapeHtml(conversationTime(entry.conversation)) + '</p>' + (!entries[index + 1]?.message ? '<p>' + escapeHtml(uiT('本会话没有消息')) + '</p>' : '') + '</section>';
           const message = entry.message;
           const author = escapeHtml(authorNameOf(message, bots));
-          const badges = [];
-          if (message.meta && message.meta.round) badges.push(uiT('第 {round} 轮', { round: message.meta.round }));
-          if (message.meta && message.meta.summary) badges.push(uiT('总结'));
+          const badges = discussionMessageLabels(message);
           if (message.meta && message.meta.verdict === 'pass') badges.push(uiT('评审通过'));
           if (message.meta && message.meta.verdict === 'changes') badges.push(uiT('需修改'));
-          const body = markdownToHtml(message.author && message.author.type === 'system' ? translateSystemText(message.text) : message.text || '');
+          const body = markdownToHtml(message.author && message.author.type === 'system' ? translateSystemText(message.text, message.meta) : message.text || '');
           const attachments = Array.isArray(message.attachments)
             ? message.attachments
                 .map((attachment) => {
@@ -953,14 +957,15 @@ window.__ModuleLoader__.load({
                 })
                 .join('')
             : '';
-          const badgeHtml = badges.length ? ' · ' + badges.join(' · ') : '';
+          const badgeHtml = badges.length ? ' · ' + escapeHtml(badges.join(' · ')) : '';
+          const discussionMetadata = discussionExportMetadata(message);
           return (
             '<article class="msg"><header>#' +
             message.seq +
             ' · ' +
             author +
             badgeHtml +
-            '</header><div class="body">' +
+            '</header>' + (discussionMetadata ? '<p class="discussion-meta">' + escapeHtml(discussionMetadata) + '</p>' : '') + '<div class="body">' +
             body +
             attachments +
             '</div></article>'
@@ -1017,6 +1022,123 @@ window.__ModuleLoader__.load({
     // from the same keys at registration time; UI_EN lives beside it so a missing
     // entry falls back to Chinese instead of blank text.
     const UI_EN = {
+      "1 条原文已删除或不可用": "1 source message was deleted or is unavailable",
+      "步骤派发失败": "Step dispatch failed",
+      "讨论启动失败": "Discussion failed to start",
+      "快速 · 2 轮": "Quick · 2 rounds",
+      "标准 · 3 轮": "Standard · 3 rounds",
+      "深入 · 5 轮": "Deep · 5 rounds",
+      "请选择有效的讨论轮数": "Choose a valid round count",
+      "引用消息最多 20 条": "Reference at most 20 messages",
+      "结构化讨论至少需要两位成员": "Structured discussion requires at least two members",
+      "由用户请求": "Requested by the user",
+      "成员执行失败": "Member execution failed",
+      "步骤执行失败": "Step execution failed",
+      "重启后等待恢复": "Waiting to recover after restart",
+      "等待恢复": "Waiting to recover",
+      "检查停止状态": "Check stop status",
+      "开始辩论：{topic}": "Started debate: {topic}",
+      "开始讨论：{topic}": "Started discussion: {topic}",
+      "自由讨论": "Free discussion",
+      "提出观点": "Viewpoints",
+      "质询观点": "Challenges",
+      "收敛方案": "Convergence",
+      "本轮小结": "Round checkpoint",
+      "最终总结": "Final summary",
+      "开篇陈词": "Opening",
+      "提问": "Question",
+      "回答": "Answer",
+      "总结陈词": "Closing",
+      "裁决": "Judgement",
+      "正方": "Pro",
+      "反方": "Con",
+      "裁判": "Judge",
+      "中立": "Neutral",
+      "正在暂停": "Pausing",
+      "已暂停": "Paused",
+      "正在收尾": "Finalizing",
+      "正在停止": "Stopping",
+      "等待发言": "Waiting for a speaker",
+      "请输入讨论议题": "Enter a discussion topic",
+      "讨论议题最多 2000 字符": "The discussion topic must be at most 2,000 characters",
+      "请选择 1 至 3 轮": "Choose 1 to 3 rounds",
+      "正方与反方必须是不同成员": "Pro and con must be different members",
+      "所选成员已停用或移除，请重新选择": "A selected member was disabled or removed. Select members again.",
+      "裁判必须独立于正反双方": "The judge must be different from both debaters",
+      "请至少选择一位参与成员": "Select at least one participant",
+      "请选择小结与总结成员": "Choose a checkpoint and summary author",
+      "引用消息 ID": "Reference message IDs",
+      "输入消息 ID，以空格、逗号或换行分隔": "Enter message IDs separated by spaces, commas, or newlines",
+      "从已加载消息中选择": "Choose from loaded messages",
+      "不设置裁判": "No judge",
+      "请选择成员": "Choose a member",
+      "发起讨论或辩论": "Start a discussion or debate",
+      "开始辩论": "Start debate",
+      "讨论模式": "Discussion mode",
+      "1v1 辩论": "1v1 debate",
+      "多成员讨论": "Group discussion",
+      "议题必填，最多 2000 字符（{count}/2000）": "A topic is required, up to 2,000 characters ({count}/2000)",
+      "参与成员与发言顺序": "Participants and speaking order",
+      "已停用": "Disabled",
+      "上移 {name}": "Move {name} up",
+      "下移 {name}": "Move {name} down",
+      "正方成员": "Pro member",
+      "反方成员": "Con member",
+      "正方立场": "Pro position",
+      "反方立场": "Con position",
+      "裁判（可选）": "Judge (optional)",
+      "小结与总结成员": "Checkpoint and summary author",
+      "结束后生成最终总结": "Generate a final summary",
+      "双方开篇、交叉问答、总结陈词；设置裁判后生成裁决。": "Both sides open, cross-examine, and close. A judge adds a verdict.",
+      "按观点、质询、收敛推进，每两轮之间生成小结。": "Progress through viewpoints, challenges, and convergence, with a checkpoint between rounds.",
+      "按选定顺序逐轮自由讨论。": "Discuss freely in the selected order each round.",
+      "预计 {count} 次模型发言": "Estimated model responses: {count}",
+      "高级设置": "Advanced settings",
+      "讨论形式": "Discussion format",
+      "结构化讨论": "Structured discussion",
+      "经典自由讨论": "Classic free discussion",
+      "讨论目标": "Discussion goal",
+      "背景材料": "Background",
+      "发言长度": "Response length",
+      "简短": "Short",
+      "标准": "Standard",
+      "详细": "Detailed",
+      "输出语言": "Output language",
+      "自动": "Auto",
+      "中文": "Chinese",
+      "英文": "English",
+      "成员视角（可选）": "Member perspectives (optional)",
+      "讨论进度": "Discussion progress",
+      "查看完整记录": "View complete record",
+      "已完成 {done}/{total} 步": "{done}/{total} steps complete",
+      "下一步：{step}": "Next: {step}",
+      "暂停": "Pause",
+      "继续": "Resume",
+      "重试当前步骤": "Retry current step",
+      "提前收尾": "Finish early",
+      "补充上下文": "Add context",
+      "历史会话仅可查看": "Past conversations are read-only",
+      "补充内容": "Additional context",
+      "添加上下文": "Add context",
+      "未设置裁判，不判定胜负": "No judge was selected; no winner is declared",
+      "正方胜": "Pro wins",
+      "反方胜": "Con wins",
+      "平局": "Tie",
+      "证据不足，无法判定": "Insufficient evidence to decide",
+      "尚无裁决": "No verdict yet",
+      "讨论记录不匹配，请重试": "The discussion record does not match. Try again.",
+      "跳转原文 #{seq}": "Go to source #{seq}",
+      "讨论结果": "Discussion results",
+      "辩论结果": "Debate results",
+      "收起完整记录": "Collapse complete record",
+      "展开完整记录": "Expand complete record",
+      "加载完整讨论记录…": "Loading complete discussion record…",
+      "尚无总结内容，可展开原始记录查看发言。": "No summary yet. Expand the original messages to read the responses.",
+      "{count} 条原文已删除或不可用": "{count} source messages were deleted or are unavailable",
+      "全部原始消息（{count}）": "All original messages ({count})",
+      "原文已删除或不可用": "Source message was deleted or is unavailable",
+      "查看当前讨论": "View current discussion",
+      "讨论详情": "Discussion details",
       '点击重试检查当前状态': 'Click to check the current status again',
       '正在刷新会话状态，请稍后重试': 'Refreshing conversation state. Try again shortly.',
       '聊天已开始新会话，请关闭对话框后重试': 'A new conversation has started. Close this dialog and try again.',
@@ -2074,6 +2196,39 @@ window.__ModuleLoader__.load({
       return { orderedIds };
     }
 
+    const DISCUSSION_ACTIVE_STATUSES = ['running', 'pausing', 'paused', 'finalizing', 'stopping'];
+    const DISCUSSION_PHASE_LABELS = { discussion: '自由讨论', viewpoint: '提出观点', challenge: '质询观点', converge: '收敛方案', checkpoint: '本轮小结', summary: '最终总结', opening: '开篇陈词', question: '提问', answer: '回答', closing: '总结陈词', judgement: '裁决' };
+    const DISCUSSION_SIDE_LABELS = { pro: '正方', con: '反方', judge: '裁判', neutral: '中立' };
+    const DISCUSSION_STATUS_LABELS = { running: '进行中', pausing: '正在暂停', paused: '已暂停', finalizing: '正在收尾', stopping: '正在停止', done: '已完成', stopped: '已停止' };
+    const isActiveDiscussion = record => !!record && DISCUSSION_ACTIVE_STATUSES.includes(record.status);
+    const discussionPhaseLabel = phase => uiT(DISCUSSION_PHASE_LABELS[phase] || phase || '等待发言');
+    const discussionSideLabel = side => uiT(DISCUSSION_SIDE_LABELS[side] || side || '');
+    const discussionRequestId = () => 'discussion-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+    const discussionActionResult = response => response?.result || response || {};
+    function discussionIsCurrent(record, group) {
+      return !!record && !!group && record.groupId === group.groupId && (!record.conversationId || record.conversationId === currentConversationId(group));
+    }
+    function newerDiscussion(previous, incoming) {
+      if (!previous) return incoming;
+      if (!incoming) return previous;
+      if (previous.discussionId === incoming.discussionId) return Number(previous.revision || 0) > Number(incoming.revision || 0) ? previous : incoming;
+      if (isActiveDiscussion(previous) && !isActiveDiscussion(incoming)) return previous;
+      return Number(previous.createdAt || 0) > Number(incoming.createdAt || 0) ? previous : incoming;
+    }
+    function discussionMessageLabels(message) {
+      const meta = message.meta || {};
+      const labels = [];
+      if (meta.phase) labels.push(discussionPhaseLabel(meta.phase));
+      if (meta.side) labels.push(discussionSideLabel(meta.side));
+      if (meta.round) labels.push(uiT('第 {round} 轮', { round: meta.round }));
+      if (meta.summary && !['summary', 'judgement'].includes(meta.phase)) labels.push(uiT('讨论总结'));
+      return labels;
+    }
+    function discussionExportMetadata(message) {
+      const meta = message.meta || {};
+      return ['discussionId', 'stepId', 'attemptId', 'phase', 'side', 'speaker'].filter(key => meta[key] !== undefined && meta[key] !== null && meta[key] !== '').map(key => key + ': ' + meta[key]).join(' · ');
+    }
+
     // ── state ─────────────────────────────────────────────────────────────
     const initialState = {
       loading: true,
@@ -2160,7 +2315,11 @@ window.__ModuleLoader__.load({
           return { ...state, conversationHasMoreByGroup: { ...state.conversationHasMoreByGroup, [action.groupId]: action.hasMore === true } };
         case 'bootstrap': {
           const data = action.data;
-          const groups = data.groups || [];
+          const groups = (data.groups || []).map(group => {
+            const previous = state.discussions?.[group.groupId];
+            const record = newerDiscussion(discussionIsCurrent(previous, group) ? previous : null, group.activeDiscussion || group.latestDiscussion);
+            return record ? { ...group, latestDiscussion: record, activeDiscussion: discussionIsCurrent(record, group) && isActiveDiscussion(record) ? record : null } : group;
+          });
           const bots = data.bots || [];
           // Creating a bot should land directly in its single chat. The request
           // is kept in state until the refreshed bootstrap contains the direct
@@ -2201,7 +2360,11 @@ window.__ModuleLoader__.load({
             discussions: Object.fromEntries(
               groups
                 .filter((group) => group.activeDiscussion || group.latestDiscussion)
-                .map((group) => [group.groupId, group.activeDiscussion || group.latestDiscussion]),
+                .map((group) => {
+                  const incoming = group.activeDiscussion || group.latestDiscussion;
+                  const previous = state.discussions?.[group.groupId];
+                  return [group.groupId, newerDiscussion(discussionIsCurrent(previous, group) ? previous : null, incoming)];
+                }),
             ),
           };
         }
@@ -2301,7 +2464,7 @@ window.__ModuleLoader__.load({
         case 'prependMessages': {
           const current = state.messagesByGroup[action.groupId] || [];
           const seen = new Set(current.map((message) => message.messageId));
-          const merged = [...(action.messages || []).filter((message) => !seen.has(message.messageId) && !isDeletedMessage(state, action.groupId, message.messageId)), ...current];
+          const merged = [...(action.messages || []).filter((message) => !seen.has(message.messageId) && !isDeletedMessage(state, action.groupId, message.messageId)), ...current].sort((a, b) => a.seq - b.seq);
           return {
             ...state,
             messagesByGroup: { ...state.messagesByGroup, [action.groupId]: merged },
@@ -2309,8 +2472,13 @@ window.__ModuleLoader__.load({
           };
         }
         case 'discussion': {
-          const discussion = action.discussion;
-          if (!discussion) return state;
+          const incoming = action.discussion;
+          if (!incoming) return state;
+          const owner = state.groups.find(group => group.groupId === incoming.groupId);
+          if (owner && !discussionIsCurrent(incoming, owner)) return state;
+          const previous = state.discussions?.[incoming.groupId];
+          const discussion = newerDiscussion(discussionIsCurrent(previous, owner) ? previous : null, incoming);
+          if (discussion === previous) return state;
           return {
             ...state,
             discussions: { ...state.discussions, [discussion.groupId]: discussion },
@@ -2318,7 +2486,7 @@ window.__ModuleLoader__.load({
               group.groupId === discussion.groupId
                 ? {
                     ...group,
-                    activeDiscussion: discussion.status === 'running' ? discussion : null,
+                    activeDiscussion: isActiveDiscussion(discussion) ? discussion : null,
                     latestDiscussion: discussion,
                   }
                 : group,
@@ -2410,6 +2578,8 @@ window.__ModuleLoader__.load({
             return reducer(state, { type: 'discussion', discussion: frame.discussion });
           }
           if (frame.type === 'group.updated') {
+            const incomingDiscussion = frame.group.activeDiscussion || frame.group.latestDiscussion;
+            if (incomingDiscussion) state = reducer(state, { type: 'discussion', discussion: incomingDiscussion });
             return {
               ...state,
               groups: state.groups.map((group) =>
@@ -2417,6 +2587,7 @@ window.__ModuleLoader__.load({
                   activeConversationId: group.activeConversationId, currentConversationId: group.currentConversationId,
                   conversationVersion: group.conversationVersion, currentConversation: group.currentConversation,
                   canStartConversation: group.canStartConversation, conversationBlockers: group.conversationBlockers,
+                  ...(state.discussions?.[group.groupId] ? { latestDiscussion: state.discussions?.[group.groupId], activeDiscussion: discussionIsCurrent(state.discussions?.[group.groupId], group) && isActiveDiscussion(state.discussions?.[group.groupId]) ? state.discussions?.[group.groupId] : null } : {}),
                 } : group,
               ),
             };
@@ -4454,6 +4625,56 @@ body[data-ds-dark-theme] .bt-root {
 .bt-root ::-webkit-scrollbar-track { background: transparent; }
 body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.18); border: 3px solid transparent; background-clip: content-box; }
 body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.28); border: 3px solid transparent; background-clip: content-box; }
+
+
+/* Discussion controls stay in the chat column at every panel width. */
+.bt-discussion-dock { flex: 0 1 auto; min-width: 0; max-height: 38vh; overflow: auto; border-top: 1px solid var(--bt-border); background: var(--bt-bg-soft); padding: 10px 16px; }
+.bt-discussion-progress, .bt-discussion-result { min-width: 0; color: var(--bt-text); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.bt-discussion-result + .bt-discussion-result { border-top: 1px solid var(--bt-border); }
+.bt-discussion-heading, .bt-discussion-status, .bt-discussion-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
+.bt-discussion-heading { margin-bottom: 6px; }
+.bt-discussion-topic { flex: 1 1 150px; min-width: 0; overflow-wrap: anywhere; }
+.bt-discussion-status { color: var(--bt-text-2); margin-bottom: 6px; }
+.bt-discussion-progress progress { display: block; width: 100%; height: 5px; accent-color: var(--bt-accent); margin: 8px 0; }
+.bt-discussion-badge { font-size: 11px; border-radius: 4px; padding: 1px 5px; color: var(--bt-accent); background: var(--bt-accent-soft); border: 1px solid var(--bt-accent-border); }
+.bt-discussion-hint { font-size: 12px; color: var(--bt-text-2); margin: 6px 0 12px; }
+.bt-discussion-error { color: var(--bt-danger-text); background: var(--bt-danger-bg); padding: 8px; border-radius: 6px; }
+.bt-discussion-estimate { color: var(--bt-accent); font-size: 12px; }
+.bt-discussion-context { margin-top: 10px; }
+.bt-discussion-context label { display: block; margin-bottom: 6px; }
+.bt-discussion-tabs { display: flex; gap: 6px; margin-bottom: 16px; }
+.bt-discussion-tabs button { flex: 1; border: 1px solid var(--bt-border); border-radius: 7px; padding: 9px; color: var(--bt-text-2); background: var(--bt-bg-soft); cursor: pointer; }
+.bt-discussion-tabs button[aria-selected="true"] { color: var(--bt-accent); border-color: var(--bt-accent-border); background: var(--bt-accent-soft); }
+.bt-discussion-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 14px; }
+.bt-discussion-field { min-width: 0; margin: 10px 0; }
+.bt-discussion-field label { display: block; margin-bottom: 6px; }
+.bt-discussion-dialog input:not([type="checkbox"]), .bt-discussion-dialog select, .bt-discussion-dialog textarea, .bt-discussion-context textarea { width: 100%; min-width: 0; box-sizing: border-box; }
+.bt-discussion-members { margin: 12px 0; padding: 10px; border: 1px solid var(--bt-border); border-radius: 7px; min-width: 0; }
+.bt-discussion-members legend { padding: 0 5px; font-size: 12px; color: var(--bt-text-2); }
+.bt-discussion-member { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 4px 0; }
+.bt-discussion-member label, .bt-discussion-check { display: flex; align-items: center; gap: 8px; font-size: 13px; min-width: 0; overflow-wrap: anywhere; }
+.bt-discussion-member input, .bt-discussion-check input, .bt-discussion-reference input { flex-shrink: 0; }
+.bt-discussion-reference-list { max-height: 200px; overflow: auto; padding: 8px 0; }
+.bt-discussion-reference { display: grid !important; grid-template-columns: auto minmax(0, 1fr); align-items: baseline; gap: 3px 8px; font-size: 12px; margin: 7px 0; }
+.bt-discussion-reference code { grid-column: 2; overflow-wrap: anywhere; color: var(--bt-text-2); }
+.bt-discussion-references { margin: 12px 0; }
+.bt-discussion-advanced { border-top: 1px solid var(--bt-border); padding-top: 12px; margin-top: 12px; }
+.bt-discussion-advanced summary, .bt-discussion-transcript summary, .bt-discussion-references summary { cursor: pointer; color: var(--bt-text-2); font-size: 12px; padding: 6px 0; }
+.bt-discussion-advanced summary:focus-visible, .bt-discussion-transcript summary:focus-visible, .bt-discussion-references summary:focus-visible { outline: 2px solid var(--bt-accent); outline-offset: 2px; }
+.bt-discussion-source { border-top: 1px solid var(--bt-border); margin: 10px 0; padding-top: 10px; }
+.bt-discussion-source-body { max-height: 420px; overflow: auto; overflow-wrap: anywhere; font-size: 13px; }
+.bt-discussion-source-body pre { max-width: 100%; overflow: auto; }
+.bt-discussion-verdict { font-weight: 600; color: var(--bt-text-2); }
+@media (prefers-reduced-motion: reduce) {
+  .bt-discussion-dialog { animation: none !important; }
+  .bt-discussion-tabs button { transition: none !important; }
+}
+@media (max-width: 600px) {
+  .bt-discussion-grid { grid-template-columns: minmax(0, 1fr); }
+  .bt-discussion-dock { padding: 8px 10px; max-height: 34vh; }
+  .bt-discussion-actions button { min-height: 32px; }
+  .bt-discussion-dialog .bt-modal-footer { flex-wrap: wrap; }
+}
 
 /* Execution drawer overlays this page without unmounting its conversation. */
 .bt-session-page { height: 100%; min-height: 0; min-width: 0; width: 100%; display: flex; flex-direction: column; color: var(--bt-text); background: var(--bt-surface); }
@@ -8423,7 +8644,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             meta.toolName ? h('span', { style: badgeStyle('#f3f4f6', '#4b5563') }, meta.toolName) : null,
             h('span', { style: { marginLeft: 'auto', fontSize: 10, color: 'var(--bt-text-3)' } }, formatTime(message.createdAt)),
           ),
-          h('div', { style: S.approvalText, raw: true }, translateSystemText(message.text)),
+          h('div', { style: S.approvalText, raw: true }, translateSystemText(message.text, message.meta)),
           state === 'pending' && meta.sessionId
             ? h(
                 'div',
@@ -8654,17 +8875,20 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       onOpenSession,
       userProfile,
       chatDisplaySettings,
+      onOpenDiscussion,
     }) {
       if (message.kind === 'approval') {
         return h(ApprovalRow, { message, bots, onOpenSession });
       }
       if (message.author && message.author.type === 'system') {
         const kindLabel = message.kind === 'review' ? '评审' : message.kind === 'revision' ? '修改' : message.kind === 'discussion' ? '讨论' : '';
-        const systemText = translateSystemText(message.text);
+        const systemText = translateSystemText(message.text, message.meta);
         return h(
           'div',
-          { className: 'bt-system-row', style: S.systemRow },
-          h('span', { style: S.systemPill, raw: true }, kindLabel ? `[${uiT(kindLabel)}] ${systemText}` : systemText),
+          { className: 'bt-system-row', style: S.systemRow, 'data-message-id': message.messageId },
+          message.meta?.discussionId && onOpenDiscussion
+            ? h('button', { type: 'button', style: { ...S.systemPill, border: 'none', cursor: 'pointer', font: 'inherit' }, raw: true, title: uiT('讨论详情'), onClick: () => onOpenDiscussion(message.meta.discussionId) }, kindLabel ? `[${uiT(kindLabel)}] ${systemText}` : systemText)
+            : h('span', { style: S.systemPill, raw: true }, kindLabel ? `[${uiT(kindLabel)}] ${systemText}` : systemText),
         );
       }
       const mine = !!(message.author && message.author.type === 'human');
@@ -8704,8 +8928,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       }).filter((action) => action.hover !== false && !action.disabled);
 
       const footer = [];
-      if (meta.round) footer.push(h('span', { key: 'round', style: badgeStyle('#eef2ff', '#4f46e5') }, uiT('第 {round} 轮', { round: meta.round })));
-      if (meta.summary) footer.push(h('span', { key: 'summary', style: badgeStyle('#ecfdf5', '#047857') }, '总结'));
+      for (const [index, label] of discussionMessageLabels(message).entries()) footer.push(h('span', { key: 'discussion-' + index, className: 'bt-discussion-badge' }, label));
+      if (meta.discussionId && onOpenDiscussion) footer.push(h('button', { key: 'discussion-detail', type: 'button', style: S.smallBtn, onClick: () => onOpenDiscussion(meta.discussionId) }, '讨论详情'));
       if (meta.verdict === 'pass') footer.push(h('span', { key: 'pass', style: badgeStyle('#ecfdf5', '#047857') }, '评审通过'));
       if (meta.verdict === 'changes') footer.push(h('span', { key: 'changes', style: badgeStyle('#fffbeb', '#b45309') }, '需修改'));
       if (target) footer.push(h('span', { key: 'target', style: badgeStyle('#f3f4f6', '#667085') }, uiT('评审 #{seq}', { seq: target.seq })));
@@ -9161,9 +9385,9 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       const [workspaceSaving, setWorkspaceSaving] = React.useState(false);
       const workspaceSavingRef = React.useRef(false);
       const projectCwd = (group && group.projectWorkspaceCwd) || '';
-      const workspaceLocked = !!(group && (group.running || group.activeDiscussion?.status === 'running'))
+      const workspaceLocked = !!(group && (group.running || isActiveDiscussion(group.activeDiscussion) && discussionIsCurrent(group.activeDiscussion, group)))
         || members.some((member) => member.running || ['running', 'queued'].includes(state.statusByMember[member.membershipId]))
-        || state.discussions?.[group && group.groupId]?.status === 'running';
+        || isActiveDiscussion(state.discussions?.[group && group.groupId]) && discussionIsCurrent(state.discussions?.[group && group.groupId], group);
 
       const groupIdRef = React.useRef(group && group.groupId);
       groupIdRef.current = group && group.groupId;
@@ -10378,7 +10602,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
     }
 
 
-    function renderMembersPanel({ state, members, bots, dispatch, onAdd, onCollapse, onEdit, onViewSession, onOpenNativeSession, discussion, usage, onStopDiscussion }) {
+    function renderMembersPanel({ state, members, bots, dispatch, onAdd, onCollapse, onEdit, onViewSession, onOpenNativeSession, discussion, usage }) {
       const runningMembers = members.filter((member) => state.statusByMember[member.membershipId] === 'running');
       return h(
         'div',
@@ -10415,40 +10639,6 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             runningCount: runningMembers.length,
             className: 'bt-group-usage',
           }),
-          discussion
-            ? h(
-                'div',
-                { style: { ...S.memberCard, borderColor: discussion.status === 'running' ? 'rgba(79,70,229,0.4)' : undefined } },
-                h(
-                  'div',
-                  { style: S.memberTop },
-                  h('span', { style: badgeStyle(discussion.status === 'running' ? '#eef2ff' : '#f3f4f6', discussion.status === 'running' ? '#4f46e5' : '#6b7280') }, discussion.status === 'running' ? '讨论中' : discussion.status === 'done' ? '讨论结束' : '讨论停止'),
-                  h('span', { style: { ...S.memberName, fontSize: 12 } }, discussion.topic),
-                ),
-                h(
-                  'div',
-                  { style: S.memberMeta },
-                  uiT('第 {current}/{total} 轮', {
-                    current: Math.min(discussion.currentRound || 1, discussion.rounds),
-                    total: discussion.rounds,
-                  }),
-                  discussion.status === 'running' && discussion.currentSpeaker
-                    ? ` · ${(() => {
-                        const speaker = members.find((member) => member.membershipId === discussion.currentSpeaker);
-                        const speakerBot = speaker ? bots.find((bot) => bot.botId === speaker.botId) : null;
-                        return speakerBot ? uiT('{name} 发言中', { name: speakerBot.name }) : uiT('发言中');
-                      })()}`
-                    : '',
-                ),
-                discussion.status === 'running'
-                  ? h(
-                      'div',
-                      { style: S.memberActions },
-                      h('button', { style: S.smallBtn, onClick: onStopDiscussion }, '停止讨论'),
-                    )
-                  : null,
-              )
-            : null,
           members.length === 0
             ? h('div', { style: { fontSize: 12, color: 'var(--bt-text-3)', padding: '10px 6px', lineHeight: 1.7 } }, '还没有成员。添加一个 Bot，或用「新建 Bot」创建一个带人格设定的成员。')
             : members.map((member) => {
@@ -11484,120 +11674,274 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
     }
 
 
-    function renderDiscussionDialog({ group, members, bots, defaultTopic, onClose, onSaved, onConversationError }) {
-      const expectedConversationId = React.useRef(currentConversationId(group)).current;
-      const stale = expectedConversationId !== currentConversationId(group);
-      const candidates = members
-        .map((member) => ({ member, bot: bots.find((candidate) => candidate.botId === member.botId) }))
-        .filter((entry) => entry.bot);
-      const [topic, setTopic] = React.useState(defaultTopic || '');
-      const [selected, setSelected] = React.useState(candidates.map((entry) => entry.member.membershipId));
-      const [rounds, setRounds] = React.useState(2);
-      const [summarize, setSummarize] = React.useState(true);
+    function discussionEstimate(draft) {
+      const rounds = Number(draft.rounds) || 1;
+      if (draft.mode === 'debate') return 4 + 4 * rounds + (draft.judgeMembershipId ? 1 : 0);
+      return (draft.membershipIds || []).length * rounds + (draft.format === 'structured' ? rounds - 1 : 0) + (draft.summarize ? 1 : 0);
+    }
+    function parseDiscussionReferences(value) {
+      return [...new Set(String(value || '').split(/[\s,，]+/).filter(Boolean))];
+    }
+    function createDiscussionDraft(members, defaultTopic) {
+      const enabled = members.filter(member => member.enabled !== false).map(member => member.membershipId);
+      return { mode: 'discussion', format: 'structured', topic: defaultTopic || '', membershipIds: enabled, rounds: 3, discussionRounds: 3, debateRounds: 2, summarize: true,
+        summaryMembershipId: enabled[0] || '', proMembershipId: enabled[0] || '', conMembershipId: enabled[1] || '', judgeMembershipId: '',
+        proPosition: '', conPosition: '', goal: '', background: '', responseLength: 'standard', language: 'auto', perspectives: {}, references: '' };
+    }
+    function discussionRoundOptions(draft) { return draft.mode === 'debate' ? [1, 2, 3] : draft.format === 'structured' ? [2, 3, 5] : [1, 2, 3, 4, 5]; }
+    function buildDiscussionStartPayload(group, expectedConversationId, draft) {
+      const participants = draft.mode === 'debate' ? [draft.proMembershipId, draft.conMembershipId, draft.judgeMembershipId] : [...draft.membershipIds, draft.summaryMembershipId];
+      return { groupId: group.groupId, expectedConversationId, topic: draft.topic.trim(), mode: draft.mode,
+        format: draft.mode === 'debate' ? 'structured' : draft.format,
+        membershipIds: draft.mode === 'debate' ? [draft.proMembershipId, draft.conMembershipId] : draft.membershipIds.slice(),
+        rounds: Number(draft.rounds), summarize: draft.mode === 'discussion' && draft.summarize,
+        ...(draft.mode === 'debate' ? { proMembershipId: draft.proMembershipId, conMembershipId: draft.conMembershipId,
+          ...(draft.judgeMembershipId ? { judgeMembershipId: draft.judgeMembershipId } : {}), proPosition: draft.proPosition.trim(), conPosition: draft.conPosition.trim() }
+          : { summaryMembershipId: draft.summaryMembershipId }),
+        goal: draft.goal.trim(), background: draft.background.trim(), responseLength: draft.responseLength, language: draft.language,
+        perspectives: Object.fromEntries(Object.entries(draft.perspectives).filter(([id]) => participants.includes(id))), contextMessageIds: parseDiscussionReferences(draft.references) };
+    }
+    function validateDiscussionDraft(draft, candidates) {
+      if (!draft.topic.trim()) return '请输入讨论议题';
+      if (draft.topic.trim().length > 2000) return '讨论议题最多 2000 字符';
+      if (!discussionRoundOptions(draft).includes(Number(draft.rounds))) return '请选择有效的讨论轮数';
+      if (parseDiscussionReferences(draft.references).length > 20) return '引用消息最多 20 条';
+      const available = id => candidates.some(entry => entry.member.membershipId === id && entry.member.enabled !== false);
+      if (draft.mode === 'debate') {
+        if (!draft.proMembershipId || !draft.conMembershipId || draft.proMembershipId === draft.conMembershipId) return '正方与反方必须是不同成员';
+        if (![draft.proMembershipId, draft.conMembershipId].every(available)) return '所选成员已停用或移除，请重新选择';
+        if (draft.judgeMembershipId && (!available(draft.judgeMembershipId) || [draft.proMembershipId, draft.conMembershipId].includes(draft.judgeMembershipId))) return '裁判必须独立于正反双方';
+      } else {
+        if (!draft.membershipIds.length) return '请至少选择一位参与成员';
+        if (draft.format === 'structured' && draft.membershipIds.length < 2) return '结构化讨论至少需要两位成员';
+        if (!draft.membershipIds.every(available)) return '所选成员已停用或移除，请重新选择';
+        if ((draft.summaryMembershipId || draft.summarize || draft.format === 'structured' && draft.rounds > 1) && !available(draft.summaryMembershipId)) return '请选择小结与总结成员';
+      }
+      return '';
+    }
+    function DiscussionReferences({ id, value, onChange, messages = [] }) {
+      const selected = parseDiscussionReferences(value);
+      return h('div', { className: 'bt-discussion-references' },
+        h('label', { htmlFor: id, style: S.label }, '引用消息 ID'),
+        h('textarea', { id, style: S.input, rows: 2, value, onChange: event => onChange(event.target.value), placeholder: '输入消息 ID，以空格、逗号或换行分隔' }),
+        messages.length ? h('details', null, h('summary', null, '从已加载消息中选择'),
+          h('div', { className: 'bt-discussion-reference-list' }, messages.map(message => h('label', { key: message.messageId, className: 'bt-discussion-reference' },
+            h('input', { type: 'checkbox', checked: selected.includes(message.messageId), onChange: () => onChange((selected.includes(message.messageId) ? selected.filter(id => id !== message.messageId) : selected.concat(message.messageId)).join('\n')) }),
+            h('span', { raw: true }, '#' + message.seq + ' · ' + (message.text || '').slice(0, 100)), h('code', { raw: true }, message.messageId))))) : null);
+    }
+    function renderDiscussionDialog({ group, members, bots, messages = [], defaultTopic, onClose, onSaved, onConversationError }) {
+      const identity = React.useRef({ groupId: group.groupId, conversationId: currentConversationId(group) }).current;
+      const stale = identity.groupId !== group.groupId || identity.conversationId !== currentConversationId(group);
+      const candidates = members.map(member => ({ member, bot: bots.find(bot => bot.botId === member.botId) })).filter(entry => entry.bot);
+      const [draft, setDraft] = React.useState(() => createDiscussionDraft(candidates.map(entry => entry.member), defaultTopic));
       const [error, setError] = React.useState('');
       const [busy, setBusy] = React.useState(false);
-      const toggle = (membershipId) => {
-        setSelected((current) => current.includes(membershipId)
-          ? current.filter((value) => value !== membershipId)
-          : current.concat([membershipId]));
-      };
+      const busyRef = React.useRef(false);
+      const set = (key, value) => setDraft(current => {
+        const next = { ...current, [key]: value };
+        if (key === 'rounds') next[current.mode + 'Rounds'] = value;
+        if (key === 'format' && !discussionRoundOptions(next).includes(next.rounds)) next.rounds = next.discussionRounds = value === 'structured' ? 3 : 2;
+        return next;
+      });
+      const validation = validateDiscussionDraft(draft, candidates);
+      const labelField = (key, label, node) => h('div', { className: 'bt-discussion-field', key }, h('label', { htmlFor: 'bt-discussion-' + key, style: S.label }, label), node);
+      const input = (key, label, multiline = false) => labelField(key, label, h(multiline ? 'textarea' : 'input', { id: 'bt-discussion-' + key, style: S.input, value: draft[key], rows: 2, maxLength: key === 'background' ? 12000 : 2000, onChange: event => set(key, event.target.value) }));
+      const selectMember = (key, label, excludes = [], optional = false) => labelField(key, label, h('select', { id: 'bt-discussion-' + key, style: S.select, value: draft[key], onChange: event => set(key, event.target.value) },
+        h('option', { value: '' }, optional ? '不设置裁判' : '请选择成员'),
+        candidates.map(({ member, bot }) => h('option', { key: member.membershipId, value: member.membershipId, disabled: member.enabled === false || excludes.includes(member.membershipId), raw: true }, bot.name))));
+      const moveMember = (id, direction) => setDraft(current => {
+        const order = current.membershipIds.slice(), from = order.indexOf(id), to = from + direction;
+        if (from < 0 || to < 0 || to >= order.length) return current;
+        [order[from], order[to]] = [order[to], order[from]];
+        return { ...current, membershipIds: order };
+      });
+      const ordered = draft.membershipIds.map(id => candidates.find(entry => entry.member.membershipId === id)).filter(Boolean).concat(candidates.filter(entry => !draft.membershipIds.includes(entry.member.membershipId)));
       const submit = async () => {
-        if (busy || stale) return;
-        setBusy(true);
-        setError('');
+        if (busyRef.current || stale) return;
+        if (validation) { setError(validation); return; }
+        busyRef.current = true; setBusy(true); setError('');
         try {
-          await api.action('discussion.start', {
-            groupId: group.groupId,
-            expectedConversationId,
-            topic,
-            membershipIds: selected,
-            rounds,
-            summarize,
-          });
+          const response = await api.action('discussion.start', buildDiscussionStartPayload(group, identity.conversationId, draft));
           uiReport({ kind: 'action', action: 'discussion.start' });
-          onSaved();
+          onSaved(discussionActionResult(response));
         } catch (reason) {
-          onConversationError?.(reason, group.groupId);
-          setError(String(reason && reason.message ? reason.message : reason));
-        } finally {
-          setBusy(false);
-        }
+          onConversationError?.(reason, identity.groupId);
+          setError(String(reason?.message || reason));
+        } finally { busyRef.current = false; setBusy(false); }
       };
-      return h(
-        Modal,
-        {
-          title: '发起讨论',
-          onClose,
-          footer: [
-            h('button', { key: 'cancel', style: S.ghostBtn, onClick: onClose }, '取消'),
-            h('button', { key: 'ok', style: S.primaryBtn, disabled: busy || selected.length === 0 || stale, onClick: () => void submit() }, '开始讨论'),
-          ],
-        },
-        error ? h('div', { style: { ...S.errorBanner, borderRadius: 8, marginBottom: 10 } }, error) : null,
+      const switchMode = mode => setDraft(current => ({ ...current, [current.mode + 'Rounds']: current.rounds, mode, rounds: current[mode + 'Rounds'] || 3 }));
+      return h(Modal, { title: '发起讨论或辩论', className: 'bt-discussion-dialog', width: 640, onClose,
+        footer: [h('button', { key: 'cancel', type: 'button', style: S.ghostBtn, onClick: onClose }, '取消'),
+          h('button', { key: 'ok', type: 'button', style: S.primaryBtn, disabled: busy || stale || !!validation, onClick: () => void submit() }, draft.mode === 'debate' ? '开始辩论' : '开始讨论')] },
+        h('div', { role: 'tablist', 'aria-label': '讨论模式', className: 'bt-discussion-tabs' }, ['discussion', 'debate'].map(mode => h('button', {
+          key: mode, id: 'bt-mode-' + mode, type: 'button', role: 'tab', 'aria-selected': draft.mode === mode, 'aria-controls': 'bt-discussion-config', tabIndex: draft.mode === mode ? 0 : -1,
+          onClick: () => switchMode(mode), onKeyDown: event => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) { event.preventDefault(); const next = event.key === 'Home' ? 'discussion' : event.key === 'End' ? 'debate' : draft.mode === 'discussion' ? 'debate' : 'discussion'; switchMode(next); event.currentTarget.parentElement?.querySelector('#bt-mode-' + next)?.focus(); } },
+        }, mode === 'debate' ? '1v1 辩论' : '多成员讨论'))),
+        error ? h('p', { role: 'alert', className: 'bt-discussion-error' }, error) : null,
         stale ? h('p', { role: 'status' }, '聊天已开始新会话，请关闭对话框后重试') : null,
-        h(Field, { label: '讨论议题' }, h('textarea', {
-          style: { ...S.input, minHeight: 70 },
-          value: topic,
-          onChange: (event) => setTopic(event.target.value),
-          placeholder: '例如：如何看待把 Agent 群聊接入现有 IM？',
-        })),
-        h(
-          Field,
-          { label: '参与成员' },
-          h(
-            'div',
-            { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-            candidates.map((entry) =>
-              h(
-                'label',
-                { key: entry.member.membershipId, style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 } },
-                h('input', {
-                  type: 'checkbox',
-                  checked: selected.includes(entry.member.membershipId),
-                  onChange: () => toggle(entry.member.membershipId),
-                }),
-                h(Avatar, { bot: entry.bot, size: 22 }),
-                entry.bot.name,
-              ),
-            ),
-          ),
-        ),
-        h(
-          'div',
-          { style: S.row },
-          h(
-            Field,
-            { label: '轮数' },
-            h(
-              'select',
-              { style: S.select, value: rounds, onChange: (event) => setRounds(Number(event.target.value)) },
-              [1, 2, 3, 4, 5].map((value) => h('option', { key: value, value }, pluralUi('1 轮', '{count} 轮', value))),
-            ),
-          ),
-          h(
-            Field,
-            { label: '结束总结' },
-            h(
-              'label',
-              { style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, paddingTop: 6 } },
-              h('input', { type: 'checkbox', checked: summarize, onChange: (event) => setSummarize(event.target.checked) }),
-              '结束后由第一位成员输出共识/分歧/待决',
-            ),
-          ),
-        ),
-      );
+        h('div', { id: 'bt-discussion-config', role: 'tabpanel', 'aria-labelledby': 'bt-mode-' + draft.mode },
+          labelField('topic', '讨论议题', h('textarea', { id: 'bt-discussion-topic', style: S.input, rows: 3, maxLength: 2000, required: true, value: draft.topic,
+            'aria-describedby': 'bt-discussion-topic-hint', 'aria-invalid': draft.topic.length > 2000, onChange: event => set('topic', event.target.value), placeholder: '例如：如何看待把 Agent 群聊接入现有 IM？' })),
+          h('p', { id: 'bt-discussion-topic-hint', className: 'bt-discussion-hint' }, uiT('议题必填，最多 2000 字符（{count}/2000）', { count: draft.topic.length })),
+          draft.mode === 'discussion' ? h('fieldset', { className: 'bt-discussion-members' }, h('legend', null, '参与成员与发言顺序'),
+            ordered.map(({ member, bot }) => { const index = draft.membershipIds.indexOf(member.membershipId); return h('div', { key: member.membershipId, className: 'bt-discussion-member' },
+              h('label', null, h('input', { type: 'checkbox', checked: index >= 0, disabled: member.enabled === false, onChange: () => set('membershipIds', index >= 0 ? draft.membershipIds.filter(id => id !== member.membershipId) : draft.membershipIds.concat(member.membershipId)) }),
+                h('span', { raw: true }, (index >= 0 ? (index + 1) + '. ' : '') + bot.name), member.enabled === false ? h('span', { className: 'bt-discussion-hint' }, '已停用') : null),
+              index >= 0 ? h('div', { className: 'bt-discussion-actions' }, [-1, 1].map(direction => h('button', { key: direction, type: 'button', style: S.smallBtn,
+                disabled: direction < 0 ? index === 0 : index === draft.membershipIds.length - 1, 'aria-label': uiT(direction < 0 ? '上移 {name}' : '下移 {name}', { name: bot.name }), onClick: () => moveMember(member.membershipId, direction) }, direction < 0 ? '↑' : '↓'))) : null); }))
+            : h('div', { className: 'bt-discussion-grid' }, selectMember('proMembershipId', '正方成员', [draft.conMembershipId, draft.judgeMembershipId]), selectMember('conMembershipId', '反方成员', [draft.proMembershipId, draft.judgeMembershipId]), input('proPosition', '正方立场', true), input('conPosition', '反方立场', true), selectMember('judgeMembershipId', '裁判（可选）', [draft.proMembershipId, draft.conMembershipId], true)),
+          h('div', { className: 'bt-discussion-grid' }, labelField('rounds', '轮数', h('select', { id: 'bt-discussion-rounds', style: S.select, value: draft.rounds, onChange: event => set('rounds', Number(event.target.value)) }, discussionRoundOptions(draft).map(value => h('option', { key: value, value }, draft.mode === 'discussion' && draft.format === 'structured' ? uiT({ 2: '快速 · 2 轮', 3: '标准 · 3 轮', 5: '深入 · 5 轮' }[value]) : pluralUi('1 轮', '{count} 轮', value))))),
+            draft.mode === 'discussion' ? selectMember('summaryMembershipId', '小结与总结成员') : null),
+          draft.mode === 'discussion' ? h('label', { className: 'bt-discussion-check' }, h('input', { type: 'checkbox', checked: draft.summarize, onChange: event => set('summarize', event.target.checked) }), '结束后生成最终总结') : null,
+          h('p', { className: 'bt-discussion-hint' }, draft.mode === 'debate' ? '双方开篇、交叉问答、总结陈词；设置裁判后生成裁决。' : draft.format === 'structured' ? '按观点、质询、收敛推进，每两轮之间生成小结。' : '按选定顺序逐轮自由讨论。'),
+          h('p', { className: 'bt-discussion-estimate', role: 'status' }, uiT('预计 {count} 次模型发言', { count: discussionEstimate(draft) })),
+          draft.topic.trim() && validation ? h('p', { role: 'status', className: 'bt-discussion-hint' }, validation) : null,
+          h('details', { className: 'bt-discussion-advanced' }, h('summary', null, '高级设置'),
+            draft.mode === 'discussion' ? labelField('format', '讨论形式', h('select', { id: 'bt-discussion-format', style: S.select, value: draft.format, onChange: event => set('format', event.target.value) }, h('option', { value: 'structured' }, '结构化讨论'), h('option', { value: 'classic' }, '经典自由讨论'))) : null,
+            input('goal', '讨论目标', true), input('background', '背景材料', true),
+            h(DiscussionReferences, { id: 'bt-discussion-refs', value: draft.references, onChange: value => set('references', value), messages }),
+            h('div', { className: 'bt-discussion-grid' },
+              labelField('responseLength', '发言长度', h('select', { id: 'bt-discussion-responseLength', style: S.select, value: draft.responseLength, onChange: event => set('responseLength', event.target.value) }, [['short', '简短'], ['standard', '标准'], ['detailed', '详细']].map(([value, label]) => h('option', { key: value, value }, label)))),
+              labelField('language', '输出语言', h('select', { id: 'bt-discussion-language', style: S.select, value: draft.language, onChange: event => set('language', event.target.value) }, [['auto', '自动'], ['zh', '中文'], ['en', '英文']].map(([value, label]) => h('option', { key: value, value }, label))))),
+            draft.mode === 'discussion' ? h('fieldset', { className: 'bt-discussion-members' }, h('legend', null, '成员视角（可选）'), draft.membershipIds.map(id => { const entry = candidates.find(entry => entry.member.membershipId === id); return entry ? h('div', { key: id, className: 'bt-discussion-field' },
+              h('label', { htmlFor: 'bt-perspective-' + id, raw: true }, entry.bot.name), h('input', { id: 'bt-perspective-' + id, style: S.input, maxLength: 500, value: draft.perspectives[id] || '', onChange: event => set('perspectives', { ...draft.perspectives, [id]: event.target.value }) })) : null; })) : null)));
     }
     function DiscussionDialog(props) {
-      const values = [];
-      const group = props && props.group;
-      if (group) values.push(group.title, group.topic);
-      for (const member of (props && props.members) || []) {
-        const bot = member && member.bot;
-        if (bot) values.push(bot.name);
-      }
-      return withContent(values, () => renderDiscussionDialog(props));
+      return withContent([props.group?.title, props.group?.topic, ...(props.bots || []).map(bot => bot.name)], () => renderDiscussionDialog(props));
     }
 
+
+    function discussionSpeakerName(record, membershipId, members = [], bots = []) {
+      const snapshots = Array.isArray(record.participants) ? record.participants : Object.values(record.participants || {});
+      const snapshot = snapshots.find(member => member.membershipId === membershipId);
+      const member = members.find(member => member.membershipId === membershipId);
+      return snapshot?.name || snapshot?.botName || snapshot?.botNameSnapshot || snapshot?.bot?.name || bots.find(bot => bot.botId === member?.botId)?.name || membershipId || uiT('等待发言');
+    }
+    function discussionProgressInfo(record) {
+      const steps = record.steps || [];
+      const current = steps.find(step => step.stepId === record.currentStepId) || steps.find(step => step.status === 'running') || steps.find(step => step.status === 'error') || steps.find(step => step.status === 'pending');
+      const next = steps.find(step => step.status === 'pending' && step.stepId !== current?.stepId);
+      return { current, next, completed: steps.filter(step => ['done', 'skipped'].includes(step.status)).length, total: steps.length };
+    }
+    function discussionControlPayload(record, group, operation, extra = {}, requestId = discussionRequestId()) {
+      return { discussionId: record.discussionId, operation, expectedConversationId: currentConversationId(group), expectedRevision: Number(record.revision || 0), requestId, ...extra };
+    }
+    function DiscussionProgress({ discussion, group, members = [], bots = [], messages = [], onUpdated, onConversationError, onView }) {
+      const [busy, setBusy] = React.useState('');
+      const [error, setError] = React.useState('');
+      const [adding, setAdding] = React.useState(false);
+      const [contextText, setContextText] = React.useState('');
+      const [references, setReferences] = React.useState('');
+      const inFlight = React.useRef(false);
+      const latest = React.useRef(null);
+      latest.current = { discussion, group };
+      if (!discussion) return null;
+      const info = discussionProgressInfo(discussion);
+      const active = isActiveDiscussion(discussion);
+      const hasError = (discussion.steps || []).some(step => step.status === 'error');
+      const current = discussionIsCurrent(discussion, group);
+      const control = async (operation, extra = {}) => {
+        if (inFlight.current || !current || !active || latest.current.discussion.discussionId !== discussion.discussionId || !discussionIsCurrent(discussion, latest.current.group)) return;
+        inFlight.current = true; setBusy(operation); setError('');
+        try {
+          const result = discussionActionResult(await api.action('discussion.control', discussionControlPayload(discussion, group, operation, extra)));
+          const updated = result.discussion || (result.discussionId ? result : null);
+          if (updated) onUpdated?.(updated);
+          if (operation === 'add_context') { setAdding(false); setContextText(''); setReferences(''); }
+        } catch (reason) {
+          onConversationError?.(reason, group.groupId);
+          if (reason.details?.discussion) onUpdated?.(reason.details.discussion);
+          setError(String(reason?.message || reason));
+          // A conflict refreshes the snapshot, but never silently retries the user's command.
+          try { const result = discussionActionResult(await api.action('discussion.get', { groupId: group.groupId, discussionId: discussion.discussionId })); if (result.discussion) onUpdated?.(result.discussion); } catch { /* the original failure remains visible */ }
+        } finally { inFlight.current = false; setBusy(''); }
+      };
+      const button = (operation, label, disabled = false) => h('button', { key: operation, type: 'button', style: S.smallBtn, disabled: !!busy || disabled, onClick: () => void control(operation) }, label);
+      const description = step => [discussionPhaseLabel(step?.phase || discussion.phase), discussionSideLabel(step?.side), discussionSpeakerName(discussion, step?.membershipId || discussion.currentSpeaker, members, bots)].filter(Boolean).join(' · ');
+      return withContent([discussion.topic, ...bots.map(bot => bot.name)], () => h('section', { className: 'bt-discussion-progress', 'aria-label': '讨论进度', 'data-discussion-id': discussion.discussionId },
+        h('div', { className: 'bt-discussion-heading' }, h('strong', null, discussion.mode === 'debate' ? '1v1 辩论' : '多成员讨论'),
+          h('span', { className: 'bt-discussion-badge' }, DISCUSSION_STATUS_LABELS[discussion.status] || discussion.status), h('span', { className: 'bt-discussion-topic', raw: true }, discussion.topic),
+          h('button', { type: 'button', style: S.smallBtn, onClick: () => onView?.(discussion.discussionId) }, '查看完整记录')),
+        active ? h('div', { className: 'bt-discussion-status', role: 'status', 'aria-live': 'polite' }, h('span', { raw: true }, description(info.current)),
+          h('span', null, uiT('第 {current}/{total} 轮', { current: Math.min(discussion.currentRound || 1, discussion.rounds || 1), total: discussion.rounds || 1 })),
+          info.total ? h('span', null, uiT('已完成 {done}/{total} 步', { done: info.completed, total: info.total })) : null,
+          info.next ? h('span', { raw: true }, uiT('下一步：{step}', { step: description(info.next) })) : null) : null,
+        active && info.total ? h('progress', { max: info.total, value: info.completed, 'aria-label': '讨论进度' }) : null,
+        active && current ? h('div', { className: 'bt-discussion-actions' },
+          discussion.status === 'running' ? button('pause', '暂停') : null,
+          discussion.status === 'paused' ? button('resume', '继续', hasError) : null,
+          discussion.status === 'paused' && hasError ? button('retry', '重试当前步骤') : null,
+          ['running', 'pausing', 'paused'].includes(discussion.status) ? button('finish', '提前收尾') : null,
+          button('stop', discussion.status === 'stopping' ? '检查停止状态' : '停止讨论'),
+          ['running', 'pausing', 'paused'].includes(discussion.status) ? h('button', { type: 'button', style: S.smallBtn, disabled: !!busy, 'aria-expanded': adding, 'aria-controls': 'bt-discussion-context-' + discussion.discussionId, onClick: () => setAdding(value => !value) }, '补充上下文') : null) : null,
+        !current ? h('p', { className: 'bt-discussion-hint' }, '历史会话仅可查看') : null,
+        discussion.stopPendingReason || discussion.error ? h('p', { role: 'status', className: 'bt-discussion-hint', raw: true }, discussion.stopPendingReason || discussion.error) : null,
+        discussion.pauseReason || discussion.stopReason ? h('p', { className: 'bt-discussion-hint' }, discussionReasonLabel(discussion.pauseReason || discussion.stopReason)) : null,
+        error ? h('p', { role: 'alert', className: 'bt-discussion-error', raw: true }, error) : null,
+        adding && active && current ? h('div', { id: 'bt-discussion-context-' + discussion.discussionId, className: 'bt-discussion-context' },
+          h('label', { htmlFor: 'bt-context-text-' + discussion.discussionId }, '补充内容'), h('textarea', { id: 'bt-context-text-' + discussion.discussionId, style: S.input, rows: 3, maxLength: 12000, value: contextText, onChange: event => setContextText(event.target.value) }),
+          h(DiscussionReferences, { id: 'bt-context-refs-' + discussion.discussionId, value: references, onChange: setReferences, messages }),
+          h('button', { type: 'button', style: S.smallBtn, disabled: !!busy || !(contextText.trim() || parseDiscussionReferences(references).length), onClick: () => void control('add_context', { text: contextText.trim(), contextMessageIds: parseDiscussionReferences(references) }) }, '添加上下文')) : null));
+    }
+    function discussionReasonLabel(reason) {
+      return uiT({ user: '由用户请求', 'member-error': '成员执行失败', 'step-error': '步骤执行失败', 'execution-error': '步骤执行失败', 'dispatch-error': '步骤派发失败', 'start-error': '讨论启动失败', restart: '重启后等待恢复', recovery: '等待恢复', 'host-restarted': '重启后等待恢复' }[reason] || reason || '');
+    }
+    function discussionVerdictLabel(record) {
+      if (record?.mode !== 'debate') return '';
+      if (!record.judgeMembershipId) return uiT('未设置裁判，不判定胜负');
+      return uiT({ pro: '正方胜', con: '反方胜', tie: '平局', insufficient: '证据不足，无法判定' }[record.verdict] || '尚无裁决');
+    }
+    function DiscussionResult({ discussion, discussionId = discussion?.discussionId, group, bots = [], deletedMessageIds = {}, onUpdated, onJumpToMessage, initiallyExpanded = false }) {
+      const [expanded, setExpanded] = React.useState(initiallyExpanded);
+      const [detail, setDetail] = React.useState(null);
+      const [error, setError] = React.useState('');
+      const [loading, setLoading] = React.useState(false);
+      const [refresh, setRefresh] = React.useState(0);
+      const detailRef = React.useRef(null);
+      React.useEffect(() => {
+        if (!expanded || !discussionId || !group) return undefined;
+        let cancelled = false;
+        setLoading(true); setError('');
+        api.action('discussion.get', { groupId: group.groupId, discussionId }).then(response => {
+          if (cancelled) return;
+          const next = discussionActionResult(response);
+          if (!next.discussion || next.discussion.discussionId !== discussionId || next.discussion.groupId !== group.groupId) throw new Error(uiT('讨论记录不匹配，请重试'));
+          const previous = detailRef.current;
+          if (previous?.discussion.discussionId === discussionId && Number(previous.discussion.revision || 0) > Number(next.discussion.revision || 0)) return;
+          detailRef.current = next; setDetail(next); onUpdated?.(next.discussion);
+        }).catch(reason => { if (!cancelled) setError(String(reason?.message || reason)); }).finally(() => { if (!cancelled) setLoading(false); });
+        return () => { cancelled = true; };
+      }, [expanded, discussionId, group?.groupId, discussion?.revision, refresh]);
+      const record = newerDiscussion(detail?.discussion?.discussionId === discussionId ? detail.discussion : null, discussion) || detail?.discussion;
+      const transcript = detail?.discussion?.discussionId === discussionId && Array.isArray(detail.transcript) ? detail.transcript : [];
+      const visible = transcript.filter(message => !deletedMessageIds[message.messageId]);
+      const resultPhases = ['checkpoint', 'summary', 'closing', 'judgement'];
+      const groups = resultPhases.map(phase => {
+        const steps = (record?.steps || []).filter(step => step.phase === phase && step.status !== 'skipped');
+        const ids = new Set(steps.flatMap(step => step.messageIds || []));
+        const messages = visible.filter(message => message.author?.type !== 'system' && (record?.steps?.length ? ids.has(message.messageId) : (message.meta?.phase || (message.meta?.summary ? 'summary' : '')) === phase));
+        return { phase, messages };
+      }).filter(group => group.messages.length);
+      const missing = [...new Set([...(detail?.missingMessageIds || []), ...(record?.steps || []).flatMap(step => step.messageIds || [])])].filter(id => deletedMessageIds[id] || detail && !transcript.some(message => message.messageId === id));
+      const renderSource = message => h('article', { key: message.messageId, className: 'bt-discussion-source', 'data-source-id': message.messageId },
+        h('div', { className: 'bt-discussion-heading' }, h('strong', { raw: true }, authorNameOf(message, bots)), h('span', { className: 'bt-discussion-hint', raw: true }, discussionMessageLabels(message).join(' · ')),
+          h('button', { type: 'button', style: S.smallBtn, onClick: () => onJumpToMessage?.(message.messageId, transcript) }, uiT('跳转原文 #{seq}', { seq: message.seq }))),
+        h('div', { className: 'bt-discussion-source-body' }, renderMarkdown(message.text || '')));
+      return withContent([record?.topic], () => h('section', { className: 'bt-discussion-result', 'aria-label': '讨论结果' },
+        h('div', { className: 'bt-discussion-heading' }, h('strong', null, record?.mode === 'debate' ? '辩论结果' : '讨论结果'),
+          h('span', { className: 'bt-discussion-topic', raw: true }, record?.topic || ''),
+          h('button', { type: 'button', style: S.smallBtn, 'aria-expanded': expanded, 'aria-controls': 'bt-discussion-result-' + discussionId, onClick: () => setExpanded(value => !value) }, expanded ? '收起完整记录' : '展开完整记录')),
+        record?.mode === 'debate' ? h('p', { className: 'bt-discussion-verdict' }, discussionVerdictLabel(record)) : null,
+        expanded ? h('div', { id: 'bt-discussion-result-' + discussionId },
+          h('div', { className: 'bt-discussion-actions' }, h('button', { type: 'button', style: S.smallBtn, disabled: loading, onClick: () => setRefresh(value => value + 1) }, '刷新记录')),
+          loading ? h('p', { role: 'status' }, '加载完整讨论记录…') : null,
+          error ? h('p', { role: 'alert', className: 'bt-discussion-error', raw: true }, error) : null,
+          groups.map(({ phase, messages }) => h('section', { key: phase, 'data-result-phase': phase }, h('h4', null, discussionPhaseLabel(phase)), messages.map(renderSource))),
+          !groups.length && detail?.summary ? h('div', { className: 'bt-discussion-source-body' }, renderMarkdown(detail.summary)) : null,
+          !loading && !error && detail && !groups.length && !detail.summary ? h('p', { className: 'bt-discussion-hint' }, '尚无总结内容，可展开原始记录查看发言。') : null,
+          missing.length ? h('p', { role: 'status', className: 'bt-discussion-hint' }, pluralUi('1 条原文已删除或不可用', '{count} 条原文已删除或不可用', missing.length)) : null,
+          visible.length ? h('details', { className: 'bt-discussion-transcript' }, h('summary', null, uiT('全部原始消息（{count}）', { count: visible.length })), visible.map(renderSource)) : null) : null));
+    }
 
     /** Re-render the page when DSH switches the UI language. */
     function useLocaleRevision() {
@@ -11998,8 +12342,20 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       const openFolderCreate = () => dispatch({ type: 'dialog', dialog: { kind: 'folder' } });
       const openFolderEdit = (folder) => dispatch({ type: 'dialog', dialog: { kind: 'folder', folder } });
       const openReview = (message) => { if (!historicalMessage(message, activeGroup)) dispatch({ type: 'dialog', dialog: { kind: 'review', target: message } }); };
-      const openDiscussion = () =>
-        dispatch({ type: 'dialog', dialog: { kind: 'discussion', defaultTopic: '' } });
+      const currentDiscussion = state.discussions?.[activeGroup?.groupId] || null;
+      const hasCurrentDiscussion = isActiveDiscussion(currentDiscussion) && discussionIsCurrent(currentDiscussion, activeGroup);
+      const openDiscussionDetail = discussionId => dispatch({ type: 'dialog', dialog: { kind: 'discussion-detail', discussionId } });
+      const openDiscussion = () => {
+        if (hasCurrentDiscussion) openDiscussionDetail(currentDiscussion.discussionId);
+        else dispatch({ type: 'dialog', dialog: { kind: 'discussion', defaultTopic: '' } });
+      };
+      const updateDiscussion = discussion => dispatch({ type: 'discussion', discussion });
+      const jumpToDiscussionMessage = (messageId, transcript) => {
+        if (isDeletedMessage(state, activeGroup.groupId, messageId)) { dispatch({ type: 'flash', message: '原文已删除或不可用' }); return; }
+        dispatch({ type: 'prependMessages', groupId: activeGroup.groupId, messages: transcript || [], hasMore: state.hasMoreByGroup[activeGroup.groupId] });
+        dispatch({ type: 'dialog', dialog: null });
+        requestAnimationFrame(() => requestAnimationFrame(() => jumpToMessage(messageId)));
+      };
 
       const doRevise = async (reviewMessage) => {
         if (historicalMessage(reviewMessage, activeGroup)) return;
@@ -12038,18 +12394,6 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           dispatch({ type: 'error', message: String(error && error.message ? error.message : error) });
         } finally {
           deletingMessageIds.current.delete(messageId);
-        }
-      };
-      const stopDiscussion = async () => {
-        const discussion = state.discussions[activeGroup.groupId];
-        if (!discussion) return;
-        try {
-          await api.action('discussion.stop', { groupId: activeGroup.groupId, expectedConversationId: currentConversationId(activeGroup), discussionId: discussion.discussionId });
-          dispatch({ type: 'messagesTick' });
-          dispatch({ type: 'refreshTick' });
-        } catch (error) {
-          mergeConversationError(error, activeGroup.groupId);
-          dispatch({ type: 'error', message: String(error && error.message ? error.message : error) });
         }
       };
       const loadEarlier = async () => {
@@ -12351,8 +12695,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                           )
                         : h(
                             'button',
-                            { type: 'button', className: 'bt-header-btn', style: S.headerBtn, onClick: openDiscussion, title: '发起多轮讨论' },
-                            '讨论',
+                            { type: 'button', className: 'bt-header-btn', style: S.headerBtn, onClick: openDiscussion, title: hasCurrentDiscussion ? '查看当前讨论' : '发起讨论或辩论' },
+                            hasCurrentDiscussion ? '查看当前讨论' : '讨论',
                           ),
                       h(
                         'button',
@@ -12548,6 +12892,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                               onRevise: activeIsDirect ? undefined : doRevise,
                               onRetry: doRetry,
                               onJumpToMessage: jumpToMessage,
+                              onOpenDiscussion: openDiscussionDetail,
                               onOpenSession: (sessionId, nativeSession) =>
                                 openBotHistory(sessionId, (message) => dispatch({ type: 'error', message }), activeGroup.groupId, typeof nativeSession === 'boolean' ? { id: sessionId, native: nativeSession, ...(nativeSession ? {} : { origin: 'subagent' }) } : undefined),
                             }),
@@ -12564,6 +12909,9 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                         )
                       : null,
                   ),
+                  !activeIsDirect && currentDiscussion ? h('div', { className: 'bt-discussion-dock' },
+                    h(DiscussionProgress, { key: currentDiscussion.discussionId, discussion: currentDiscussion, group: activeGroup, members, bots: state.bots, messages, onUpdated: updateDiscussion, onConversationError: mergeConversationError, onView: openDiscussionDetail }),
+                    !hasCurrentDiscussion ? h(DiscussionResult, { key: 'result-' + currentDiscussion.discussionId, discussion: currentDiscussion, group: activeGroup, bots: state.bots, deletedMessageIds: state.deletedMessageIdsByGroup[activeGroup.groupId], onUpdated: updateDiscussion, onJumpToMessage: jumpToDiscussionMessage }) : null) : null,
                   h(Composer, {
                     active: !sessionTarget,
                     conversationControlRef,
@@ -12645,14 +12993,13 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                   group: activeGroup,
                   members,
                   bots: state.bots,
-                  discussion: state.discussions[activeGroup.groupId] || null,
+                  discussion: state.discussions?.[activeGroup.groupId] || null,
                   usage: activeGroup.usage || null,
                   onAdd: openMemberAdd,
                   onCollapse: () => dispatch({ type: 'toggleRightPanel' }),
                   onEdit: openBotEdit,
                   onViewSession: openMemberHistory,
                   onOpenNativeSession: openMemberHistory,
-                  onStopDiscussion: stopDiscussion,
                 })
             : null,
           messageMenu && messageMenu.groupId === state.activeGroupId && !isDeletedMessage(state, messageMenu.groupId, messageMenu.message.messageId)
@@ -12749,11 +13096,15 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               group: activeGroup,
               members,
               bots: state.bots,
+              messages,
               defaultTopic: dialog.defaultTopic || '',
               onClose: closeDialog,
-              onSaved: afterChange,
+              onSaved: result => { if (result?.discussion || result?.discussionId) updateDiscussion(result.discussion || result); afterChange(); },
             })
           : null,
+        dialog && dialog.kind === 'discussion-detail' && activeGroup
+          ? h(Modal, { title: '讨论详情', width: 760, onClose: closeDialog },
+              h(DiscussionResult, { key: dialog.discussionId, discussion: currentDiscussion?.discussionId === dialog.discussionId ? currentDiscussion : null, discussionId: dialog.discussionId, group: activeGroup, bots: state.bots, deletedMessageIds: state.deletedMessageIdsByGroup[activeGroup.groupId], onUpdated: updateDiscussion, onJumpToMessage: jumpToDiscussionMessage, initiallyExpanded: true })) : null,
         state.loading ? h('div', { className: 'bt-root', style: { ...S.overlay, background: 'var(--bt-loading)' } }, h('div', { style: { fontSize: 13, color: 'var(--bt-text-2)' } }, '加载 Bot Team…')) : null,
       );
       // Keep the chat mounted so returning restores its draft, scroll and source

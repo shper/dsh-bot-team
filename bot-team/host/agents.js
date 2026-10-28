@@ -483,7 +483,7 @@ export class AgentPool {
     return () => { if (this.claimHandler === handler) this.claimHandler = undefined; };
   }
 
-  async submit(agent, input) {
+  async submit(agent, input, assertActive = () => {}) {
     if (this.disposed) throw new Error('Bot AgentPool is disposed');
     const member = this.memberForSession(agent.id);
     if (!member) throw new Error('Bot input targets an unmapped or stale conversation native session');
@@ -493,6 +493,7 @@ export class AgentPool {
       this.assertPreparing(member.membershipId, version, expected);
       this.assertGeneration(expected, { current: true });
       if (this.ctx.agents.get(agent.id) !== agent) throw new Error('Bot session was disposed during input admission');
+      assertActive();
     };
     check();
     const pending = Promise.resolve().then(async () => {

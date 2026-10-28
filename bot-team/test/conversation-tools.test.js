@@ -212,6 +212,9 @@ test('registered discussion captures admission and an awaited old discussion nev
     f.service.engine.scheduleDiscussion(discussionId);
     assert.deepEqual(f.repo.getDiscussion(discussionId), historical);
     assert.equal(f.service.engine.queue.length, 0);
+    // Restore the actual terminal state after probing rejection of stale work.
+    // A waiter returning true alone must not turn a running v2 record into done.
+    await f.repo.putDiscussion({ ...historical, status: 'done' });
     return true;
   });
   const result = await f.invoke('bot_team_discuss', { topic: 'Original topic', members: ['Alpha'], rounds: 1 });

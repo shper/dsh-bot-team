@@ -23,6 +23,8 @@ import {
   parseReviewVerdict,
 } from './prompt.js';
 import { newId, now, withTimeout } from './util.js';
+import { DiscussionRunner } from './discussion-runner.js';
+import { isDiscussionActive } from './discussion-flow.js';
 import { LastRequestMetrics } from './message-metrics.js';
 import { currentConversationId, conversationFloor, conversationIdOf, isCurrentMemberSession } from './conversations.js';
 
@@ -31,7 +33,7 @@ const executionTurn = (value) => Number.isSafeInteger(value) && value > 0;
 const executionEvent = (type) => typeof type === 'string';
 
 export class Engine {
-  constructor({ ctx, repo, pool, personas, bus, config, logger, quotaGuard, taskHook, workspaceGuard, assertAdmission }) {
+  constructor({ ctx, repo, pool, personas, bus, config, logger, quotaGuard, taskHook, workspaceGuard, assertAdmission, discussionGuard }) {
     this.ctx = ctx;
     this.repo = repo;
     this.pool = pool;
@@ -44,6 +46,9 @@ export class Engine {
     this.workspaceGuard = workspaceGuard || (() => {});
     this.assertAdmission = assertAdmission || this.workspaceGuard;
     this.pendingWork = new Set();
+    this.discussionGuard = discussionGuard || (async () => {});
+    this.discussionRunner = new DiscussionRunner(this);
+    this.pumpBlocks = new Set();
 
     this.queue = [];
     this.running = new Map(); // membershipId -> job
@@ -56,7 +61,7 @@ export class Engine {
     this.offClaim = pool.attachClaimHandler?.((payload) => this.onInboxClaim(payload));
     if (ctx.get?.('goals')) this.offGoal = ctx.on('goal/activation-changed', ({ sessionId }) => {
       const job = this.activeBySession.get(sessionId);
-      queueMicrotask(() => this.checkNativeGoal(sessionId, job));
+      queueMicrotask(() => { this.checkNativeGoal(sessionId, job); this.discussionRunner.nativeSettled(sessionId); });
     }, { global: true });
   }
 
@@ -142,6 +147,8 @@ export class Engine {
   }
 
   async advanceMemberCursor(job) {
+    // These prompts contain an explicit transcript, not the ordinary chat context.
+    if (job.discussionId || ['discussion', 'summary', 'discussion_step'].includes(job.kind)) return;
     this.assertJobCurrent(job);
     const member = this.repo.getMember(job.membershipId);
     const lastSeenSeq = Math.max(member.lastSeenSeq || 0, conversationFloor(this.repo, job.groupId), job.triggerSeq || 0);
@@ -338,7 +345,7 @@ export class Engine {
   }
 
   pump(groupId) {
-    if (this.disposed) return;
+    if (this.disposed || this.pumpBlocks.has(groupId)) return;
     const runnable = [];
     const busy = new Set(
       [...this.running.values()].filter((job) => job.groupId === groupId).map((job) => job.membershipId),
@@ -346,6 +353,10 @@ export class Engine {
     let running = this.runningCount(groupId);
     for (const job of this.queue) {
       if (job.groupId !== groupId) continue;
+      if (job.stepId) {
+        const discussion = this.repo.getDiscussion(job.discussionId);
+        if (!discussion || this.discussionRunner.closed.has(job.discussionId) || !['running', 'finalizing'].includes(discussion.status)) continue;
+      }
       if (running >= this.config.maxParallelTurns) break;
       if (busy.has(job.membershipId)) continue;
       busy.add(job.membershipId);
@@ -381,8 +392,9 @@ export class Engine {
       job.finished = true;
       job.state = 'error';
       job.error = String(error?.message || error);
-      job.done = Promise.resolve();
-      job.resolveDone?.();
+      job.done = job.stepId ? this.discussionRunner.finished(job).catch(failure => this.discussionRunner.failed(job.discussionId, failure)) : Promise.resolve();
+      job.done.then(() => job.resolveDone?.());
+      if (!job.stepId && job.discussionId) this.advanceDiscussion(job.discussionId, false);
       this.checkIdle(job.groupId);
       return;
     }
@@ -470,6 +482,8 @@ export class Engine {
     try {
       this.admitConversation(job.groupId, job.conversationId);
       this.assertJobTargets(job);
+      if (job.stepId) await this.discussionRunner.prepare(job);
+      if (job.finished) return;
       const previousSessionId = member.sessionId;
       const previousConversationId = member.sessionConversationId;
       const agent = await this.pool.ensure(member.membershipId);
@@ -503,7 +517,8 @@ export class Engine {
       this.admitConversation(job.groupId, job.conversationId);
       this.assertJobCurrent(job);
       this.assertJobTargets(job);
-      const prompt = this.buildPrompt(job, bot, context);
+      if (job.stepId) this.discussionRunner.assertDispatch(job);
+      const prompt = job.promptText ?? this.buildPrompt(job, bot, context);
       job.promptPreview = prompt.slice(0, 2000);
       const inputMessageId = newId('umsg');
       // Session.seq is the next accepted event index, an inclusive search floor.
@@ -519,6 +534,8 @@ export class Engine {
       this.assertJobCurrent(job);
       this.assertJobTargets(job);
 
+      if (job.stepId) this.discussionRunner.assertDispatch(job);
+
       // M0 P1: followup puts the EXACT value into the durable inbox — it must be
       // a complete UserMessage (role + id + content + source). Claims may fire
       // synchronously, so arm correlation only after the write has succeeded.
@@ -531,14 +548,24 @@ export class Engine {
           ? { kind: 'user' }
           : { kind: 'bot-team', groupId: job.groupId, ...(job.conversationId ? { conversationId: job.conversationId } : {}), jobId: job.jobId },
       };
-      if (this.pool.submit) await this.pool.submit(agent, input);
-      else await agent.followup(input);
+      const assertActive = () => {
+        if (job.finished) throw Object.assign(new Error('本次执行已结束'), { code: 'stopped' });
+        this.assertJobCurrent(job); this.assertJobTargets(job);
+        if (job.stepId) this.discussionRunner.assertDispatch(job);
+      };
+      if (this.pool.submit) await this.pool.submit(agent, input, assertActive);
+      else { assertActive(); await agent.followup(input); }
+      if (job.finished && job.stepId) this.withdrawDiscussionInput(job);
       await job.done;
     } catch (error) {
       this.finishJob(job, 'error', String(error && error.message ? error.message : error));
     } finally {
       if (job.timer) clearTimeout(job.timer);
       this.pendingWork.delete(job);
+      if (job.finished && job.stepId) {
+        this.withdrawDiscussionInput(job);
+        if (this.repo.getDiscussion(job.discussionId)?.status === 'stopping') this.discussionRunner.checkStopping(job.discussionId);
+      }
     }
   }
 
@@ -563,6 +590,7 @@ export class Engine {
     // Do not use putMessage here: it deliberately swallows storage failures.
     const saved = this.repo.putMessageStrict(message);
     await saved;
+    if (job.stepId) await this.discussionRunner.execution(job);
     if (this.isCurrentJob(job)) this.emitExecutionUpdated(job, seq, true);
   }
 
@@ -572,10 +600,11 @@ export class Engine {
 
   executionFailed(job, error) {
     if (job.finished) return;
+    const scoped = this.activeBySession.get(job.sessionId) === job && (!job.stepId || job.turn !== null);
     this.finishJob(job, 'error', `无法保存执行记录：${String(error?.message || error)}`);
-    if (!job.nativeObserved && job.submitted && job.execution.endSeq === null) {
+    if (scoped && !job.nativeObserved && job.submitted && job.execution.endSeq === null) {
       try {
-        this.ctx.agents.get(job.sessionId)?.cancel?.({ kind: 'user' }, { keepInbox: false });
+        this.ctx.agents.get(job.sessionId)?.cancel?.({ kind: 'user' }, { keepInbox: Boolean(job.stepId) });
       } catch (cancelError) {
         this.logger?.warn?.(`bot-team: cancel agent failed: ${String(cancelError)}`);
       }
@@ -631,12 +660,19 @@ export class Engine {
           this.isCurrentRecord(message, member.groupId) && message.author?.membershipId === member.membershipId &&
           message.meta?.execution?.sessionId === agent.id &&
           message.meta.execution.turn === start.data.turn && message.meta.execution.startSeq === start.seq);
-        const kind = previous?.meta?.taskPhase === 'revision' ? 'task_revision' : previous?.kind || 'native';
+        const discussion = previous?.meta?.discussionId ? this.repo.getDiscussion?.(previous.meta.discussionId) : null;
+        const linked = discussion && isDiscussionActive(discussion) && this.isCurrentRecord(discussion);
+        const kind = linked ? (previous.meta.stepId ? 'discussion_step' : previous.meta.summary ? 'summary' : 'discussion')
+          : previous?.meta?.taskPhase === 'revision' ? 'task_revision' : previous?.kind || 'native';
         const job = {
           jobId: previous?.meta?.execution?.jobId || newId('job'),
           groupId: member.groupId, conversationId, membershipId: member.membershipId,
           triggerSeq: member.lastSeenSeq || 0, triggerMessageId: previous?.replyTo || null,
           kind, messageKind: previous?.kind, meta: { ...(previous?.meta || {}), nativeSession: true },
+          ...(linked ? { discussionId: discussion.discussionId, stepId: previous.meta.stepId, attemptId: previous.meta.attemptId, round: previous.meta.round } : {}),
+          previousReplies: linked ? this.repo.messagesOf(member.groupId).filter(message =>
+            message.messageId !== previous?.messageId && message.meta?.execution?.jobId === previous?.meta?.execution?.jobId &&
+            message.meta?.attemptId === previous?.meta?.attemptId).map(message => message.messageId) : [],
         };
         this.startJob(job, { session: agent.session, event: start, message: previous });
         for (const event of turnEvents) this.onSessionEvent(agent.session, event);
@@ -731,6 +767,7 @@ export class Engine {
     if (this.disposed) return;
     const live = this.ctx.agents.get(session.id);
     if (live?.session && live.session !== session) return;
+    if (event.type === 'turn/end') this.discussionRunner.nativeSettled(session.id);
     const job = this.activeBySession.get(session.id) || this.adoptNativeTurn(session, event);
     if (!job || job.finished || !this.isCurrentJob(job)) return;
     if (job.ending) { job.following.push({ session, event }); return; }
@@ -886,9 +923,32 @@ export class Engine {
     }
   }
 
+  withdrawDiscussionInput(job) {
+    if (!job?.stepId || !job.sessionId || !job.execution?.inputMessageId) return 0;
+    if (this.activeBySession.get(job.sessionId) !== job && (!this.repo || !this.isCurrentRecord(job))) return 0;
+    const inbox = this.ctx.agents.get(job.sessionId)?.inbox;
+    if (typeof inbox?.splice !== 'function') return 0;
+    let removed = 0;
+    try {
+      for (const [lane, key] of [['next-turn', 'nextTurn'], ['next-step', 'nextStep']]) {
+        if (!Array.isArray(inbox[key])) continue;
+        for (let index = inbox[key].length - 1; index >= 0; index -= 1) {
+          const input = inbox[key][index];
+          if (input?.id !== job.execution.inputMessageId) continue;
+          // Persisted input identity remains authoritative if native admission
+          // normalizes the source. Preserve an explicitly different job source.
+          if (input.source?.kind === 'bot-team' && input.source.jobId && input.source.jobId !== job.jobId) continue;
+          inbox.splice(lane, index, 1, []); removed += 1;
+        }
+      }
+    } catch (error) { this.logger?.warn?.('bot-team: exact discussion input withdrawal failed: ' + String(error)); }
+    return removed;
+  }
+
   abortJob(job, cause) {
     if (!job || job.finished) return;
     job.state = 'stopped';
+    this.withdrawDiscussionInput(job);
     try {
       job.abortController?.abort();
     } catch {
@@ -896,9 +956,11 @@ export class Engine {
     }
     const agent = job.sessionId ? this.ctx.agents.get(job.sessionId) : undefined;
     const owned = agent && this.pool.owns?.(agent);
-    if (agent && (cause !== 'dispose' || owned) && typeof agent.cancel === 'function') {
+    const scoped = this.activeBySession.get(job.sessionId) === job && (!job.stepId || job.turn !== null);
+    if (agent && scoped && (cause !== 'dispose' || owned) && typeof agent.cancel === 'function') {
       try {
-        agent.cancel({ kind: 'user' }, { keepInbox: false });
+        // A shared native session may contain unrelated queued inputs.
+        agent.cancel({ kind: 'user' }, { keepInbox: Boolean(job.stepId) });
       } catch (error) {
         this.logger?.warn?.(`bot-team: cancel agent failed: ${String(error)}`);
       }
@@ -908,7 +970,7 @@ export class Engine {
   }
 
   settleMessage(job, status, error) {
-    const text = (job.steps.filter(Boolean).join('\n\n') || job.streamText || '').trim();
+    const text = ((job.steps || []).filter(Boolean).join('\n\n') || job.streamText || '').trim();
     const message = job.placeholderId ? this.repo.messages.get(job.placeholderId) : undefined;
     if (message) {
       message.text = text;
@@ -917,14 +979,20 @@ export class Engine {
       message.usage = job.usage ?? null;
       message.generationStats = job.requestMetrics?.finish(status) ?? null;
       message.kind = job.messageKind ?? message.kind ?? 'chat';
-      const meta = { ...(message.meta || {}), ...(job.meta || {}), execution: job.execution };
+      const meta = { ...(message.meta || {}), ...(job.meta || {}), execution: job.execution,
+        ...(job.stepId ? { logicalJobComplete: job.finished === true } : {}) };
       if (job.kind === 'review' && status === 'done') {
         const verdict = parseReviewVerdict(text);
         if (verdict) meta.verdict = verdict;
       }
       if (Object.keys(meta).length > 0) message.meta = meta;
       message.updatedAt = now();
-      this.repo.putMessage(message);
+      if (job.stepId) {
+        const saved = Promise.resolve(this.repo.putMessageStrict(message)).catch(saveError => {
+          job.discussionPersistenceError = String(saveError?.message || saveError);
+        });
+        job.discussionMessageWrites = Promise.all([job.discussionMessageWrites, saved]);
+      } else this.repo.putMessage(message);
       this.bus.emit(job.groupId, { type: 'message.updated', message });
       // The accepted end event may have invalidated before this final status.
       // A null seq also refreshes stopped jobs and bypasses event deduplication.
@@ -937,6 +1005,7 @@ export class Engine {
     if (!job || job.finished) return;
     job.finished = true;
     job.state = status;
+    job.error = error || null;
     if (job.timer) clearTimeout(job.timer);
     const current = this.isCurrentJob(job);
     if (job.sessionId && this.activeBySession.get(job.sessionId) === job) this.activeBySession.delete(job.sessionId);
@@ -967,11 +1036,20 @@ export class Engine {
     } catch (hookError) {
       this.logger?.warn?.('bot-team: task hook failed: ' + String(hookError));
     }
-    job.resolveDone?.();
-    job.state = status;
-    this.pump(job.groupId);
-    if (current) this.afterJobFinished(job);
-    this.checkIdle(job.groupId);
+    if (job.stepId) {
+      const pending = { groupId: job.groupId, conversationId: job.conversationId };
+      this.pendingWork.add(pending);
+      void this.discussionRunner.finished(job).catch(failure => this.discussionRunner.failed(job.discussionId, failure))
+        .finally(() => {
+          this.pendingWork.delete(pending); job.resolveDone?.();
+          this.pump(job.groupId); this.checkIdle(job.groupId);
+        });
+    } else {
+      job.resolveDone?.();
+      this.pump(job.groupId);
+      if (current) this.afterJobFinished(job);
+      this.checkIdle(job.groupId);
+    }
   }
 
   /** Discussion bookkeeping + review-side effects after one job settles. */
@@ -1009,6 +1087,7 @@ export class Engine {
       this.repo.putDiscussion(discussion);
       this.bus.emit(discussion.groupId, { type: 'discussion.updated', discussion });
       this.systemMessage(discussion.groupId, `讨论「${discussion.topic}」因成员执行失败而停止。`);
+      this.settleDiscussionWaiters(discussionId);
       return;
     }
     discussion.currentIndex = (discussion.currentIndex ?? 0) + 1;
@@ -1213,66 +1292,28 @@ export class Engine {
   }
 
   // ── M2: multi-round discussion ──────────────────────────────────────────
-  async startDiscussion({ groupId, topic, membershipIds, rounds, summarize, expectedConversationId }) {
-    const conversationId = this.admitConversation(groupId, expectedConversationId);
-    const group = this.repo.getGroup(groupId);
-    if (!group) throw Object.assign(new Error('群不存在'), { code: 'not-found' });
-    const active = this.repo.discussionsOf?.(groupId)?.find(discussion => discussion.status === 'running' && this.isCurrentRecord(discussion, groupId))
-      || this.repo.activeDiscussionOf(groupId);
-    if (this.isCurrentRecord(active, groupId)) {
-      throw Object.assign(new Error('该群已有进行中的讨论，请先停止或等待结束'), { code: 'conflict' });
-    }
-    const members = [];
-    for (const membershipId of membershipIds) {
-      const member = this.repo.getMember(membershipId);
-      if (member && member.groupId === groupId && member.enabled !== false && this.repo.getBot(member.botId)) {
-        members.push(member.membershipId);
-      }
-    }
-    if (members.length === 0) throw Object.assign(new Error('请选择至少一个讨论成员'), { code: 'invalid-input' });
-    this.assertQuota(groupId);
-    const discussion = {
-      discussionId: newId('dsc'),
-      groupId,
-      conversationId,
-      topic,
-      memberIds: members,
-      rounds,
-      currentRound: 1,
-      currentIndex: 0,
-      currentSpeaker: members[0],
-      summarize: summarize === true,
-      summaryStarted: false,
-      status: 'running',
-      startSeq: 0,
-      startMessageId: null,
-      createdAt: now(),
-      updatedAt: now(),
-    };
-    const startMessage = this.createMessage({
-      groupId,
-      author: { type: 'system', name: '系统' },
-      text: `开始讨论：${topic}（${members.length} 位成员，共 ${rounds} 轮${summarize ? '，结束生成总结' : ''}）`,
-      kind: 'discussion',
-      status: 'done',
-      meta: { discussionId: discussion.discussionId, event: 'start' },
-    });
-    discussion.startSeq = startMessage.seq;
-    discussion.startMessageId = startMessage.messageId;
-    const pending = { groupId, conversationId };
-    this.pendingWork.add(pending);
-    try { await this.repo.putDiscussion(discussion); } finally { this.pendingWork.delete(pending); }
-    this.admitConversation(groupId, conversationId);
-    this.assertCurrentTarget(groupId, this.repo.getDiscussion(discussion.discussionId));
-    this.bus.emit(groupId, { type: 'message.added', message: startMessage });
-    this.bus.emit(groupId, { type: 'discussion.updated', discussion });
-    this.scheduleDiscussion(discussion.discussionId);
-    return discussion;
+  async startDiscussion(input) {
+    return this.discussionRunner.start(input);
+  }
+
+  async controlDiscussion(input) {
+    const discussion = this.repo.getDiscussion(input.discussionId);
+    if (!discussion) throw Object.assign(new Error('讨论不存在'), { code: 'not-found' });
+    if (discussion.protocolVersion === 2) return this.discussionRunner.control(input);
+    this.admitConversation(discussion.groupId, input.expectedConversationId);
+    this.assertCurrentTarget(discussion.groupId, discussion);
+    if (input.operation !== 'stop') throw Object.assign(new Error('旧版讨论只支持停止，请新建讨论以使用步骤控制'), { code: 'invalid-input' });
+    await this.stopDiscussion(input.discussionId);
+    return this.repo.getDiscussion(input.discussionId);
   }
 
   scheduleDiscussion(discussionId) {
     if (this.disposed) return;
     const discussion = this.repo.getDiscussion(discussionId);
+    if (discussion?.protocolVersion === 2) {
+      if (!this.isCurrentRecord(discussion) || !['running', 'finalizing'].includes(discussion.status)) return;
+      return this.discussionRunner.schedule(discussionId);
+    }
     if (!discussion || discussion.status !== 'running' || !this.isCurrentRecord(discussion)) return;
     try {
       this.assertQuota(discussion.groupId);
@@ -1348,10 +1389,10 @@ export class Engine {
     this.repo.putDiscussion(discussion);
     this.bus.emit(discussion.groupId, { type: 'discussion.updated', discussion });
     this.systemMessage(discussion.groupId, '讨论「' + discussion.topic + '」已停止：' + message);
+    this.queue = this.queue.filter((queued) => queued.discussionId !== discussion.discussionId);
     for (const job of [...this.running.values()]) {
       if (job.discussionId === discussion.discussionId && !job.finished) this.abortJob(job, 'user');
     }
-    this.queue = this.queue.filter((queued) => queued.discussionId !== discussion.discussionId);
     this.settleDiscussionWaiters(discussion.discussionId);
   }
 
@@ -1360,6 +1401,11 @@ export class Engine {
     if (!discussion) throw Object.assign(new Error('讨论不存在'), { code: 'not-found' });
     this.admitConversation(discussion.groupId);
     this.assertCurrentTarget(discussion.groupId, discussion);
+    if (discussion.protocolVersion === 2) {
+      const stopped = isDiscussionActive(discussion);
+      return this.controlDiscussion({ discussionId, operation: 'stop', expectedConversationId: discussion.conversationId })
+        .then(() => ({ stopped }));
+    }
     if (discussion.status !== 'running') return { stopped: false };
     discussion.status = 'stopped';
     discussion.stopReason = 'user';
@@ -1367,9 +1413,6 @@ export class Engine {
     this.repo.putDiscussion(discussion);
     this.bus.emit(discussion.groupId, { type: 'discussion.updated', discussion });
     this.systemMessage(discussion.groupId, `讨论「${discussion.topic}」已停止。`);
-    for (const job of [...this.running.values()]) {
-      if (job.discussionId === discussionId && !job.finished) this.abortJob(job, 'user');
-    }
     const keep = [];
     for (const queued of this.queue) {
       if (queued.discussionId === discussionId) {
@@ -1383,6 +1426,9 @@ export class Engine {
       }
     }
     this.queue = keep;
+    for (const job of [...this.running.values()]) {
+      if (job.discussionId === discussionId && !job.finished) this.abortJob(job, 'user');
+    }
     this.settleDiscussionWaiters(discussionId);
     return { stopped: true };
   }
@@ -1413,7 +1459,7 @@ export class Engine {
 
   whenDiscussionSettled(discussionId, timeoutMs = 600000) {
     const discussion = this.repo.getDiscussion(discussionId);
-    if (!discussion || discussion.status !== 'running') return Promise.resolve(true);
+    if (!discussion || !isDiscussionActive(discussion) || discussion.status === 'paused') return Promise.resolve(true);
     return new Promise((resolve) => {
       const entry = { resolve, timer: setTimeout(() => resolve(false), timeoutMs) };
       const list = this.discussionWaiters.get(discussionId) ?? [];
@@ -1535,62 +1581,53 @@ export class Engine {
   }
 
   stopMember(membershipId) {
-    let stopped = 0;
     const job = this.running.get(membershipId);
-    if (job && !job.finished) {
-      this.abortJob(job, 'user');
+    const affected = new Set([job?.groupId, ...this.queue.filter(item => item.membershipId === membershipId).map(item => item.groupId)].filter(Boolean));
+    for (const groupId of affected) this.pumpBlocks.add(groupId);
+    let stopped = 0;
+    const discussions = new Set([job?.discussionId, ...this.queue.filter(item => item.membershipId === membershipId).map(item => item.discussionId)].filter(Boolean));
+    for (const id of discussions) {
+      const discussion = this.repo.getDiscussion(id);
+      if (discussion?.protocolVersion === 2) void this.discussionRunner.interrupt(id).catch(error => this.discussionRunner.failed(id, error));
+    }
+    // Drain first: abortJob -> finishJob may synchronously pump another job.
+    this.queue = this.queue.filter(queued => {
+      if (queued.membershipId !== membershipId) return true;
       stopped += 1;
-    }
-    const keep = [];
-    for (const queued of this.queue) {
-      if (queued.membershipId === membershipId) {
-        stopped += 1;
-        this.bus.emit(queued.groupId, {
-          type: 'member.status',
-          membershipId: queued.membershipId,
-          status: 'idle',
-        });
-      } else {
-        keep.push(queued);
-      }
-    }
-    this.queue = keep;
+      this.bus.emit(queued.groupId, { type: 'member.status', membershipId, status: 'idle' });
+      return false;
+    });
+    if (job && !job.finished) { this.abortJob(job, 'user'); stopped += 1; }
+    for (const groupId of affected) { this.pumpBlocks.delete(groupId); this.pump(groupId); this.checkIdle(groupId); }
     return { stopped };
   }
 
   stopGroup(groupId) {
+    this.pumpBlocks.add(groupId);
     let stopped = 0;
-    // Stop running discussions first so their jobs do not advance afterwards.
+    // Close all discussion schedulers before clearing queues or cancelling jobs.
     for (const discussion of this.repo.discussionsOf(groupId)) {
-      if (discussion.status === 'running' && this.isCurrentRecord(discussion, groupId)) {
-        discussion.status = 'stopped';
-        discussion.stopReason = 'user';
-        discussion.currentSpeaker = null;
+      if (!isDiscussionActive(discussion) || !this.isCurrentRecord(discussion, groupId)) continue;
+      if (discussion.protocolVersion === 2) {
+        void this.discussionRunner.interrupt(discussion.discussionId, { stop: true }).catch(error => this.discussionRunner.failed(discussion.discussionId, error));
+      } else {
+        discussion.status = 'stopped'; discussion.stopReason = 'user'; discussion.currentSpeaker = null;
         this.repo.putDiscussion(discussion);
         this.bus.emit(groupId, { type: 'discussion.updated', discussion });
         this.settleDiscussionWaiters(discussion.discussionId);
-        this.systemMessage(groupId, `讨论「${discussion.topic}」已停止。`);
       }
     }
+    this.queue = this.queue.filter(job => {
+      if (job.groupId !== groupId) return true;
+      stopped += 1;
+      this.bus.emit(groupId, { type: 'member.status', membershipId: job.membershipId, status: 'idle' });
+      return false;
+    });
     for (const job of [...this.running.values()]) {
       if (job.groupId !== groupId || job.finished) continue;
-      this.abortJob(job, 'user');
-      stopped += 1;
+      this.abortJob(job, 'user'); stopped += 1;
     }
-    const keep = [];
-    for (const job of this.queue) {
-      if (job.groupId === groupId) {
-        stopped += 1;
-        this.bus.emit(groupId, {
-          type: 'member.status',
-          membershipId: job.membershipId,
-          status: 'idle',
-        });
-      } else {
-        keep.push(job);
-      }
-    }
-    this.queue = keep;
+    this.pumpBlocks.delete(groupId);
     this.checkIdle(groupId);
     return { stopped };
   }

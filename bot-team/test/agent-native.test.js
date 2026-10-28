@@ -43,7 +43,7 @@ test('owned create is hidden, durably mapped and mounts the current native defau
   assert.equal(assembly.sections.find(section => section.name === 'deployment:persona-prefix').text, 'Native deployment persona');
   assert.match(assembly.sections.find(section => section.name === 'bot-team:persona').text, /Bot One/);
   const denied = [...agent.ctx.restrictions].flatMap(rule => rule.deny);
-  assert.deepEqual(denied.sort(), ['bot_team_create_group', 'bot_team_discuss', 'bot_team_review', 'bot_team_send', 'bot_team_task_create', 'bot_team_task_update', 'schedule_create', 'schedule_update'].sort());
+  assert.deepEqual(denied.sort(), ['bot_team_create_group', 'bot_team_debate', 'bot_team_discuss', 'bot_team_discussion_control', 'bot_team_review', 'bot_team_send', 'bot_team_task_create', 'bot_team_task_update', 'schedule_create', 'schedule_update'].sort());
   for (const allowed of ['subagent', 'subagent_fork', 'ask_user_question', 'workflow', 'send_message', 'create_goal', 'update_goal', 'schedule_list', 'schedule_delete', 'bot_team_list', 'bot_team_task_list']) assert.ok(!denied.includes(allowed));
   assert.deepEqual(f.calls.approvals, [{ id: agent.id, policy: 'ask' }]);
   assert.deepEqual(agent.session.snapshotEvents().filter(event => event.type === 'sandbox/mode').map(event => event.data), [{ mode: 'workspace-write' }]);

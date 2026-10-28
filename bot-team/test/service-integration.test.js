@@ -264,10 +264,10 @@ test('the real service boots, registers its routes/tools, and drives direct chat
         '/api/bot-team.upload',
       ],
     );
-    assert.equal(tools.length, 8, 'all model tools registered');
+    assert.equal(tools.length, 10, 'all model tools registered');
 
     const health = service.healthPayload();
-    assert.equal(health.domain.schemaVersion, 7);
+    assert.equal(health.domain.schemaVersion, 8);
     assert.equal(health.domain.counts.folders, 0);
 
     const bot = await service.dispatch('bot.create', {

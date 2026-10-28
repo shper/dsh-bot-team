@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import { inflateSync } from 'node:zlib';
 import { buildGroupPdf, findPdfFont, PdfError } from '../host/pdf.js';
 
 const font = await findPdfFont().catch(() => null);
@@ -60,6 +61,36 @@ test('English labels and round/verdict badges are localized in the PDF', { skip:
   assert.match(text, /beginbfchar/);
   assert.match(text, /004D/);
   assert.ok(pdf.length > 20000);
+});
+
+function selectableText(pdf) {
+  const source = pdf.toString('latin1');
+  const unicode = new Map([...source.matchAll(/<([0-9a-f]{4})> <([0-9a-f]{4,})>/gi)].map(([, glyph, codes]) =>
+    [glyph.toUpperCase(), String.fromCharCode(...codes.match(/.{4}/g).map(code => Number.parseInt(code, 16)))]));
+  const streams = [...source.matchAll(/Length ([0-9]+) >>\nstream\n/g)].map(match => {
+    const start = match.index + match[0].length;
+    const bytes = pdf.subarray(start, start + Number(match[1]));
+    return (source.slice(Math.max(0, match.index - 30), match.index).includes('/FlateDecode') ? inflateSync(bytes) : bytes).toString('latin1');
+  }).join('\n');
+  return [...streams.matchAll(/<([0-9a-f]+)> Tj/gi)].map(([, codes]) =>
+    codes.match(/.{4}/g).map(code => unicode.get(code.toUpperCase()) || '').join('')).join('');
+}
+
+test('discussion exports preserve phase and side labels and localize start events', { skip: font === null }, async () => {
+  const messages = [
+    message(1, { author: { type: 'system' }, kind: 'system', text: '开始辩论：CUSTOM_TOPIC' }),
+    message(2, { meta: { phase: 'question', side: 'pro', round: 1 }, text: 'USER_ARGUMENT' }),
+    message(3, { meta: { phase: 'judgement', summary: true, round: 1 }, text: 'Verdict: insufficient' }),
+  ];
+  const english = selectableText(await buildGroupPdf({ group, members, bots, messages, lang: 'en' }));
+  assert.match(english, /Started debate: CUSTOM_TOPIC/);
+  assert.match(english, /Pro/);
+  assert.match(english, /Question/);
+  assert.match(english, /Judgement/);
+  assert.match(english, /USER_ARGUMENT/);
+  assert.doesNotMatch(english, /Discussion summary/);
+  const chinese = selectableText(await buildGroupPdf({ group, members, bots, messages, lang: 'zh' }));
+  for (const label of ['开始辩论：CUSTOM_TOPIC', '正方', '质询', '裁决']) assert.ok(chinese.includes(label), label);
 });
 
 test('long timelines paginate and keep page footers', { skip: font === null }, async () => {

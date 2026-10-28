@@ -111,6 +111,9 @@ const LABELS = {
     messages: '消息数',
     round: (n) => `第 ${n} 轮`,
     summary: '讨论总结',
+    sides: { pro: '正方', con: '反方', neutral: '中立' },
+    phases: { discussion: '轮流发言', viewpoint: '提出观点', challenge: '相互检验', converge: '修正收敛',
+      checkpoint: '阶段小结', summary: '讨论总结', opening: '立论', question: '质询', answer: '回应', closing: '结辩', judgement: '裁决' },
     pass: '评审通过',
     changes: '需修改',
     attachment: '附件',
@@ -127,6 +130,9 @@ const LABELS = {
     messages: 'Messages',
     round: (n) => `Round ${n}`,
     summary: 'Discussion summary',
+    sides: { pro: 'Pro', con: 'Con', neutral: 'Neutral' },
+    phases: { discussion: 'Round robin', viewpoint: 'Perspectives', challenge: 'Examination', converge: 'Refinement',
+      checkpoint: 'Round recap', summary: 'Discussion summary', opening: 'Opening', question: 'Question', answer: 'Answer', closing: 'Closing', judgement: 'Judgement' },
     pass: 'Review passed',
     changes: 'Changes requested',
     attachment: 'Attachment',
@@ -661,6 +667,8 @@ function localizeSystemText(text, lang) {
     [/^讨论「(.+?)」已停止。$/, (m) => 'Discussion “' + m[1] + '” stopped.'],
     [/^讨论「(.+?)」结束。$/, (m) => 'Discussion “' + m[1] + '” ended.'],
     [/^开始讨论：(.+?)（(\d+) 位成员，共 (\d+) 轮(，结束生成总结)?）$/, (m) => 'Started discussion: ' + m[1] + ' (' + m[2] + ' members, ' + m[3] + ' rounds' + (m[4] ? ', summary at the end' : '') + ')'],
+    [/^开始讨论：([\s\S]+)$/, (m) => 'Started discussion: ' + m[1]],
+    [/^开始辩论：([\s\S]+)$/, (m) => 'Started debate: ' + m[1]],
     [/^请 @(.+?) 评审 #(\d+)（(.+?)）的消息$/, (m) => 'Ask @' + m[1] + ' to review message #' + m[2] + ' (' + m[3] + ')'],
     [/^请 @(.+?) 根据 #(\d+) 的评审意见修改 #(\d+)$/, (m) => 'Ask @' + m[1] + ' to revise #' + m[3] + ' based on the review at #' + m[2]],
     [/^任务「(.+?)」已验收，前置依赖解除：(.+?) 可以派发了。$/, (m) => 'Task “' + m[1] + '” accepted; dependencies cleared: ' + m[2].split('、').join(', ') + ' can now be dispatched.'],
@@ -684,7 +692,9 @@ function authorLabel(message, labels) {
 function renderMessage(layout, message, labels, lang) {
   const badges = [];
   if (message.meta && message.meta.round) badges.push(labels.round(message.meta.round));
-  if (message.meta && message.meta.summary) badges.push(labels.summary);
+  if (message.meta?.side && labels.sides[message.meta.side]) badges.push(labels.sides[message.meta.side]);
+  if (message.meta?.phase && labels.phases[message.meta.phase]) badges.push(labels.phases[message.meta.phase]);
+  if (message.meta?.summary && !['summary', 'judgement'].includes(message.meta.phase)) badges.push(labels.summary);
   if (message.meta && message.meta.verdict === 'pass') badges.push(labels.pass);
   if (message.meta && message.meta.verdict === 'changes') badges.push(labels.changes);
   if (message.status === 'stopped') badges.push(labels.stopped);

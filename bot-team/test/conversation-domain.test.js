@@ -75,8 +75,8 @@ test('v7 migration preserves native sessions and cursors without rewriting histo
   const domain = memoryDomain(legacySeed());
   const repo = await open(domain);
   assert.equal(DOMAIN_VERSION, 1);
-  assert.equal(SCHEMA_VERSION, 7);
-  assert.deepEqual(await repo.runMigrations(), { version: 7, applied: [6] });
+  assert.equal(SCHEMA_VERSION, 8);
+  assert.deepEqual(await repo.runMigrations(), { version: 8, applied: [6, 7] });
   const baseline = repo.activeConversation('g');
   assert.equal(baseline.ordinal, 1);
   assert.equal(baseline.afterSeq, 0);
@@ -91,8 +91,11 @@ test('v7 migration preserves native sessions and cursors without rewriting histo
   assert.equal(repo.conversationFor(repo.getMessage('old')), baseline);
   assert.equal(repo.conversationFor(repo.getTask('t')), baseline);
   assert.equal(repo.conversationFor(repo.getDiscussion('d')), baseline);
-  assert.equal(domain.writes.some(write => ['messages', 'tasks', 'discussions'].includes(write.table)), false);
-  assert.deepEqual(await repo.runMigrations(), { version: 7, applied: [] });
+  assert.equal(domain.writes.some(write => ['messages', 'tasks'].includes(write.table)), false);
+  assert.equal(repo.getDiscussion('d').protocolVersion, 1);
+  assert.equal(repo.getDiscussion('d').format, 'classic');
+  assert.equal(repo.getDiscussion('d').topic, 'Historical discussion');
+  assert.deepEqual(await repo.runMigrations(), { version: 8, applied: [] });
   const restarted = await open(domain);
   assert.equal(restarted.activeConversation('g').conversationId, baseline.conversationId);
   assert.equal(restarted.sessionBindingsOf('g').length, 3);

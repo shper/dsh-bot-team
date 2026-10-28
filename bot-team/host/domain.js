@@ -15,11 +15,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { now, recordSchema } from './util.js';
 import { directGroupIdFor, directMembershipIdFor, directSessionIdFor } from './layout.js';
+import { isDiscussionActive } from './discussion-flow.js';
 
 export const DOMAIN_NAME = 'bot_team';
 export const DOMAIN_VERSION = 1;
 /** Record-shape schema version stored in the meta table (domain version stays 1 by design). */
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 const digest = value => createHash('sha256').update(value).digest('hex');
 const baselineId = groupId => `conv_${digest(`baseline:${groupId}`)}`;
@@ -258,7 +259,15 @@ export async function openRepository(ctx, logger, openDomain = spec => ctx.stora
     messagesByGroup.set(value.groupId, list);
   }
   for (const list of messagesByGroup.values()) sortBySeq(list);
-  for (const [key, value] of domain.table('discussions').entries()) discussions.set(key, value);
+  for (const [key, value] of domain.table('discussions').entries()) {
+    discussions.set(key, {
+      ...copy(value),
+      protocolVersion: value.protocolVersion ?? 1,
+      mode: value.mode ?? 'discussion',
+      format: value.format ?? 'classic',
+      revision: Number.isSafeInteger(value.revision) ? value.revision : 0,
+    });
+  }
   for (const [key, value] of domain.table('tasks').entries()) tasks.set(key, value);
   for (const [key, value] of domain.table('meta').entries()) meta.set(key, value);
   for (const [key, value] of domain.table('conversations').entries()) {
@@ -289,11 +298,24 @@ export async function openRepository(ctx, logger, openDomain = spec => ctx.stora
     }
   }
   for (const discussion of discussions.values()) {
-    if (discussion.status === 'running') {
-      discussion.status = 'stopped';
-      discussion.stopReason = 'host-restart';
+    if (isDiscussionActive(discussion)) {
+      if (discussion.protocolVersion >= 2) {
+        // Preserve the precise step/attempt journal; only the engine may reconcile
+        // a native execution. Reloading the repository must never replay a turn.
+        if (discussion.status !== 'paused') {
+          discussion.recoveryStatus = discussion.status;
+          discussion.pauseReason = 'host-restart';
+        }
+        discussion.status = 'paused';
+        discussion.needsRecovery = true;
+      } else {
+        discussion.status = 'stopped';
+        discussion.stopReason = 'host-restart';
+      }
+      discussion.revision += 1;
       discussion.updatedAt = now();
-      enqueue(discussion.groupId, () => domain.table('discussions').put(discussion.discussionId, copy(discussion)), 'discussion:' + discussion.discussionId).catch(() => {});
+      const snapshot = copy(discussion);
+      enqueue(discussion.groupId, () => domain.table('discussions').put(discussion.discussionId, snapshot), 'discussion:' + discussion.discussionId).catch(() => {});
     }
   }
 
@@ -502,7 +524,9 @@ export async function openRepository(ctx, logger, openDomain = spec => ctx.stora
         .sort((a, b) => b.createdAt - a.createdAt);
     },
     activeDiscussionOf(groupId) {
-      return repo.discussionsOf(groupId).find((discussion) => discussion.status === 'running');
+      const conversationId = repo.activeConversation(groupId)?.conversationId;
+      return repo.discussionsOf(groupId).find((discussion) => isDiscussionActive(discussion)
+        && repo.conversationFor(discussion)?.conversationId === conversationId);
     },
     putDiscussion(discussion) {
       const candidate = recordConversation(copy(discussion), discussions.get(discussion.discussionId));
@@ -905,6 +929,14 @@ export async function openRepository(ctx, logger, openDomain = spec => ctx.stora
         await repo.putMeta('schema', { version: 7, migratedAt: now() });
         version = 7;
         applied.push(6);
+      }
+      if (version < 8) {
+        // Legacy runs retain their original transcript and round semantics. Their
+        // missing step journal cannot be reconstructed reliably from messages.
+        for (const discussion of discussions.values()) await repo.putDiscussion({ ...discussion });
+        await repo.putMeta('schema', { version: 8, migratedAt: now() });
+        version = 8;
+        applied.push(7);
       }
       validateConversations();
       return { version, applied };

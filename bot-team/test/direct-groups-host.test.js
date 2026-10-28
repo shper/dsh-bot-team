@@ -325,9 +325,9 @@ test('schema v5 data migrates to v7: groups get ordering, direct chats and conve
   const domain = memoryDomain(seed);
   const { service, repo } = await fixture({ domain, schema: 5 });
   const migration = await repo.runMigrations();
-  assert.equal(migration.version, 7);
-  assert.deepEqual(migration.applied, [5, 6]);
-  assert.equal(repo.schemaVersion(), 7);
+  assert.equal(migration.version, 8);
+  assert.deepEqual(migration.applied, [5, 6, 7]);
+  assert.equal(repo.schemaVersion(), 8);
   const old = repo.getGroup('grp-old-1');
   assert.equal(old.kind, 'group');
   assert.equal(old.folderId, null);

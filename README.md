@@ -44,18 +44,23 @@ Bot Team 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
 
 ### 协作
 
+以下讨论与辩论扩展是**尚未发布的工作区改动**。加载本地目录中的新代码，需要在插件管理中 **disable → enable** 重新加载 Host，再刷新现有页面。完整流程与接口见[讨论与辩论](<docs/讨论与辩论.md>)。
+
 - **评审**：让另一个 Bot 评审一条消息，返回「通过 / 需修改」结论徽标，可一键「让作者修改」；
-- **多轮讨论**：固定轮次，显示进度、轮次与「共识 / 分歧 / 待决」总结，可随时停止；
+- **多成员讨论**：结构化讨论至少 2 人，界面提供快速 2 轮、标准 3 轮、深入 5 轮，按观点、质询、收敛推进，穿插小结并可选最终总结；经典讨论仍支持 1–5 轮，旧工具调用默认 2 轮；
+- **1v1 辩论**：正反方各 1 人，可另选独立裁判；双方开篇、交替先手的交叉问答、总结陈词，再由裁判裁决。无裁判不生成胜负；
+- **过程控制**：查看阶段与发言者，暂停、继续、重试失败步骤、提前收束、停止，或补充材料与同群历史消息引用；
 - **任务管理（模型工具/API）**：创建任务并设置描述、验收标准、指派与评审者；派发 → 交付 → 评审 → 验收；支持优先级、DAG 依赖、环检测、验收后自动解锁、批量派发、队列与中断。群聊右侧的任务面板和「新建任务」入口已移除，任务能力仍可通过模型工具与 HTTP action 使用；
 - **审批**：Bot 需要越界或升权时，群时间线出现审批卡片，点「去审批」到该 Bot 的会话里允许一次 / 拒绝，结果同步回群。
 
 ### 模型工具
 
-在任意普通会话里也能操作群聊（8 个工具，Bot 成员自身被 deny 以防递归）：
+当前工作区在任意普通会话里提供 10 个群聊工具（Bot 成员自身被 deny 以防递归）：
 
 ```
-bot_team_list          bot_team_create_group   bot_team_send        bot_team_review
-bot_team_discuss       bot_team_task_create    bot_team_task_list   bot_team_task_update
+bot_team_list          bot_team_create_group        bot_team_send         bot_team_review
+bot_team_discuss       bot_team_debate              bot_team_discussion_control
+bot_team_task_create   bot_team_task_list           bot_team_task_update
 ```
 
 ## 安装
@@ -188,7 +193,8 @@ npm pack --dry-run   # 查看真正会被发布的文件
 ## 已知限制
 
 - 分组只有一层；展开 / 收起是浏览器本地偏好，不跨设备同步；
-- 讨论为固定轮次，同一群同时只允许一个讨论；
+- 同一群只允许一个未结束的讨论或辩论；`paused` 仍占用该位置，阻止新流程、`/new` 和切换项目。停止后若原生执行尚忙，会保留 `stopping`，需要等待并重新检查；
+- 讨论视角、正反方和裁判是临时提示，仍复用成员的原会话；不保证角色或立场之间的记忆隔离；
 - 任务队列是 Engine 内存态，重启后排队标记丢失（任务仍为进行中）；
 - Markdown 渲染较轻量：无语法高亮，图片未支持；
 - PDF 使用系统 CJK 字体（macOS 优先 Hiragino Sans GB / Arial Unicode（宋体等无嵌入许可的字体自动跳过）；Windows/Linux 用常见中文字体）；没有 CJK 字体时导出返回 501，可用 `pdfFontPath` 指定字体文件；PDF 为轻量排版（无图片/头像、链接不可点击、emoji 可能缺字），正文文本可选中与搜索；
@@ -199,6 +205,7 @@ npm pack --dry-run   # 查看真正会被发布的文件
 
 - [完整功能、HTTP 通道与配置](bot-team/README.md)
 - [使用指南](docs/使用指南.md)
+- [讨论与辩论：流程、工具、API 与恢复边界](<docs/讨论与辩论.md>)（未发布工作区改动）
 - [发布指南](docs/发布指南.md)
 - [升级检查清单](docs/升级检查清单.md)
 - [最新变更记录：v1.2.1 会话历史与用量修复](<docs/v1.2.1-会话历史与用量修复-变更记录.md>)
@@ -214,6 +221,8 @@ MIT © [shper](https://github.com/shper)
 ## English
 
 **Bot Team** is a DeepSeek Harness plugin for long-lived agent colleagues. Every bot is a real DSH agent with its own persistent session, model, `BOT.md` persona and full toolset (files, search, web, commands inside a `workspace-write` sandbox). Each bot gets a direct chat; groups support `@mention` dispatch, parallel streaming replies, peer review and multi-round discussions. Task tools and HTTP APIs support priorities, dependencies, review/acceptance and a dispatch queue; the group sidebar task panel and its creation entry have been removed. Data lives in the `bot_team` storage domain and `$DSH_HOME/dsh-bot-team/`; group conversations never pollute session logs.
+
+The unreleased workspace adds structured discussions, 1v1 debates with an optional independent judge, and pause/resume/retry/finish/stop/context controls. Existing discuss tool calls still default to classic two-round discussions. Reload the local plugin Host with disable → enable, then refresh the page; see the [discussion and debate guide](<docs/讨论与辩论.md>).
 
 Version **1.2.1** fixes execution history loading and live token totals. **Open full session** now opens a separate read-only history page with an explicit return button; returning preserves the original execution entry, chat draft and scroll position. Member and sidebar session entries use the same history reader, including saved sessions from earlier replies. The hourly reply limit has been removed; daily token budgets remain in effect.
 
