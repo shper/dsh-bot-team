@@ -1455,6 +1455,15 @@ window.__ModuleLoader__.load({
     })) {
       if (!(key in UI_EN)) UI_EN[key] = value;
     }
+    Object.assign(UI_EN, {
+      "侧边栏设置": "Sidebar settings",
+      "控制侧边栏的显示内容；保存后在当前浏览器生效。": "Choose what appears in the sidebar. Saved preferences apply in this browser.",
+      "显示单聊": "Show direct chats",
+      "默认开启，在侧边栏显示单聊列表与图标。": "Enabled by default. Show direct chat lists and icons in the sidebar.",
+      "开启": "On",
+      "设置已保存": "Settings saved"
+    });
+
     const UI_ZH = { ...Object.fromEntries(Object.keys(UI_EN).map((key) => [key, key])), '单条新消息': '条新消息' };
 
     const CHAT_DISPLAY_MODES = [
@@ -1499,6 +1508,27 @@ window.__ModuleLoader__.load({
         if (storage) storage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? '1' : '0');
       } catch {
         /* storage can be unavailable (private mode / disabled); collapse still works this session */
+      }
+    }
+
+    // Direct-chat visibility follows the same per-browser scope as sidebar collapse.
+    const SIDEBAR_SHOW_DIRECT_KEY = 'bot-team.sidebar.showDirect';
+
+    function readSidebarShowDirect() {
+      try {
+        const storage = typeof window !== 'undefined' ? window.localStorage : null;
+        return !storage || storage.getItem(SIDEBAR_SHOW_DIRECT_KEY) !== '0';
+      } catch {
+        return true;
+      }
+    }
+
+    function persistSidebarShowDirect(showDirect) {
+      try {
+        const storage = typeof window !== 'undefined' ? window.localStorage : null;
+        if (storage) storage.setItem(SIDEBAR_SHOW_DIRECT_KEY, showDirect ? '1' : '0');
+      } catch {
+        /* storage can be unavailable; visibility still works this session */
       }
     }
 
@@ -1729,6 +1759,7 @@ window.__ModuleLoader__.load({
       config: {},
       chatDisplaySettings: DEFAULT_CHAT_DISPLAY_SETTINGS,
       sidebarCollapsed: readSidebarCollapsed(),
+      sidebarShowDirect: readSidebarShowDirect(),
       rightPanelCollapsed: readRightPanelCollapsed(),
       sectionsCollapsed: readSectionsCollapsed(),
       pendingDirectBotId: null,
@@ -1883,6 +1914,8 @@ window.__ModuleLoader__.load({
             ),
           };
         }
+        case 'sidebarShowDirect':
+          return { ...state, sidebarShowDirect: action.showDirect !== false };
         case 'chatDisplaySettings':
           return { ...state, chatDisplaySettings: normalizeChatDisplaySettings(action.settings) };
         case 'sse': {
@@ -5292,6 +5325,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
 
     const SETTINGS_TABS = [
       { id: 'messages', label: '消息设置', icon: 'message' },
+      { id: 'sidebar', label: '侧边栏设置', icon: 'sidebar' },
       { id: 'about', label: '关于', icon: 'info' },
     ];
     const ABOUT_DESCRIPTION = '在 DSH Web GUI 中运行单聊与多 Agent 群聊：每个 Bot 自动拥有独立的单聊窗口；群聊支持自定义分组、拖拽排序与展开/收起；Bot 可配置自己的模型、BOT.md 人格和完整工具能力。';
@@ -5319,6 +5353,12 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         focusable: false,
         style: { display: 'block' },
       };
+      if (name === 'sidebar') {
+        return h('svg', common,
+          h('rect', { x: 3, y: 4, width: 18, height: 16, rx: 2 }),
+          h('path', { d: 'M9 4v16' }),
+        );
+      }
       if (name === 'info') {
         return h(
           'svg',
@@ -5336,9 +5376,10 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       );
     }
 
-    function ChatSettingsDialog({ settings, onClose, onSaved, pluginInfo, initialTab = 'messages' }) {
+    function ChatSettingsDialog({ settings, sidebarShowDirect = true, onClose, onSaved, pluginInfo, initialTab = 'messages' }) {
       // Keep only local edits: untouched fields follow settings saved in other tabs.
       const [edits, setEdits] = React.useState({});
+      const [directEdit, setDirectEdit] = React.useState(null);
       const [busy, setBusy] = React.useState(false);
       const [error, setError] = React.useState('');
       const [tab, setTab] = React.useState(
@@ -5346,7 +5387,10 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       );
       const current = normalizeChatDisplaySettings(settings);
       const draft = { ...current, ...edits };
-      const dirty = CHAT_DISPLAY_FIELDS.some(({ key }) => draft[key] !== current[key]);
+      const messagesDirty = CHAT_DISPLAY_FIELDS.some(({ key }) => draft[key] !== current[key]);
+      const currentShowDirect = sidebarShowDirect !== false;
+      const draftShowDirect = directEdit ?? currentShowDirect;
+      const dirty = messagesDirty || draftShowDirect !== currentShowDirect;
       const activeTabIndex = SETTINGS_TABS.findIndex((item) => item.id === tab);
 
       const save = async () => {
@@ -5354,8 +5398,12 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         setBusy(true);
         setError('');
         try {
-          const response = await api.action('settings.chatDisplay.update', { settings: draft });
-          onSaved(normalizeChatDisplaySettings(response.result.chatDisplaySettings));
+          let savedSettings = current;
+          if (messagesDirty) {
+            const response = await api.action('settings.chatDisplay.update', { settings: draft });
+            savedSettings = normalizeChatDisplaySettings(response.result.chatDisplaySettings);
+          }
+          onSaved(savedSettings, draftShowDirect);
         } catch (failure) {
           setError(String(failure && failure.message ? failure.message : failure));
         } finally {
@@ -5435,7 +5483,33 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           preview.length ? h('div', { style: S.msgFooter(false) }, renderMessageMetadata(preview))
             : h('div', { style: S.fieldHint }, '已隐藏全部消息信息'),
         ),
-        error ? h('div', { role: 'alert', style: { ...S.fieldHint, color: 'var(--bt-danger-text)', marginTop: 12 } }, uiT('保存失败：{error}', { error })) : null,
+      );
+
+      const sidebarPanel = h(
+        'div',
+        { key: 'sidebar', role: 'tabpanel', id: 'bt-settings-panel-sidebar', 'aria-labelledby': 'bt-settings-tab-sidebar', style: S.settingsPanel },
+        h('div', { style: S.settingsPanelHead },
+          h('div', { style: S.settingsPanelTitle }, '侧边栏设置'),
+          h('div', { style: S.settingsPanelHint }, '控制侧边栏的显示内容；保存后在当前浏览器生效。'),
+        ),
+        h('div', { className: 'bt-settings-row', style: S.settingsRow },
+          h('div', { style: { flex: 1, minWidth: 0 } },
+            h('div', { id: 'bt-sidebar-show-direct-label', style: { fontSize: 12.5, fontWeight: 600 } }, '显示单聊'),
+            h('div', { id: 'bt-sidebar-show-direct-hint', style: S.fieldHint }, '默认开启，在侧边栏显示单聊列表与图标。'),
+          ),
+          h('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
+            h('span', { 'aria-hidden': true, style: S.fieldHint }, draftShowDirect ? '开启' : '隐藏'),
+            h('button', {
+              type: 'button', role: 'switch', 'aria-checked': draftShowDirect,
+              'aria-labelledby': 'bt-sidebar-show-direct-label', 'aria-describedby': 'bt-sidebar-show-direct-hint', disabled: busy,
+              style: { display: 'inline-flex', alignItems: 'center', width: 40, height: 24, padding: 3, flexShrink: 0, boxSizing: 'border-box', border: '1px solid var(--bt-border)', borderRadius: 12, background: draftShowDirect ? 'var(--bt-accent)' : 'var(--bt-bg-subtle)', cursor: busy ? 'wait' : 'pointer' },
+              onClick: () => {
+                const next = !draftShowDirect;
+                setDirectEdit(next === currentShowDirect ? null : next);
+              },
+            }, h('span', { 'aria-hidden': true, style: { display: 'block', width: 16, height: 16, borderRadius: '50%', background: draftShowDirect ? '#fff' : 'var(--bt-text-3)', transform: draftShowDirect ? 'translateX(16px)' : 'translateX(0)', transition: 'transform 0.15s ease' } })),
+          ),
+        ),
       );
 
       const info = pluginInfo && typeof pluginInfo === 'object' ? pluginInfo : {};
@@ -5516,9 +5590,9 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         ),
       );
 
-      const footer = tab === 'messages'
+      const footer = tab !== 'about'
         ? h(React.Fragment, null,
-            h('button', { key: 'reset', type: 'button', style: { ...S.smallBtn, marginRight: 'auto' }, disabled: busy, onClick: () => { setEdits({ ...DEFAULT_CHAT_DISPLAY_SETTINGS }); setError(''); } }, '恢复默认'),
+            h('button', { key: 'reset', type: 'button', style: { ...S.smallBtn, marginRight: 'auto' }, disabled: busy, onClick: () => { if (tab === 'sidebar') setDirectEdit(true); else setEdits({ ...DEFAULT_CHAT_DISPLAY_SETTINGS }); setError(''); } }, '恢复默认'),
             h('button', { key: 'cancel', type: 'button', style: S.smallBtn, disabled: busy, onClick: onClose }, '取消'),
             h('button', { key: 'save', type: 'button', style: S.primaryBtn, disabled: busy || !dirty, onClick: save }, busy ? '保存中…' : '保存设置'),
           )
@@ -5560,7 +5634,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           h(
             'div',
             { style: S.settingsContent },
-            tab === 'messages' ? messagesPanel : aboutPanel,
+            tab === 'messages' ? messagesPanel : tab === 'sidebar' ? sidebarPanel : aboutPanel,
+            error ? h('div', { role: 'alert', style: { ...S.fieldHint, color: 'var(--bt-danger-text)', marginTop: 12 } }, uiT('保存失败：{error}', { error })) : null,
           ),
         ),
       );
@@ -5764,6 +5839,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       mobileNavigation,
     }) {
       const collapsed = state.sidebarCollapsed === true;
+      const showDirect = state.sidebarShowDirect !== false;
       const showWelcome = shouldShowWelcome(state);
       const sections = state.sectionsCollapsed || {};
       const model = buildSidebarModel(state);
@@ -6391,7 +6467,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
 
       const groupsSection = h(
         'div',
-        { className: 'bt-sidebar-section', style: S.section, 'data-section': SECTION_GROUPS },
+        { className: 'bt-sidebar-section', style: showDirect || showWelcome ? S.section : { ...S.section, marginTop: 0 }, 'data-section': SECTION_GROUPS },
         sectionHeader(SECTION_GROUPS, '群聊', model.groupCount, [
           sectionAction('新建群 / 话题', 'plus', () => onCreate && onCreate()),
           hostLayoutReady ? sectionAction('新建分组', 'folder-plus', () => onCreateFolder && onCreateFolder()) : null,
@@ -6419,7 +6495,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         ? h(
             'div',
             { style: S.groupRail, className: 'bt-group-rail' },
-            model.direct.map((entry) =>
+            showDirect && model.direct.map((entry) =>
               h(
                 'div',
                 {
@@ -6443,7 +6519,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                 h(Avatar, { bot: entry.bot, size: 36 }),
               ),
             ),
-            model.direct.length > 0 && (model.groupCount > 0)
+            showDirect && model.direct.length > 0 && (model.groupCount > 0)
               ? h('div', { key: 'rail-divider', className: 'bt-rail-divider', style: S.railDivider })
               : null,
             model.folders.flatMap((entry) => entry.groups).concat(model.ungrouped).map((group) => {
@@ -6471,7 +6547,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         : h(
             'div',
             { style: S.sidebarScroll, className: 'bt-sidebar-scroll' },
-            directSection,
+            showDirect ? directSection : null,
             groupsSection,
           );
 
@@ -10196,11 +10272,12 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
 
     // ── page ──────────────────────────────────────────────────────────────
     function BotTeamPage() {
-      // Read the collapse preference per mount: initialState is module-level and
-      // would otherwise restore the value from the first page load.
+      // Read browser preferences per mount: initialState is module-level and
+      // would otherwise restore values from the first page load.
       const [state, dispatch] = React.useReducer(reducer, initialState, (initial) => ({
         ...initial,
         sidebarCollapsed: readSidebarCollapsed(),
+        sidebarShowDirect: readSidebarShowDirect(),
         rightPanelCollapsed: readRightPanelCollapsed(),
         sectionsCollapsed: readSectionsCollapsed(),
       }));
@@ -10252,6 +10329,10 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       React.useEffect(() => {
         persistSidebarCollapsed(state.sidebarCollapsed === true);
       }, [state.sidebarCollapsed]);
+
+      React.useEffect(() => {
+        persistSidebarShowDirect(state.sidebarShowDirect !== false);
+      }, [state.sidebarShowDirect]);
 
       React.useEffect(() => {
         persistRightPanelCollapsed(state.rightPanelCollapsed === true);
@@ -11166,11 +11247,13 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         dialog && dialog.kind === 'settings'
           ? h(ChatSettingsDialog, {
               settings: state.chatDisplaySettings,
+              sidebarShowDirect: state.sidebarShowDirect,
               pluginInfo: state.pluginInfo,
               onClose: closeDialog,
-              onSaved: (settings) => {
+              onSaved: (settings, showDirect) => {
                 dispatch({ type: 'chatDisplaySettings', settings });
-                dispatch({ type: 'flash', message: '群聊设置已保存，已应用于所有群聊' });
+                dispatch({ type: 'sidebarShowDirect', showDirect });
+                dispatch({ type: 'flash', message: '设置已保存' });
                 closeDialog();
               },
             })

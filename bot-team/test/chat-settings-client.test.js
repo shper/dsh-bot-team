@@ -211,13 +211,13 @@ test('dialog has 4 accessible mode groups, previews edits, saves once and return
   assert.deepEqual(plain(fixture.saved[0]), sent.payload.settings);
 });
 
-test('settings dialog has 消息设置 / 关于 tab modules and about shows description, version and developer', () => {
+test('settings dialog has 消息设置 / 侧边栏设置 / 关于 tab modules and about shows description, version and developer', () => {
   const fixture = dialogFixture({
     pluginInfo: { packageName: '@local/bot-team-test', version: '9.9.9', author: '测试开发者' },
   });
   const initial = fixture.render();
   const tabs = walk(initial).filter(node => node.props?.role === 'tab');
-  assert.deepEqual(plain(tabs.map(node => text(node))), ['消息设置', '关于']);
+  assert.deepEqual(plain(tabs.map(node => text(node))), ['消息设置', '侧边栏设置', '关于']);
   assert.equal(tabs[0].props['aria-selected'], true);
   assert.equal(tabs[1].props['aria-selected'], false);
   assert.equal(button(initial, '保存设置').props.disabled, true);
@@ -225,7 +225,7 @@ test('settings dialog has 消息设置 / 关于 tab modules and about shows desc
   button(initial, '关于').props.onClick();
   const about = fixture.render();
   const aboutTabs = walk(about).filter(node => node.props?.role === 'tab');
-  assert.equal(aboutTabs[1].props['aria-selected'], true);
+  assert.equal(aboutTabs[2].props['aria-selected'], true);
   assert.match(text(about), /插件说明、版本号与开发者信息/);
   assert.match(text(about), /单聊与多 Agent 群聊/);
   assert.match(text(about), /9\.9\.9/);
