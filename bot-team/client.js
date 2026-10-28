@@ -1332,6 +1332,12 @@ window.__ModuleLoader__.load({
       "发起多轮讨论": "Start multi-round discussion",
       "发起评审": "Start review",
       "发起讨论": "New discussion",
+      "发起辩论": "New debate",
+      "引用这条消息发起讨论": "Start a discussion with this message as a reference",
+      "引用这条消息发起辩论": "Start a debate with this message as a reference",
+      "本群已有未结束的讨论或辩论": "This group already has an active discussion or debate",
+      "回复生成中，暂不可发起讨论或辩论": "Wait for the reply to finish before starting a discussion or debate",
+      "这条消息没有可讨论的文本": "This message has no text to discuss",
       "发送": "Send",
       "发送中…": "Sending…",
       "发言中": "Speaking",
@@ -5946,6 +5952,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       onRetry,
       onExecution,
       onDelete,
+      onStartDiscussion,
+      hasActiveDiscussion = false,
     }) {
       const actions = [];
       const details = meta || {};
@@ -6000,6 +6008,17 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           danger: false,
           onSelect: () => onJumpToMessage(message.replyTo),
         });
+      }
+      if (isPlainChatMessage(message) && typeof onStartDiscussion === 'function') {
+        for (const [mode, label, title] of [['discussion', '发起讨论', '引用这条消息发起讨论'], ['debate', '发起辩论', '引用这条消息发起辩论']]) {
+          const disabled = streaming || !hasText || hasActiveDiscussion;
+          actions.push({
+            key: mode, icon: mode, label,
+            title: hasActiveDiscussion ? '本群已有未结束的讨论或辩论' : streaming ? '回复生成中，暂不可发起讨论或辩论' : !hasText ? '这条消息没有可讨论的文本' : title,
+            section: 'workflow', disabled, hover: false, danger: false,
+            onSelect: () => { if (!disabled) onStartDiscussion(message, mode); },
+          });
+        }
       }
       if (!mine && !streaming && typeof onReview === 'function') {
         actions.push({
@@ -8764,6 +8783,14 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           h('path', { key: 'p1', d: 'M15.5 14.5v-4a3 3 0 0 0-3-3H5.5' }),
           h('path', { key: 'p2', d: 'm8.5 4.5-3 3 3 3' }),
         ],
+        discussion: [
+          h('path', { key: 'p', d: 'M4 3.5h12a1.5 1.5 0 0 1 1.5 1.5v7a1.5 1.5 0 0 1-1.5 1.5H9L4 17v-3.5A1.5 1.5 0 0 1 2.5 12V5A1.5 1.5 0 0 1 4 3.5Z' }),
+          h('path', { key: 'lines', d: 'M6 7h8M6 10h5' }),
+        ],
+        debate: [
+          h('path', { key: 'p1', d: 'M3 5h14m-4-3 4 3-4 3' }),
+          h('path', { key: 'p2', d: 'M17 15H3m4-3-4 3 4 3' }),
+        ],
         review: [
           h('circle', { key: 'c', cx: 10, cy: 10, r: 7 }),
           h('path', { key: 'p', d: 'm7 10 2 2 4-4' }),
@@ -9090,6 +9117,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       onRetry,
       onExecution,
       onDelete,
+      onStartDiscussion,
+      hasActiveDiscussion = false,
     }) {
       // Prefer the live message so a streaming reply enables/disables menu items
       // as it finishes; fall back to the snapshot taken when the menu opened.
@@ -9114,6 +9143,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         onRetry,
         onExecution,
         onDelete,
+        onStartDiscussion,
+        hasActiveDiscussion,
       });
       let separatorCount = 0;
       actions.forEach((action, index) => {
@@ -11739,11 +11770,15 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             h('input', { type: 'checkbox', checked: selected.includes(message.messageId), onChange: () => onChange((selected.includes(message.messageId) ? selected.filter(id => id !== message.messageId) : selected.concat(message.messageId)).join('\n')) }),
             h('span', { raw: true }, '#' + message.seq + ' · ' + (message.text || '').slice(0, 100)), h('code', { raw: true }, message.messageId))))) : null);
     }
-    function renderDiscussionDialog({ group, members, bots, messages = [], defaultTopic, onClose, onSaved, onConversationError }) {
+    function renderDiscussionDialog({ group, members, bots, messages = [], defaultTopic, defaultMode = 'discussion', defaultReferences = '', onClose, onSaved, onConversationError }) {
       const identity = React.useRef({ groupId: group.groupId, conversationId: currentConversationId(group) }).current;
       const stale = identity.groupId !== group.groupId || identity.conversationId !== currentConversationId(group);
       const candidates = members.map(member => ({ member, bot: bots.find(bot => bot.botId === member.botId) })).filter(entry => entry.bot);
-      const [draft, setDraft] = React.useState(() => createDiscussionDraft(candidates.map(entry => entry.member), defaultTopic));
+      const [draft, setDraft] = React.useState(() => {
+        const initial = createDiscussionDraft(candidates.map(entry => entry.member), defaultTopic);
+        return { ...initial, mode: defaultMode === 'debate' ? 'debate' : initial.mode,
+          rounds: defaultMode === 'debate' ? initial.debateRounds : initial.rounds, references: defaultReferences };
+      });
       const [error, setError] = React.useState('');
       const [busy, setBusy] = React.useState(false);
       const busyRef = React.useRef(false);
@@ -12378,6 +12413,12 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       const openDiscussion = () => {
         if (hasCurrentDiscussion) openDiscussionDetail(currentDiscussion.discussionId);
         else dispatch({ type: 'dialog', dialog: { kind: 'discussion', defaultTopic: '' } });
+      };
+      const startDiscussionFromMessage = (message, mode) => {
+        if (!activeGroup || activeIsDirect || hasCurrentDiscussion || !isPlainChatMessage(message)
+            || ['pending', 'streaming'].includes(message.status) || !String(message.text || '').trim()) return;
+        dispatch({ type: 'dialog', dialog: { kind: 'discussion', defaultMode: mode,
+          defaultTopic: String(message.text).trim().slice(0, 2000), defaultReferences: message.messageId } });
       };
       const updateDiscussion = discussion => dispatch({ type: 'discussion', discussion });
       const jumpToDiscussionMessage = (messageId, transcript) => {
@@ -13049,6 +13090,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                 onRetry: doRetry,
                 onExecution: message => setExecutionTarget({ groupId: messageMenu.groupId, message, returnFocus: messageMenu.returnFocus }),
                 onDelete: deleteMessage,
+                onStartDiscussion: activeIsDirect ? undefined : startDiscussionFromMessage,
+                hasActiveDiscussion: hasCurrentDiscussion,
               })
             : null,
         ),
@@ -13128,6 +13171,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               bots: state.bots,
               messages,
               defaultTopic: dialog.defaultTopic || '',
+              defaultMode: dialog.defaultMode,
+              defaultReferences: dialog.defaultReferences,
               onClose: closeDialog,
               onSaved: result => { if (result?.discussion || result?.discussionId) updateDiscussion(result.discussion || result); afterChange(); },
             })
