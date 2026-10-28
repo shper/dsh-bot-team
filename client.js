@@ -4705,6 +4705,13 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb { background: rgba(2
 body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.28); border: 3px solid transparent; background-clip: content-box; }
 
 
+/* Discussion notices stay compact; full topics remain available in details. */
+.bt-discussion-tip { display: inline-flex; align-items: center; gap: 8px; min-width: 0; box-sizing: border-box; }
+.bt-discussion-tip-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bt-discussion-tip-arrow { flex: 0 0 auto; font-size: 14px; line-height: 1; }
+button.bt-discussion-tip:hover .bt-discussion-tip-text { color: var(--bt-text-2); }
+.bt-discussion-topic-preview { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; max-height: 3.2em; }
+
 /* Active discussion controls share the right rail scroll area below members. */
 .bt-discussion-dock { min-width: 0; margin-top: 12px; padding: 12px 2px 0; border-top: 1px solid var(--bt-border); }
 .bt-discussion-dock .bt-discussion-topic { flex-basis: 100%; }
@@ -9190,12 +9197,21 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       if (message.author && message.author.type === 'system') {
         const kindLabel = message.kind === 'review' ? '评审' : message.kind === 'revision' ? '修改' : message.kind === 'discussion' ? (debate ? '辩论' : '讨论') : '';
         const systemText = translateSystemText(message.text, message.meta);
+        const discussionNotice = message.kind === 'discussion' || !!message.meta?.discussionId;
+        const canOpen = message.meta?.discussionId && onOpenDiscussion;
+        const preview = discussionNotice ? cleanPreview(systemText, 120) : systemText;
+        const label = kindLabel ? `[${uiT(kindLabel)}] ${preview}` : preview;
+        const pillStyle = discussionNotice ? { ...S.systemPill, maxWidth: 'min(82%, 640px)', borderRadius: 8, textAlign: 'left' } : S.systemPill;
+        const content = discussionNotice ? [
+          h('span', { key: 'text', className: 'bt-discussion-tip-text', raw: true }, label),
+          canOpen ? h('span', { key: 'arrow', className: 'bt-discussion-tip-arrow', 'aria-hidden': true }, '›') : null,
+        ] : label;
         return h(
           'div',
           { className: 'bt-system-row', style: S.systemRow, 'data-message-id': message.messageId },
-          message.meta?.discussionId && onOpenDiscussion
-            ? h('button', { type: 'button', style: { ...S.systemPill, border: 'none', cursor: 'pointer', font: 'inherit' }, raw: true, title: uiT(detailLabel), onClick: () => onOpenDiscussion(message.meta.discussionId, discussionModeOf(message)) }, kindLabel ? `[${uiT(kindLabel)}] ${systemText}` : systemText)
-            : h('span', { style: S.systemPill, raw: true }, kindLabel ? `[${uiT(kindLabel)}] ${systemText}` : systemText),
+          canOpen
+            ? h('button', { type: 'button', className: discussionNotice ? 'bt-discussion-tip' : undefined, style: { ...pillStyle, border: 'none', cursor: 'pointer', font: 'inherit' }, raw: true, title: uiT(detailLabel), onClick: () => onOpenDiscussion(message.meta.discussionId, discussionModeOf(message)) }, content)
+            : h('span', { className: discussionNotice ? 'bt-discussion-tip' : undefined, style: pillStyle, raw: true }, content),
         );
       }
       const mine = !!(message.author && message.author.type === 'human');
@@ -12171,7 +12187,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
     function discussionControlPayload(record, group, operation, extra = {}, requestId = discussionRequestId()) {
       return { discussionId: record.discussionId, operation, expectedConversationId: currentConversationId(group), expectedRevision: Number(record.revision || 0), requestId, ...extra };
     }
-    function DiscussionProgress({ discussion, group, members = [], bots = [], messages = [], onUpdated, onConversationError, onView, contextId = discussion?.discussionId }) {
+    function DiscussionProgress({ discussion, group, members = [], bots = [], messages = [], onUpdated, onConversationError, onView, compact = false, contextId = discussion?.discussionId }) {
       const [busy, setBusy] = React.useState('');
       const [error, setError] = React.useState('');
       const [adding, setAdding] = React.useState(false);
@@ -12206,7 +12222,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       const description = step => [discussionPhaseLabel(step?.phase || discussion.phase), discussionSideLabel(step?.side), discussionSpeakerName(discussion, step?.membershipId || discussion.currentSpeaker, members, bots)].filter(Boolean).join(' · ');
       return withContent([discussion.topic, ...bots.map(bot => bot.name)], () => h('section', { className: 'bt-discussion-progress', 'aria-label': debate ? '辩论进度' : '讨论进度', 'data-discussion-id': discussion.discussionId },
         h('div', { className: 'bt-discussion-heading' }, h('strong', null, discussion.mode === 'debate' ? '1v1 辩论' : '多成员讨论'),
-          h('span', { className: 'bt-discussion-badge' }, DISCUSSION_STATUS_LABELS[discussion.status] || discussion.status), h('span', { className: 'bt-discussion-topic', raw: true }, discussion.topic),
+          h('span', { className: 'bt-discussion-badge' }, DISCUSSION_STATUS_LABELS[discussion.status] || discussion.status), h('span', { className: 'bt-discussion-topic' + (compact ? ' bt-discussion-topic-preview' : ''), raw: true }, compact ? cleanPreview(discussion.topic, 120) : discussion.topic),
           onView ? h('button', { type: 'button', style: S.smallBtn, onClick: () => onView(discussion.discussionId, discussionModeOf(discussion)) }, '查看完整记录') : null),
         active ? h('div', { className: 'bt-discussion-status', role: 'status', 'aria-live': 'polite' }, h('span', { raw: true }, description(info.current)),
           h('span', null, uiT('第 {current}/{total} 轮', { current: Math.min(discussion.currentRound || 1, discussion.rounds || 1), total: discussion.rounds || 1 })),
@@ -13390,7 +13406,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                   onViewSession: openMemberHistory,
                   onOpenNativeSession: openMemberHistory,
                 }, hasCurrentDiscussion ? h('div', { className: 'bt-discussion-dock' },
-                  h(DiscussionProgress, { key: currentDiscussion.discussionId, discussion: currentDiscussion, group: activeGroup, members, bots: state.bots, messages, onUpdated: updateDiscussion, onConversationError: mergeConversationError, onView: openDiscussionDetail })) : null)
+                  h(DiscussionProgress, { key: currentDiscussion.discussionId, discussion: currentDiscussion, group: activeGroup, members, bots: state.bots, messages, compact: true, onUpdated: updateDiscussion, onConversationError: mergeConversationError, onView: openDiscussionDetail })) : null)
             : null,
           messageMenu && messageMenu.groupId === state.activeGroupId && !isDeletedMessage(state, messageMenu.groupId, messageMenu.message.messageId)
             ? h(MessageContextMenu, {
