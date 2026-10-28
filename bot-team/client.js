@@ -3555,7 +3555,7 @@ window.__ModuleLoader__.load({
         overflowX: 'hidden',
         padding: '0 16px 8px',
       },
-      section: { marginTop: 22 },
+      section: { marginTop: 12 },
       sectionHead: { display: 'flex', alignItems: 'center', gap: 2, padding: '4px 2px 2px', minHeight: 26 },
       sectionToggle: {
         display: 'flex',
