@@ -11199,6 +11199,10 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       const modelInfo = providerGroup ? providerGroup.models.find((candidate) => candidate.id === model) : undefined;
       const efforts = modelInfo && modelInfo.reasoning ? modelInfo.reasoning.efforts : [];
       const canSubmit = !busy && name.trim().length > 0 && (!editing || personaLoaded);
+      const identityFieldStyle = {
+        gridTemplateColumns: `${isEnglishUi() ? 88 : 64}px minmax(0, 1fr)`,
+        marginBottom: 16,
+      };
 
       React.useEffect(() => {
         if (!editing) return;
@@ -11372,7 +11376,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             required: true,
             horizontal: true,
             hint: '群里 @ 时使用；Bot 之间也用它互相称呼。',
-            style: { marginBottom: 16 },
+            style: identityFieldStyle,
           },
           h('input', {
             style: S.input,
@@ -11389,7 +11393,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             label: '签名',
             horizontal: true,
             hint: '选填，显示在聊天消息的名字后面，最多 120 字。',
-            style: { marginBottom: 16 },
+            style: identityFieldStyle,
           },
           h('input', {
             style: S.input,
