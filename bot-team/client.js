@@ -1259,7 +1259,7 @@ window.__ModuleLoader__.load({
       "无法引入项目目录：目录不可访问": "Cannot add project: the folder is not accessible.",
       "无法引入项目目录：请选择文件夹，而不是文件": "Cannot add project: select a folder, not a file.",
       "Skill 加载失败：": "Failed to load Skills: ",
-      "Token 用量（本单聊累计）": "Token usage (this direct chat, cumulative)",
+      "本单聊累计 Token": "Direct chat token usage",
       "通用助手": "General assistant",
       "推荐": "Recommended",
       "先结论后理由；信息不足先说明假设。": "Conclusion first, then reasoning; state assumptions when information is insufficient.",
@@ -8998,8 +8998,42 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
     }
 
 
+    function renderTokenUsageCard({ label, usage, runningCount = 0, className, style = S.memberCard }) {
+      const inputTokens = usage?.inputTokens ?? 0;
+      const outputTokens = usage?.outputTokens ?? 0;
+      const totalTokens = usage?.totalTokens ?? (inputTokens + outputTokens);
+      const exactTokens = (value) => Number(value).toLocaleString(isEnglishUi() ? 'en-US' : 'zh-CN');
+      const displayTokens = (value) => value >= 1000000 ? formatTokens(value) : exactTokens(value);
+      return h(
+        'section',
+        { className, style, 'aria-label': label },
+        h(
+          'div',
+          { style: S.usageHeader },
+          h('h3', { style: S.usageLabel }, label),
+          runningCount > 0
+            ? h('span', { style: S.usageRunning, role: 'status' },
+                h('span', { 'aria-hidden': true, style: { width: 5, height: 5, borderRadius: '50%', background: '#22c55e' } }),
+                uiT('{count} 个运行中', { count: runningCount }),
+              )
+            : null,
+        ),
+        h('div', { style: S.usageTotal, title: exactTokens(totalTokens), 'aria-label': uiT('累计 {count} Token', { count: exactTokens(totalTokens) }) }, displayTokens(totalTokens)),
+        h(
+          'dl',
+          { style: S.usageBreakdown },
+          ...[['输入', inputTokens], ['输出', outputTokens]].map(([label, value]) => h(
+            'div',
+            { key: label, style: S.usageMetric },
+            h('dt', { style: S.usageLabel }, label),
+            h('dd', { style: S.usageValue, title: exactTokens(value), 'aria-label': exactTokens(value) }, displayTokens(value)),
+          )),
+        ),
+      );
+    }
+
     /** Right rail for a single chat: bot identity + session/persona entry points. */
-    function renderDirectPanel({ bot, group, member, usage, onEdit, onCollapse, onViewSession }) {
+    function renderDirectPanel({ bot, group, member, usage, running = false, onEdit, onCollapse, onViewSession }) {
       const name = (bot && bot.name) || (group && group.title) || 'Bot';
       return h(
         'div',
@@ -9054,19 +9088,13 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                 : null,
             ),
           ),
-          usage && (usage.inputTokens > 0 || usage.outputTokens > 0)
-            ? h(
-                'div',
-                { style: S.directCard },
-                h('div', { style: { ...S.label, marginBottom: 4 } }, 'Token 用量（本单聊累计）'),
-                h('div', { style: S.directNote },
-                  uiT('输入 {input} · 输出 {output} · 合计 {total}', {
-            input: Number(usage.inputTokens || 0).toLocaleString(),
-            output: Number(usage.outputTokens || 0).toLocaleString(),
-            total: Number(usage.totalTokens || 0).toLocaleString(),
-          })),
-              )
-            : null,
+          renderTokenUsageCard({
+            label: '本单聊累计 Token',
+            usage,
+            runningCount: running ? 1 : 0,
+            className: 'bt-direct-usage',
+            style: { ...S.memberCard, marginBottom: 0 },
+          }),
           h(
             'div',
             { style: S.directNote },
@@ -9085,11 +9113,6 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
 
     function renderMembersPanel({ state, members, bots, dispatch, onAdd, onCollapse, onEdit, onViewSession, discussion, usage, onStopDiscussion }) {
       const runningMembers = members.filter((member) => state.statusByMember[member.membershipId] === 'running');
-      const inputTokens = usage?.inputTokens ?? 0;
-      const outputTokens = usage?.outputTokens ?? 0;
-      const totalTokens = usage?.totalTokens ?? (inputTokens + outputTokens);
-      const exactTokens = (value) => Number(value).toLocaleString(isEnglishUi() ? 'en-US' : 'zh-CN');
-      const displayTokens = (value) => value >= 1000000 ? formatTokens(value) : exactTokens(value);
       return h(
         'div',
         { id: 'bt-right-panel', className: 'bt-right-panel', style: S.right },
@@ -9119,32 +9142,12 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         h(
           'div',
           { style: S.memberList },
-          h(
-            'section',
-            { className: 'bt-group-usage', style: S.memberCard, 'aria-label': '本群累计 Token' },
-            h(
-              'div',
-              { style: S.usageHeader },
-              h('h3', { style: S.usageLabel }, '本群累计 Token'),
-              runningMembers.length > 0
-                ? h('span', { style: S.usageRunning, role: 'status' },
-                    h('span', { 'aria-hidden': true, style: { width: 5, height: 5, borderRadius: '50%', background: '#22c55e' } }),
-                    uiT('{count} 个运行中', { count: runningMembers.length }),
-                  )
-                : null,
-            ),
-            h('div', { style: S.usageTotal, title: exactTokens(totalTokens), 'aria-label': uiT('累计 {count} Token', { count: exactTokens(totalTokens) }) }, displayTokens(totalTokens)),
-            h(
-              'dl',
-              { style: S.usageBreakdown },
-              ...[['输入', inputTokens], ['输出', outputTokens]].map(([label, value]) => h(
-                'div',
-                { key: label, style: S.usageMetric },
-                h('dt', { style: S.usageLabel }, label),
-                h('dd', { style: S.usageValue, title: exactTokens(value), 'aria-label': exactTokens(value) }, displayTokens(value)),
-              )),
-            ),
-          ),
+          renderTokenUsageCard({
+            label: '本群累计 Token',
+            usage,
+            runningCount: runningMembers.length,
+            className: 'bt-group-usage',
+          }),
           discussion
             ? h(
                 'div',
@@ -11146,6 +11149,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                   group: activeGroup,
                   member: activeDirectMember,
                   usage: activeGroup.usage || null,
+                  running: activeDirectMember && state.statusByMember[activeDirectMember.membershipId] === 'running',
                   onEdit: openBotEdit,
                   onCollapse: () => dispatch({ type: 'toggleRightPanel' }),
                   onViewSession: (member) => openBotSession(member.sessionId, (message) => dispatch({ type: 'error', message }), member.groupId),
