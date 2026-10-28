@@ -178,6 +178,93 @@ test('result gets all history by discussion ID and groups results by step phase'
   button(tree, '跳转原文 #101').props.onClick(); assert.equal(jumps[0][0], 'm101'); assert.equal(jumps[0][1].length, 4);
 });
 
+test('old Host details paginate saved messages without mixing groups, discussions or conversations', async () => {
+  const calls = [], updated = [], jumps = [];
+  const completed = record({ protocolVersion: 1, status: 'done', steps: [] });
+  const summary = message('m120', undefined, { text: 'Saved final summary', meta: { discussionId: 'd1', summary: true } });
+  const older = message('m1', undefined, { text: 'Earlier round' });
+  const c = loadClient({ lifecycleEffects: true, fetch: async (url, init) => {
+    calls.push({ url, init });
+    if (init.method === 'POST') return Response.json({ ok: false, error: { code: 'unknown-action', message: '未知操作: discussion.get' } }, { status: 400 });
+    const before = new URL(url, 'http://fixture').searchParams.get('beforeSeq');
+    return Response.json({ ok: true, hasMore: !before, messages: before ? [older, summary,
+      message('m2', 'summary', { text: 'Wrong group', groupId: 'g2' }),
+      message('m3', 'summary', { text: 'Wrong conversation', conversationId: 'old' }),
+      message('m4', 'summary', { text: 'Wrong discussion', meta: { discussionId: 'd2', summary: true } })] : [summary] });
+  } });
+  const props = { discussion: completed, group, bots, initiallyExpanded: true, onUpdated: value => updated.push(value), onJumpToMessage: (...args) => jumps.push(args) };
+  c.render(c.DiscussionResult, props); c.flushEffects(); await tick();
+  const tree = c.render(c.DiscussionResult, props);
+  assert.deepEqual(calls.map(call => call.init.method), ['POST', 'GET', 'GET']);
+  assert.match(calls[2].url, /beforeSeq=120/);
+  assert.match(text(tree), /Saved final summary/); assert.match(text(tree), /Earlier round/);
+  assert.doesNotMatch(text(tree), /未知操作|Wrong group|Wrong conversation|Wrong discussion/);
+  assert.match(text(tree), /已从群消息中读取讨论记录/);
+  const sections = walk(tree).filter(node => node.props?.['data-result-phase']);
+  assert.deepEqual(sections.map(node => node.props['data-result-phase']), ['summary']);
+  button(tree, '跳转原文 #1').props.onClick();
+  assert.deepEqual(plain(jumps[0][1]).map(item => item.messageId), ['m1', 'm120']);
+  assert.deepEqual(updated, [], 'a message-derived detail must not change active discussion state');
+});
+
+test('legacy historical details work without a run snapshot and respect local deletions', async () => {
+  const c = loadClient({ lifecycleEffects: true, fetch: async (_url, init) => init.method === 'POST'
+    ? Response.json({ ok: false, error: { code: 'unknown-action', message: 'unsupported' } }, { status: 400 })
+    : Response.json({ ok: true, messages: [message('m1', 'viewpoint'),
+        message('m2', 'summary', { text: 'Deleted summary' }),
+        message('m3', 'summary', { status: 'error', text: 'Failed draft' })], hasMore: false }) });
+  const props = { discussionId: 'd1', group: { ...group, latestDiscussion: record({ discussionId: 'new', topic: 'Unrelated topic' }) },
+    bots, initiallyExpanded: true, deletedMessageIds: { m2: true }, onUpdated: () => assert.fail('historical transcript is read-only') };
+  c.render(c.DiscussionResult, props); c.flushEffects(); await tick();
+  const tree = c.render(c.DiscussionResult, props);
+  assert.match(text(tree), /Original m1/); assert.doesNotMatch(text(tree), /Deleted summary|Unrelated topic/);
+  assert.equal(walk(tree).some(node => node.props?.['data-result-phase'] === 'summary'), false, 'a failed draft is not a final summary');
+  assert.match(text(tree), /Failed draft/); // still available in the original transcript
+});
+
+test('discussion details preserve real API failures instead of falling back to chat history', async () => {
+  for (const [code, status] of [['not-found', 404], ['forbidden', 403], ['internal-error', 500]]) {
+    let calls = 0;
+    const c = loadClient({ lifecycleEffects: true, fetch: async () => { calls++; return Response.json({ ok: false, error: { code, message: 'Original failure ' + code } }, { status }); } });
+    const props = { discussion: record(), group, initiallyExpanded: true };
+    c.render(c.DiscussionResult, props); c.flushEffects(); await tick();
+    assert.equal(calls, 1); assert.match(text(c.render(c.DiscussionResult, props)), new RegExp('Original failure ' + code));
+  }
+});
+
+test('legacy detail reads discard late history and keep missing history actionable', async () => {
+  const wait = deferred();
+  const c = loadClient({ lifecycleEffects: true, fetch: async (_url, init) => {
+    if (init.method === 'GET') return wait.promise;
+    const id = JSON.parse(init.body).payload.discussionId;
+    return id === 'd1' ? Response.json({ ok: false, error: { code: 'unknown-action', message: 'unsupported' } }, { status: 400 })
+      : Response.json({ ok: true, result: { discussion: record({ discussionId: 'd2', steps: [] }), transcript: [message('m2', 'summary', { text: 'New selection' })] } });
+  } });
+  const props = { discussionId: 'd1', group, initiallyExpanded: true };
+  c.render(c.DiscussionResult, props); c.flushEffects(); await tick();
+  props.discussionId = 'd2'; c.render(c.DiscussionResult, props); c.flushEffects(); await tick();
+  wait.resolve(Response.json({ ok: true, messages: [message('m1', 'summary', { text: 'Stale legacy reply' })], hasMore: false })); await tick();
+  const output = text(c.render(c.DiscussionResult, props)); assert.match(output, /New selection/); assert.doesNotMatch(output, /Stale legacy reply/);
+  const empty = loadClient({ lifecycleEffects: true, fetch: async (_url, init) => init.method === 'POST'
+    ? Response.json({ ok: false, error: { code: 'unknown-action', message: 'unsupported' } }, { status: 400 })
+    : Response.json({ ok: true, messages: [], hasMore: false }) });
+  empty.render(empty.DiscussionResult, props); empty.flushEffects(); await tick();
+  assert.match(text(empty.render(empty.DiscussionResult, props)), /未找到这条讨论的已保存消息/);
+});
+
+test('legacy detail marks incomplete pagination and rejects mixed conversation history', async () => {
+  for (const mixed of [false, true]) {
+    const c = loadClient({ lifecycleEffects: true, fetch: async (_url, init) => init.method === 'POST'
+      ? Response.json({ ok: false, error: { code: 'unknown-action', message: 'unsupported' } }, { status: 400 })
+      : Response.json({ ok: true, messages: mixed ? [message('m1', 'summary'), message('m2', 'summary', { conversationId: 'other' })] : [message('m1', 'summary')], hasMore: !mixed }) });
+    const props = { discussionId: 'd1', group, initiallyExpanded: true };
+    c.render(c.DiscussionResult, props); c.flushEffects(); await tick();
+    const output = text(c.render(c.DiscussionResult, props));
+    if (mixed) { assert.match(output, /讨论记录不匹配/); assert.doesNotMatch(output, /Original m1|Original m2/); }
+    else { assert.match(output, /仅载入部分历史消息/); assert.match(output, /已载入的原始消息（1）/); assert.doesNotMatch(output, /全部原始消息/); }
+  }
+});
+
 test('result verdict never guesses prose or top-level verdict; no judge stays undecided', async () => {
   const c = loadClient(); assert.equal(c.discussionVerdictLabel(record({ mode: 'debate', verdict: 'pro' })), '未设置裁判，不判定胜负');
   assert.equal(c.discussionVerdictLabel(record({ mode: 'discussion', verdict: 'pro' })), '');
@@ -209,17 +296,39 @@ test('structured start system events translate chrome while keeping the topic ve
   }
 });
 
-test('main chat exposes discussion progress independently of sidebar and header views active discussion', () => {
-  for (const status of ['running', 'pausing', 'paused', 'finalizing', 'stopping']) {
-    const c = loadClient({ state: { ...loadClient().initialState, loading: false, groups: [group], activeGroupId: 'g1', bots, members, rightPanelCollapsed: true, discussions: { g1: record({ status }) } } });
-    let tree = c.render(c.BotTeamPage); assert.ok(walk(tree).some(node => node.type === c.DiscussionProgress)); assert.ok(walk(tree).some(node => node.props?.className === 'bt-discussion-dock'));
-    button(tree, '查看当前讨论').props.onClick(); tree = c.render(c.BotTeamPage); assert.ok(walk(tree).some(node => node.type === c.DiscussionResult && node.props.initiallyExpanded)); assert.equal(walk(tree).some(node => node.type === c.DiscussionDialog), false);
+test('current discussion and debate controls appear below members and remain accessible when the rail is closed', () => {
+  const initialState = loadClient().initialState;
+  for (const mode of ['discussion', 'debate']) {
+    const cases = ['running', 'pausing', 'paused', 'finalizing', 'stopping'].map(status => [record({ mode, status }), true]);
+    cases.push([null, false], [record({ mode, status: 'done' }), false], [record({ mode, status: 'stopped' }), false], [record({ mode, conversationId: 'old' }), false]);
+    for (const [discussion, visible] of cases) {
+      const c = loadClient({ state: { ...initialState, loading: false, groups: [group], activeGroupId: 'g1', bots, members, rightPanelCollapsed: false, discussions: { g1: discussion } } });
+      const tree = c.render(c.BotTeamPage);
+      const panel = walk(tree).find(node => node.type === c.MembersPanel);
+      const rail = c.render(c.MembersPanel, panel.props);
+      const controls = walk(rail).filter(node => node.type === c.DiscussionProgress);
+      assert.equal(controls.length, visible ? 1 : 0);
+      assert.equal(walk(tree).filter(node => node.type === c.DiscussionProgress).length, controls.length, 'controls only live in the members rail');
+      assert.equal(walk(tree).some(node => node.type === c.DiscussionResult), false, 'finished records do not linger in the chat');
+      if (visible) {
+        const list = rail.props.children.at(-1);
+        assert.equal(list.props.children.at(-1).props.className, 'bt-discussion-dock');
+        assert.match(text(list.props.children.at(-2)), /Bot 4/);
+        assert.equal(controls[0].props.discussion.discussionId, discussion.discussionId);
+      }
+    }
+    const c = loadClient({ state: { ...initialState, loading: false, groups: [group], activeGroupId: 'g1', bots, members, rightPanelCollapsed: true, discussions: { g1: record({ mode }) } } });
+    let tree = c.render(c.BotTeamPage);
+    assert.equal(walk(tree).some(node => node.type === c.DiscussionProgress || node.props?.className === 'bt-discussion-dock'), false);
+    button(tree, '查看当前讨论').props.onClick(); tree = c.render(c.BotTeamPage);
+    assert.ok(walk(tree).some(node => node.type === c.DiscussionProgress));
+    assert.ok(walk(tree).some(node => node.type === c.DiscussionResult && node.props.initiallyExpanded));
+    assert.equal(walk(tree).some(node => node.type === c.DiscussionDialog), false);
   }
 });
 
-test('narrow-screen discussion styles keep controls visible, wrap fields and use both theme palettes', () => {
+test('discussion styles wrap fields and use both theme palettes', () => {
   const c = loadClient(); const css = c.GLOBAL_CSS;
-  assert.match(css, /\.bt-discussion-dock\s*\{[^}]*min-width:\s*0[^}]*overflow:\s*auto/);
   assert.match(css, /@media \(max-width: 600px\)[\s\S]*?\.bt-discussion-grid\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\)/);
   assert.match(css, /\.bt-discussion-heading, \.bt-discussion-status, \.bt-discussion-actions\s*\{[^}]*flex-wrap: wrap/);
   assert.match(css, /\.bt-discussion-badge\s*\{[^}]*var\(--bt-accent\)/);

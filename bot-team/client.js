@@ -1505,6 +1505,10 @@ window.__ModuleLoader__.load({
       "讨论议题": "Discussion topic",
       "讨论中": "Discussing",
       "讨论总结": "Discussion summary",
+      "未找到这条讨论的已保存消息。请重新启动 DSH 后重试。": "No saved messages were found for this discussion. Restart DSH and try again.",
+      "仅载入部分历史消息。请重新启动 DSH 后查看完整讨论详情。": "Only part of the message history was loaded. Restart DSH to view the full discussion details.",
+      "已从群消息中读取讨论记录。重新启动 DSH 后可使用完整详情功能。": "Discussion records were loaded from group messages. Restart DSH to enable full discussion details.",
+      "已载入的原始消息（{count}）": "Loaded original messages ({count})",
       "提及成员": "Mention member",
       "添加": "Add",
       "添加成员": "Add members",
@@ -4638,8 +4642,13 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb { background: rgba(2
 body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.28); border: 3px solid transparent; background-clip: content-box; }
 
 
-/* Discussion controls stay in the chat column at every panel width. */
-.bt-discussion-dock { flex: 0 1 auto; min-width: 0; max-height: 38vh; overflow: auto; border-top: 1px solid var(--bt-border); background: var(--bt-bg-soft); padding: 10px 16px; }
+/* Active discussion controls share the right rail scroll area below members. */
+.bt-discussion-dock { min-width: 0; margin-top: 12px; padding: 12px 2px 0; border-top: 1px solid var(--bt-border); }
+.bt-discussion-dock .bt-discussion-topic { flex-basis: 100%; }
+.bt-discussion-dock .bt-discussion-heading > button { width: 100%; }
+.bt-discussion-dock .bt-discussion-status { flex-direction: column; align-items: flex-start; gap: 4px; }
+.bt-discussion-dock .bt-discussion-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.bt-discussion-dock button { min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 .bt-discussion-progress, .bt-discussion-result { min-width: 0; color: var(--bt-text); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .bt-discussion-result + .bt-discussion-result { border-top: 1px solid var(--bt-border); }
 .bt-discussion-heading, .bt-discussion-status, .bt-discussion-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
@@ -5199,6 +5208,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           'member.removed',
           'member.updated',
           'group.updated',
+          'discussion.updated',
           'conversation.started',
           'settings.updated',
         ];
@@ -10638,7 +10648,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
     }
 
 
-    function renderMembersPanel({ state, members, bots, dispatch, onAdd, onCollapse, onEdit, onViewSession, onOpenNativeSession, discussion, usage }) {
+    function renderMembersPanel({ state, members, bots, dispatch, onAdd, onCollapse, onEdit, onViewSession, onOpenNativeSession, discussion, usage, children }) {
       const runningMembers = members.filter((member) => state.statusByMember[member.membershipId] === 'running');
       return h(
         'div',
@@ -10735,6 +10745,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                   ),
                 );
               }),
+          children,
         ),
       );
     }
@@ -11891,7 +11902,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
     function discussionControlPayload(record, group, operation, extra = {}, requestId = discussionRequestId()) {
       return { discussionId: record.discussionId, operation, expectedConversationId: currentConversationId(group), expectedRevision: Number(record.revision || 0), requestId, ...extra };
     }
-    function DiscussionProgress({ discussion, group, members = [], bots = [], messages = [], onUpdated, onConversationError, onView }) {
+    function DiscussionProgress({ discussion, group, members = [], bots = [], messages = [], onUpdated, onConversationError, onView, contextId = discussion?.discussionId }) {
       const [busy, setBusy] = React.useState('');
       const [error, setError] = React.useState('');
       const [adding, setAdding] = React.useState(false);
@@ -11926,7 +11937,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       return withContent([discussion.topic, ...bots.map(bot => bot.name)], () => h('section', { className: 'bt-discussion-progress', 'aria-label': '讨论进度', 'data-discussion-id': discussion.discussionId },
         h('div', { className: 'bt-discussion-heading' }, h('strong', null, discussion.mode === 'debate' ? '1v1 辩论' : '多成员讨论'),
           h('span', { className: 'bt-discussion-badge' }, DISCUSSION_STATUS_LABELS[discussion.status] || discussion.status), h('span', { className: 'bt-discussion-topic', raw: true }, discussion.topic),
-          h('button', { type: 'button', style: S.smallBtn, onClick: () => onView?.(discussion.discussionId) }, '查看完整记录')),
+          onView ? h('button', { type: 'button', style: S.smallBtn, onClick: () => onView(discussion.discussionId) }, '查看完整记录') : null),
         active ? h('div', { className: 'bt-discussion-status', role: 'status', 'aria-live': 'polite' }, h('span', { raw: true }, description(info.current)),
           h('span', null, uiT('第 {current}/{total} 轮', { current: Math.min(discussion.currentRound || 1, discussion.rounds || 1), total: discussion.rounds || 1 })),
           info.total ? h('span', null, uiT('已完成 {done}/{total} 步', { done: info.completed, total: info.total })) : null,
@@ -11938,14 +11949,14 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           discussion.status === 'paused' && hasError ? button('retry', '重试当前步骤') : null,
           ['running', 'pausing', 'paused'].includes(discussion.status) ? button('finish', '提前收尾') : null,
           button('stop', discussion.status === 'stopping' ? '检查停止状态' : '停止讨论'),
-          ['running', 'pausing', 'paused'].includes(discussion.status) ? h('button', { type: 'button', style: S.smallBtn, disabled: !!busy, 'aria-expanded': adding, 'aria-controls': 'bt-discussion-context-' + discussion.discussionId, onClick: () => setAdding(value => !value) }, '补充上下文') : null) : null,
+          ['running', 'pausing', 'paused'].includes(discussion.status) ? h('button', { type: 'button', style: S.smallBtn, disabled: !!busy, 'aria-expanded': adding, 'aria-controls': 'bt-discussion-context-' + contextId, onClick: () => setAdding(value => !value) }, '补充上下文') : null) : null,
         !current ? h('p', { className: 'bt-discussion-hint' }, '历史会话仅可查看') : null,
         discussion.stopPendingReason || discussion.error ? h('p', { role: 'status', className: 'bt-discussion-hint', raw: true }, discussion.stopPendingReason || discussion.error) : null,
         discussion.pauseReason || discussion.stopReason ? h('p', { className: 'bt-discussion-hint' }, discussionReasonLabel(discussion.pauseReason || discussion.stopReason)) : null,
         error ? h('p', { role: 'alert', className: 'bt-discussion-error', raw: true }, error) : null,
-        adding && active && current ? h('div', { id: 'bt-discussion-context-' + discussion.discussionId, className: 'bt-discussion-context' },
-          h('label', { htmlFor: 'bt-context-text-' + discussion.discussionId }, '补充内容'), h('textarea', { id: 'bt-context-text-' + discussion.discussionId, style: S.input, rows: 3, maxLength: 12000, value: contextText, onChange: event => setContextText(event.target.value) }),
-          h(DiscussionReferences, { id: 'bt-context-refs-' + discussion.discussionId, value: references, onChange: setReferences, messages }),
+        adding && active && current ? h('div', { id: 'bt-discussion-context-' + contextId, className: 'bt-discussion-context' },
+          h('label', { htmlFor: 'bt-context-text-' + contextId }, '补充内容'), h('textarea', { id: 'bt-context-text-' + contextId, style: S.input, rows: 3, maxLength: 12000, value: contextText, onChange: event => setContextText(event.target.value) }),
+          h(DiscussionReferences, { id: 'bt-context-refs-' + contextId, value: references, onChange: setReferences, messages }),
           h('button', { type: 'button', style: S.smallBtn, disabled: !!busy || !(contextText.trim() || parseDiscussionReferences(references).length), onClick: () => void control('add_context', { text: contextText.trim(), contextMessageIds: parseDiscussionReferences(references) }) }, '添加上下文')) : null));
     }
     function discussionReasonLabel(reason) {
@@ -11955,6 +11966,29 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       if (record?.mode !== 'debate') return '';
       if (!record.judgeMembershipId) return uiT('未设置裁判，不判定胜负');
       return uiT({ pro: '正方胜', con: '反方胜', tie: '平局', insufficient: '证据不足，无法判定' }[record.verdict] || '尚无裁决');
+    }
+    // Linked clients can update while an older Host is still running. Only an
+    // explicitly unsupported action may fall back to the existing message API.
+    async function loadDiscussionDetail(group, discussionId, discussion) {
+      try {
+        return discussionActionResult(await api.action('discussion.get', { groupId: group.groupId, discussionId }));
+      } catch (error) {
+        if (error.code !== 'unknown-action') throw error;
+      }
+      const snapshot = [discussion, group.activeDiscussion, group.latestDiscussion].find(record =>
+        record?.discussionId === discussionId && record.groupId === group.groupId);
+      const messages = await collectAllMessages(group.groupId);
+      const transcript = messages.filter(message => message.groupId === group.groupId && message.meta?.discussionId === discussionId
+        && (!snapshot?.conversationId || !message.conversationId || message.conversationId === snapshot.conversationId));
+      const conversations = new Set(transcript.map(message => message.conversationId).filter(Boolean));
+      if (conversations.size > 1) throw new Error(uiT('讨论记录不匹配，请重试'));
+      if (!transcript.length) throw new Error(uiT('未找到这条讨论的已保存消息。请重新启动 DSH 后重试。'));
+      // This minimal record is for display only; never merge it into run state.
+      const record = snapshot || { discussionId, groupId: group.groupId, conversationId: [...conversations][0],
+        mode: transcript.find(message => message.meta?.mode)?.meta.mode };
+      const available = new Set(transcript.map(message => message.messageId));
+      const missingMessageIds = [...new Set((record.steps || []).flatMap(step => step.messageIds || []))].filter(id => !available.has(id));
+      return { discussion: record, transcript, missingMessageIds, fromMessages: true, truncated: messages.truncated };
     }
     function DiscussionResult({ discussion, discussionId = discussion?.discussionId, group, bots = [], deletedMessageIds = {}, onUpdated, onJumpToMessage, initiallyExpanded = false }) {
       const [expanded, setExpanded] = React.useState(initiallyExpanded);
@@ -11967,13 +12001,13 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         if (!expanded || !discussionId || !group) return undefined;
         let cancelled = false;
         setLoading(true); setError('');
-        api.action('discussion.get', { groupId: group.groupId, discussionId }).then(response => {
+        loadDiscussionDetail(group, discussionId, discussion).then(next => {
           if (cancelled) return;
-          const next = discussionActionResult(response);
           if (!next.discussion || next.discussion.discussionId !== discussionId || next.discussion.groupId !== group.groupId) throw new Error(uiT('讨论记录不匹配，请重试'));
           const previous = detailRef.current;
           if (previous?.discussion.discussionId === discussionId && Number(previous.discussion.revision || 0) > Number(next.discussion.revision || 0)) return;
-          detailRef.current = next; setDetail(next); onUpdated?.(next.discussion);
+          detailRef.current = next; setDetail(next);
+          if (!next.fromMessages) onUpdated?.(next.discussion);
         }).catch(reason => { if (!cancelled) setError(String(reason?.message || reason)); }).finally(() => { if (!cancelled) setLoading(false); });
         return () => { cancelled = true; };
       }, [expanded, discussionId, group?.groupId, discussion?.revision, refresh]);
@@ -11984,7 +12018,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       const groups = resultPhases.map(phase => {
         const steps = (record?.steps || []).filter(step => step.phase === phase && step.status !== 'skipped');
         const ids = new Set(steps.flatMap(step => step.messageIds || []));
-        const messages = visible.filter(message => message.author?.type !== 'system' && (record?.steps?.length ? ids.has(message.messageId) : (message.meta?.phase || (message.meta?.summary ? 'summary' : '')) === phase));
+        const messages = visible.filter(message => message.author?.type !== 'system' && (!detail?.fromMessages || message.status === 'done') && (record?.steps?.length ? ids.has(message.messageId) : (message.meta?.phase || (message.meta?.summary ? 'summary' : '')) === phase));
         return { phase, messages };
       }).filter(group => group.messages.length);
       const missing = [...new Set([...(detail?.missingMessageIds || []), ...(record?.steps || []).flatMap(step => step.messageIds || [])])].filter(id => deletedMessageIds[id] || detail && !transcript.some(message => message.messageId === id));
@@ -11996,16 +12030,19 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         h('div', { className: 'bt-discussion-heading' }, h('strong', null, record?.mode === 'debate' ? '辩论结果' : '讨论结果'),
           h('span', { className: 'bt-discussion-topic', raw: true }, record?.topic || ''),
           h('button', { type: 'button', style: S.smallBtn, 'aria-expanded': expanded, 'aria-controls': 'bt-discussion-result-' + discussionId, onClick: () => setExpanded(value => !value) }, expanded ? '收起完整记录' : '展开完整记录')),
-        record?.mode === 'debate' ? h('p', { className: 'bt-discussion-verdict' }, discussionVerdictLabel(record)) : null,
+        record?.mode === 'debate' && !detail?.fromMessages ? h('p', { className: 'bt-discussion-verdict' }, discussionVerdictLabel(record)) : null,
         expanded ? h('div', { id: 'bt-discussion-result-' + discussionId },
           h('div', { className: 'bt-discussion-actions' }, h('button', { type: 'button', style: S.smallBtn, disabled: loading, onClick: () => setRefresh(value => value + 1) }, '刷新记录')),
           loading ? h('p', { role: 'status' }, '加载完整讨论记录…') : null,
+          detail?.fromMessages ? h('p', { className: 'bt-discussion-hint' }, detail.truncated
+            ? '仅载入部分历史消息。请重新启动 DSH 后查看完整讨论详情。'
+            : '已从群消息中读取讨论记录。重新启动 DSH 后可使用完整详情功能。') : null,
           error ? h('p', { role: 'alert', className: 'bt-discussion-error', raw: true }, error) : null,
           groups.map(({ phase, messages }) => h('section', { key: phase, 'data-result-phase': phase }, h('h4', null, discussionPhaseLabel(phase)), messages.map(renderSource))),
           !groups.length && detail?.summary ? h('div', { className: 'bt-discussion-source-body' }, renderMarkdown(detail.summary)) : null,
           !loading && !error && detail && !groups.length && !detail.summary ? h('p', { className: 'bt-discussion-hint' }, '尚无总结内容，可展开原始记录查看发言。') : null,
           missing.length ? h('p', { role: 'status', className: 'bt-discussion-hint' }, pluralUi('1 条原文已删除或不可用', '{count} 条原文已删除或不可用', missing.length)) : null,
-          visible.length ? h('details', { className: 'bt-discussion-transcript' }, h('summary', null, uiT('全部原始消息（{count}）', { count: visible.length })), visible.map(renderSource)) : null) : null));
+          visible.length ? h('details', { className: 'bt-discussion-transcript' }, h('summary', null, uiT(detail?.truncated ? '已载入的原始消息（{count}）' : '全部原始消息（{count}）', { count: visible.length })), visible.map(renderSource)) : null) : null));
     }
 
     /** Re-render the page when DSH switches the UI language. */
@@ -12980,9 +13017,6 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                         )
                       : null,
                   ),
-                  !activeIsDirect && currentDiscussion ? h('div', { className: 'bt-discussion-dock' },
-                    h(DiscussionProgress, { key: currentDiscussion.discussionId, discussion: currentDiscussion, group: activeGroup, members, bots: state.bots, messages, onUpdated: updateDiscussion, onConversationError: mergeConversationError, onView: openDiscussionDetail }),
-                    !hasCurrentDiscussion ? h(DiscussionResult, { key: 'result-' + currentDiscussion.discussionId, discussion: currentDiscussion, group: activeGroup, bots: state.bots, deletedMessageIds: state.deletedMessageIdsByGroup[activeGroup.groupId], onUpdated: updateDiscussion, onJumpToMessage: jumpToDiscussionMessage }) : null) : null,
                   h(Composer, {
                     active: !sessionTarget,
                     conversationControlRef,
@@ -13071,7 +13105,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                   onEdit: openBotEdit,
                   onViewSession: openMemberHistory,
                   onOpenNativeSession: openMemberHistory,
-                })
+                }, hasCurrentDiscussion ? h('div', { className: 'bt-discussion-dock' },
+                  h(DiscussionProgress, { key: currentDiscussion.discussionId, discussion: currentDiscussion, group: activeGroup, members, bots: state.bots, messages, onUpdated: updateDiscussion, onConversationError: mergeConversationError, onView: openDiscussionDetail })) : null)
             : null,
           messageMenu && messageMenu.groupId === state.activeGroupId && !isDeletedMessage(state, messageMenu.groupId, messageMenu.message.messageId)
             ? h(MessageContextMenu, {
@@ -13179,6 +13214,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           : null,
         dialog && dialog.kind === 'discussion-detail' && activeGroup
           ? h(Modal, { title: '讨论详情', width: 760, onClose: closeDialog },
+              hasCurrentDiscussion && currentDiscussion.discussionId === dialog.discussionId
+                ? h(DiscussionProgress, { key: currentDiscussion.discussionId, contextId: currentDiscussion.discussionId + '-detail', discussion: currentDiscussion, group: activeGroup, members, bots: state.bots, messages, onUpdated: updateDiscussion, onConversationError: mergeConversationError }) : null,
               h(DiscussionResult, { key: dialog.discussionId, discussion: currentDiscussion?.discussionId === dialog.discussionId ? currentDiscussion : null, discussionId: dialog.discussionId, group: activeGroup, bots: state.bots, deletedMessageIds: state.deletedMessageIdsByGroup[activeGroup.groupId], onUpdated: updateDiscussion, onJumpToMessage: jumpToDiscussionMessage, initiallyExpanded: true })) : null,
         state.loading ? h('div', { className: 'bt-root', style: { ...S.overlay, background: 'var(--bt-loading)' } }, h('div', { style: { fontSize: 13, color: 'var(--bt-text-2)' } }, '加载 Bot Team…')) : null,
       );
