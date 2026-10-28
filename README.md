@@ -2,7 +2,7 @@
 
 > 把 DeepSeek Harness 变成一间「Bot 公司」：每个 Bot 都是真实的 Agent，有独立会话、模型、人格和全套工具。你可以像用 IM 一样单聊、拉群、`@` 派活、评审、讨论、建任务。
 
-`版本 1.2.2` · `MIT` · `DSH 0.2.1-rc.x` · `npm dsh-bot-team`
+`版本 1.3.0` · `MIT` · `DSH 0.2.1-rc.x` · `npm dsh-bot-team`
 
 ![Bot Team 首次使用欢迎页：创建 Bot、创建群聊与快速上手（深色）](<https://raw.githubusercontent.com/shper/dsh-bot-team/main/docs/assets/home-dark.png>)
 
@@ -44,7 +44,7 @@ Bot Team 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
 
 ### 协作
 
-以下讨论与辩论扩展是**尚未发布的工作区改动**。加载本地目录中的新代码，需要在插件管理中 **disable → enable** 重新加载 Host，再刷新现有页面。完整流程与接口见[讨论与辩论](<https://github.com/shper/dsh-bot-team/blob/main/docs/%E8%AE%A8%E8%AE%BA%E4%B8%8E%E8%BE%A9%E8%AE%BA.md>)。
+以下讨论与辩论扩展已纳入 **1.3.0 源码版本**。加载本地目录中的新代码，需要在插件管理中 **disable → enable** 重新加载 Host，再刷新现有页面。完整流程与接口见[讨论与辩论](<https://github.com/shper/dsh-bot-team/blob/main/docs/%E8%AE%A8%E8%AE%BA%E4%B8%8E%E8%BE%A9%E8%AE%BA.md>)。
 
 - **评审**：让另一个 Bot 评审一条消息，返回「通过 / 需修改」结论徽标，可一键「让作者修改」；
 - **多成员讨论**：结构化讨论至少 2 人，界面提供快速 2 轮、标准 3 轮、深入 5 轮及自定义 2–20 轮，按观点、质询、收敛推进，穿插小结并可选最终总结；经典讨论支持 1–20 轮，旧工具调用默认 2 轮；
@@ -70,19 +70,19 @@ bot_team_task_create   bot_team_task_list           bot_team_task_update
 ### 桌面版
 
 1. 左侧栏 **插件 / Plugins** → **添加插件**；
-2. 填 `dsh-bot-team@1.2.2`（也可以填本地目录绝对路径或 Git 地址）；
+2. 填 `dsh-bot-team@1.3.0`（也可以填本地目录绝对路径或 Git 地址）；
 3. 安装完成后启用；如果之前启用过，对该 bundle **disable → enable**（或完整重启 DSH）；
 4. 刷新页面，左侧栏出现 **Bot Team** 图标。
 
 ### CLI
 
 ```sh
-dsh plugin --profile <profile> add dsh-bot-team@1.2.2
+dsh plugin --profile <profile> add dsh-bot-team@1.3.0
 ```
 
 安装后同样要重新加载 Host 模块（disable→enable 或重启）。
 
-> `1.2.2` 是当前源码版本；npm 上的公开发行版需按 [发布指南](https://github.com/shper/dsh-bot-team/blob/main/docs/%E5%8F%91%E5%B8%83%E6%8C%87%E5%8D%97.md) 执行 `npm publish`。在发布前安装本机源码，请用本地目录路径。
+> `1.3.0` 是当前源码版本；npm 上的公开发行版需按 [发布指南](https://github.com/shper/dsh-bot-team/blob/main/docs/%E5%8F%91%E5%B8%83%E6%8C%87%E5%8D%97.md) 执行 `npm publish`。在发布前安装本机源码，请用本地目录路径。
 
 ### 从源码
 
@@ -217,14 +217,14 @@ npm pack --dry-run   # 查看真正会被发布的文件
 - [版本变更记录](CHANGELOG.md)
 - [完整功能、HTTP 通道与配置](https://github.com/shper/dsh-bot-team/blob/main/docs/%E9%85%8D%E7%BD%AE%E4%B8%8E%E6%8E%A5%E5%8F%A3.md)
 - [使用指南](https://github.com/shper/dsh-bot-team/blob/main/docs/%E4%BD%BF%E7%94%A8%E6%8C%87%E5%8D%97.md)
-- [讨论与辩论：流程、工具、API 与恢复边界](<https://github.com/shper/dsh-bot-team/blob/main/docs/%E8%AE%A8%E8%AE%BA%E4%B8%8E%E8%BE%A9%E8%AE%BA.md>)（未发布工作区改动）
+- [讨论与辩论：流程、工具、API 与恢复边界](<https://github.com/shper/dsh-bot-team/blob/main/docs/%E8%AE%A8%E8%AE%BA%E4%B8%8E%E8%BE%A9%E8%AE%BA.md>)（1.3.0 源码版本）
 - [发布指南](https://github.com/shper/dsh-bot-team/blob/main/docs/%E5%8F%91%E5%B8%83%E6%8C%87%E5%8D%97.md)
 - [升级检查清单](https://github.com/shper/dsh-bot-team/blob/main/docs/%E5%8D%87%E7%BA%A7%E6%A3%80%E6%9F%A5%E6%B8%85%E5%8D%95.md)
 - [消息执行过程](https://github.com/shper/dsh-bot-team/blob/main/docs/%E6%B6%88%E6%81%AF%E6%89%A7%E8%A1%8C%E8%BF%87%E7%A8%8B.md)
 - [后台会话与完整日志](https://github.com/shper/dsh-bot-team/blob/main/docs/%E5%8E%9F%E7%94%9F%E4%BC%9A%E8%AF%9D%E4%B8%8E%E5%AE%8C%E6%95%B4%E6%97%A5%E5%BF%97.md)
 - [新建会话：数据模型与接口](https://github.com/shper/dsh-bot-team/blob/main/docs/%E6%96%B0%E5%BB%BA%E4%BC%9A%E8%AF%9D.md)
 
-当前源码版本为 `1.2.2`；各版本修改见 [CHANGELOG](CHANGELOG.md)，详细提交与历史验收记录可通过 Git 历史查阅。临时预览、调研副本和一次性工具不纳入维护目录。
+当前源码版本为 `1.3.0`；各版本修改见 [CHANGELOG](CHANGELOG.md)，详细提交与历史验收记录可通过 Git 历史查阅。临时预览、调研副本和一次性工具不纳入维护目录。
 
 ## License
 
@@ -234,15 +234,15 @@ MIT © [shper](https://github.com/shper)
 
 **Bot Team** is a DeepSeek Harness plugin for long-lived agent colleagues. Every bot is a real DSH agent with its own persistent session, model, `BOT.md` persona and full toolset (files, search, web, commands inside a `workspace-write` sandbox). Each bot gets a direct chat; groups support `@mention` dispatch, parallel streaming replies, peer review and multi-round discussions. Task tools and HTTP APIs support priorities, dependencies, review/acceptance and a dispatch queue; the group sidebar task panel and its creation entry have been removed. Data lives in the `bot_team` storage domain and `$DSH_HOME/dsh-bot-team/`; group conversations never pollute session logs.
 
-The unreleased workspace adds structured discussions, 1v1 debates with an optional independent judge, and pause/resume/retry/finish/stop/context controls. Existing discuss tool calls still default to classic two-round discussions. Reload the local plugin Host with disable → enable, then refresh the page; see the [discussion and debate guide](<https://github.com/shper/dsh-bot-team/blob/main/docs/%E8%AE%A8%E8%AE%BA%E4%B8%8E%E8%BE%A9%E8%AE%BA.md>).
+Source version **1.3.0** adds structured discussions, 1v1 debates with an optional independent judge, and pause/resume/retry/finish/stop/context controls. Existing discuss tool calls still default to classic two-round discussions. Reload the local plugin Host with disable → enable, then refresh the page; see the [discussion and debate guide](<https://github.com/shper/dsh-bot-team/blob/main/docs/%E8%AE%A8%E8%AE%BA%E4%B8%8E%E8%BE%A9%E8%AE%BA.md>).
 
 Version **1.2.1** fixes execution history loading and live token totals. **Open full session** now opens a separate read-only history page with an explicit return button; returning preserves the original execution entry, chat draft and scroll position. Member and sidebar session entries use the same history reader, including saved sessions from earlier replies. The hourly reply limit has been removed; daily token budgets remain in effect.
 
 ```sh
-# Desktop: Plugins → Add plugin → dsh-bot-team@1.2.2, then reload
-dsh plugin --profile <profile> add dsh-bot-team@1.2.2
+# Desktop: Plugins → Add plugin → dsh-bot-team@1.3.0, then reload
+dsh plugin --profile <profile> add dsh-bot-team@1.3.0
 ```
 
-`1.2.2` is the current source version; these npm installation examples apply once that version is published. Use a local directory to install the source before publication.
+`1.3.0` is the current source version; these npm installation examples apply once that version is published. Use a local directory to install the source before publication.
 
 Requires DSH `0.2.1-rc.x`. The UI follows DSH's zh/en language setting, and group timelines export to Markdown, HTML, or a paginated PDF with selectable text. MIT licensed.

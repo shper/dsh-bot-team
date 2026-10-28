@@ -6514,7 +6514,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       );
 
       const info = pluginInfo && typeof pluginInfo === 'object' ? pluginInfo : {};
-      const version = typeof info.version === 'string' && info.version ? info.version : '1.2.2';
+      const version = typeof info.version === 'string' && info.version ? info.version : '1.3.0';
       const packageName = typeof info.packageName === 'string' && info.packageName ? info.packageName : 'dsh-bot-team';
       const author = typeof info.author === 'string' && info.author ? info.author : 'shper';
       const metaRows = [

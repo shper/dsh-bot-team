@@ -63,7 +63,7 @@ try {
 export const PLUGIN_INFO = Object.freeze({
   name: 'Bot Team',
   packageName: typeof pluginPackage.name === 'string' ? pluginPackage.name : 'dsh-bot-team',
-  version: typeof pluginPackage.version === 'string' ? pluginPackage.version : '1.2.2',
+  version: typeof pluginPackage.version === 'string' ? pluginPackage.version : '1.3.0',
   author: typeof pluginPackage.author === 'string'
     ? pluginPackage.author
     : pluginPackage.author && typeof pluginPackage.author.name === 'string'
