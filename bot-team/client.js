@@ -598,6 +598,35 @@ window.__ModuleLoader__.load({
       return conversation.createdAt ? new Date(conversation.createdAt).toLocaleString(isEnglishUi() ? 'en-US' : 'zh-CN') : '';
     }
 
+    function conversationDate(value) {
+      if (value === '' || (typeof value !== 'number' && typeof value !== 'string')) return null;
+      const date = new Date(value);
+      return Number.isFinite(date.getTime()) ? date : null;
+    }
+
+    /** Use only the direct successor: paginated history may have gaps. */
+    function conversationRange(conversation, nextConversation, current) {
+      const start = conversationDate(conversation.createdAt);
+      const successor = !current && nextConversation?.previousConversationId === conversation.conversationId &&
+        nextConversation.groupId === conversation.groupId && Number(nextConversation.ordinal) === Number(conversation.ordinal) + 1;
+      const candidate = successor ? conversationDate(nextConversation.createdAt) : null;
+      const end = start && candidate && candidate >= start ? candidate : null;
+      const clock = date => padClock(date.getHours()) + ':' + padClock(date.getMinutes());
+      const dated = (date, year) => (year ? date.getFullYear() + '/' : '') + padClock(date.getMonth() + 1) + '/' + padClock(date.getDate()) + ' ' + clock(date);
+      const crossDay = start && end && !sameDay(start, end);
+      const includeYear = crossDay && (start.getFullYear() !== end.getFullYear() || start.getFullYear() !== new Date().getFullYear());
+      const full = date => date.toLocaleString(isEnglishUi() ? 'en-US' : 'zh-CN', {
+        year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23', timeZoneName: 'short',
+      });
+      return {
+        startLabel: start ? crossDay ? dated(start, includeYear) : formatTimeDivider(start.toISOString()) : uiT('时间未知'),
+        endLabel: current ? uiT('至今') : end ? crossDay ? dated(end, includeYear) : clock(end) : uiT('结束时间未知'),
+        startTime: start?.toISOString(), endTime: end?.toISOString(),
+        detail: uiT('开始：{time}', { time: start ? full(start) : uiT('时间未知') }) + '\n' +
+          uiT('结束：{time}', { time: current ? uiT('至今') : end ? full(end) : uiT('时间未知') }),
+      };
+    }
+
     /** Fire-and-forget UI verification report (ends up in the Host smoke log). */
     function uiReport(payload) {
       try {
@@ -1004,6 +1033,13 @@ window.__ModuleLoader__.load({
       "将草稿用于当前会话": "Use draft in current conversation",
       "会话 {ordinal}": "Conversation {ordinal}",
       "当前会话": "Current conversation",
+      "当前": "Current",
+      "至今": "Present",
+      "时间未知": "Time unknown",
+      "结束时间未知": "End time unknown",
+      "开始：{time}": "Started: {time}",
+      "结束：{time}": "Ended: {time}",
+      "查看{conversation}的日志": "View logs for {conversation}",
       "查看本会话日志": "View logs for this conversation",
       "本会话日志": "Current conversation logs",
       "本会话尚无日志": "No logs in this conversation yet",
@@ -4690,6 +4726,43 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
   0%, 60%, 100% { opacity: .35; transform: translateY(0); }
   30% { opacity: 1; transform: translateY(-2px); }
 }
+.bt-root .bt-message-column { container: bt-timeline / inline-size; }
+.bt-root .bt-conversation-divider { display:flex; align-items:center; gap:16px; min-height:36px; margin:20px 0; }
+.bt-root .bt-conversation-divider::before,
+.bt-root .bt-conversation-divider::after { content:""; height:1px; background:var(--bt-border-strong); flex:1; min-width:12px; }
+.bt-root .bt-conversation-meta { display:flex; flex:0 1 auto; flex-wrap:wrap; align-items:center; justify-content:center; gap:4px 10px; min-width:0; max-width:calc(100% - 56px); min-height:36px; }
+.bt-root .bt-conversation-identity { display:flex; flex:none; align-items:center; gap:8px; white-space:nowrap; }
+.bt-root .bt-conversation-identity strong { font-size:13px; font-weight:600; color:var(--bt-text-2); }
+.bt-root .bt-conversation-divider[data-current=true] strong { color:var(--bt-text-strong); }
+.bt-root .bt-conversation-current { padding:0 6px; border-radius:5px; background:var(--bt-accent-soft); color:var(--bt-accent); font-size:10px; line-height:19px; font-weight:500; }
+.bt-root .bt-conversation-date { position:relative; display:flex; align-items:center; gap:10px; min-width:0; color:var(--bt-text-2); }
+.bt-root .bt-conversation-dot { color:var(--bt-text-3); font-size:10px; }
+.bt-root .bt-conversation-range { display:inline-flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:4px; min-width:0; font-size:12px; line-height:20px; font-variant-numeric:tabular-nums; border-radius:3px; }
+.bt-root .bt-conversation-range time { white-space:nowrap; }
+.bt-root .bt-conversation-range:focus-visible { outline:2px solid var(--bt-accent); outline-offset:4px; }
+.bt-root .bt-conversation-tooltip { position:absolute; top:calc(100% + 8px); left:50%; transform:translateX(-50%); z-index:12; width:max-content; max-width:min(340px, 80cqi); padding:7px 10px; border:1px solid var(--bt-border-strong); border-radius:6px; background:var(--bt-surface); color:var(--bt-text); box-shadow:0 4px 12px #0002; font-size:11px; line-height:1.8; white-space:pre-line; display:none; pointer-events:none; }
+.bt-root .bt-conversation-date:not([data-dismissed=true]):hover .bt-conversation-tooltip,
+.bt-root .bt-conversation-date:not([data-dismissed=true]):focus-within .bt-conversation-tooltip { display:block; }
+.bt-root .bt-conversation-logs { position:relative; display:inline-flex; flex:none; align-items:center; justify-content:center; gap:5px; min-height:32px; margin-left:6px; padding:0 7px; border:0; border-radius:6px; background:transparent; color:var(--bt-text-2); font:inherit; font-size:12px; white-space:nowrap; cursor:pointer; }
+.bt-root .bt-conversation-logs::before { content:""; position:absolute; left:-6px; width:1px; height:12px; background:var(--bt-border-strong); }
+.bt-root .bt-conversation-logs:hover { background:var(--bt-hover); color:var(--bt-accent); }
+.bt-root .bt-conversation-logs svg { flex:none; }
+@container bt-timeline (max-width:560px) {
+  .bt-root .bt-conversation-divider { gap:8px; margin:16px 0; }
+  .bt-root .bt-conversation-meta { display:grid; grid-template-columns:auto auto; gap:0 10px; max-width:calc(100% - 40px); }
+  .bt-root .bt-conversation-identity { justify-content:center; }
+  .bt-root .bt-conversation-identity strong { font-size:12px; }
+  .bt-root .bt-conversation-date { grid-row:2; grid-column:1 / -1; justify-content:center; padding:4px 0; }
+  .bt-root .bt-conversation-dot { display:none; }
+  .bt-root .bt-conversation-logs { grid-row:1; grid-column:2; min-height:36px; }
+  .bt-root .bt-conversation-meta[data-logs=false] { grid-template-columns:1fr; }
+}
+@container bt-timeline (max-width:340px) {
+  .bt-root .bt-conversation-divider { gap:4px; }
+  .bt-root .bt-conversation-divider::before,
+  .bt-root .bt-conversation-divider::after { min-width:6px; }
+  .bt-root .bt-conversation-meta { max-width:calc(100% - 20px); column-gap:6px; }
+}
 .bt-root .bt-time-divider span,
 .bt-root .bt-unread-divider span { white-space: nowrap; }
 .bt-root .bt-unread-divider::before,
@@ -8144,21 +8217,41 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       return h('div', { className: 'bt-unread-divider', style: S.unreadDivider }, h('span', null, '新消息'));
     }
 
-    function ConversationDivider({ conversation, current, onViewLogs }) {
-      return h('div', { className: 'bt-conversation-divider', 'data-conversation-id': conversation.conversationId, role: 'group',
-        'aria-label': conversationLabel(conversation), style: { margin: '20px 0 14px', borderTop: '1px solid var(--dsw-alias-border-l2, #ddd)', paddingTop: 10, textAlign: 'center', fontSize: 12 } },
-        h('strong', null, conversationLabel(conversation)), current ? h('span', null, ' · ', '当前会话') : null,
-        h('div', { style: { ...S.hint, marginBottom: 6 } }, conversationTime(conversation)),
-        onViewLogs ? h('button', { type: 'button', style: S.smallBtn, onClick: () => onViewLogs(conversation) }, '查看本会话日志') : null);
+    function ConversationDivider({ conversation, nextConversation, current, onViewLogs }) {
+      const range = conversationRange(conversation, nextConversation, current);
+      const [dismissed, setDismissed] = React.useState(false);
+      const label = conversationLabel(conversation);
+      const tooltipId = 'bt-conversation-time-' + conversation.conversationId;
+      return h('div', { className: 'bt-conversation-divider', 'data-conversation-id': conversation.conversationId, 'data-current': !!current,
+        role: 'group', 'aria-label': label + (current ? ' · ' + uiT('当前会话') : '') },
+        h('div', { className: 'bt-conversation-meta', 'data-logs': !!onViewLogs },
+          h('span', { className: 'bt-conversation-identity' }, h('strong', null, label),
+            current ? h('span', { className: 'bt-conversation-current' }, '当前') : null),
+          h('span', { className: 'bt-conversation-date', 'data-dismissed': dismissed,
+            onMouseEnter: () => setDismissed(false), onFocus: () => setDismissed(false),
+            onKeyDown: event => { if (event.key === 'Escape') { setDismissed(true); event.stopPropagation(); } } },
+            h('span', { className: 'bt-conversation-dot', 'aria-hidden': true }, '·'),
+            h('span', { className: 'bt-conversation-range', tabIndex: 0, 'aria-describedby': tooltipId },
+              h(range.startTime ? 'time' : 'span', { dateTime: range.startTime }, range.startLabel),
+              h('span', null, '–'), h(range.endTime ? 'time' : 'span', { dateTime: range.endTime }, range.endLabel)),
+            h('span', { className: 'bt-conversation-tooltip', role: 'tooltip', id: tooltipId }, range.detail)),
+          onViewLogs ? h('button', { type: 'button', className: 'bt-conversation-logs',
+            'aria-label': uiT('查看{conversation}的日志', { conversation: label }), onClick: () => onViewLogs(conversation) },
+            h('svg', { width: 13, height: 13, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5,
+              strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true, focusable: false },
+              h('path', { d: 'M9 2H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V6zM9 2v4h4M6 9h4M6 11.5h3' })),
+            '查看日志') : null));
     }
 
     function MessageList({ messages, unreadFromSeq, conversations, group, onViewConversationLogs, ...rest }) {
       let unreadShown = false;
       const rows = [];
       const entries = conversationTimeline(messages, conversations);
+      const successors = new Map(entries.filter(entry => entry.conversation?.previousConversationId).map(entry => [entry.conversation.previousConversationId, entry.conversation]));
       entries.forEach((entry, index) => {
         if (entry.conversation) {
           rows.push(h(ConversationDivider, { key: 'conversation-' + entry.conversation.conversationId, conversation: entry.conversation,
+            nextConversation: successors.get(entry.conversation.conversationId),
             current: entry.conversation.conversationId === currentConversationId(group), onViewLogs: onViewConversationLogs }));
           return;
         }
@@ -8167,8 +8260,12 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         const next = entries[index + 1]?.message;
         const currentAt = Number(message.createdAt || 0);
         const previousAt = previous ? Number(previous.createdAt || 0) : 0;
-        const showTime =
-          !previous || !sameDay(previous.createdAt, message.createdAt) || currentAt - previousAt >= 5 * 60 * 1000;
+        const boundary = entries[index - 1]?.conversation;
+        const boundaryDate = boundary && conversationDate(boundary.createdAt);
+        const repeatsBoundary = boundaryDate && currentAt >= boundaryDate.getTime() && message.conversationId === boundary.conversationId &&
+          Math.floor(currentAt / 60000) === Math.floor(boundaryDate.getTime() / 60000);
+        const showTime = !repeatsBoundary &&
+          (!previous || !sameDay(previous.createdAt, message.createdAt) || currentAt - previousAt >= 5 * 60 * 1000);
         if (showTime) rows.push(h(TimeDivider, { key: `time-${message.messageId}`, value: message.createdAt }));
         if (!unreadShown && unreadFromSeq && Number(message.seq) >= Number(unreadFromSeq)) {
           rows.push(h(UnreadDivider, { key: `unread-${unreadFromSeq}` }));
@@ -12361,7 +12458,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                       },
                       h(
                         'div',
-                        { style: S.messageColumn },
+                        { className: 'bt-message-column', style: S.messageColumn },
                         state.conversationHasMoreByGroup?.[activeGroup.groupId]
                           ? h('button', { type: 'button', className: 'bt-load-earlier', style: S.loadEarlier, onClick: () => void loadEarlierConversations() }, '加载更早的会话分段') : null,
                         state.hasMoreByGroup[activeGroup.groupId]
