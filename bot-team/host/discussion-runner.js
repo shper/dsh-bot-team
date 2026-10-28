@@ -208,7 +208,7 @@ export class DiscussionRunner {
       await this.save(record); // durable claim precedes queue insertion, including the job ID
       if (this.closed.has(id) || e.disposed) return;
       const meta = { discussionId: id, stepId: step.stepId, attemptId: attempt.attemptId,
-        phase: step.phase, side: step.side ?? null, round: step.round,
+        mode: record.mode, phase: step.phase, side: step.side ?? null, round: step.round,
         summary: step.phase === 'summary' || step.phase === 'judgement', speaker: step.membershipId };
       try {
         e.enqueueJob({ jobId: attempt.jobId, groupId: record.groupId, conversationId: record.conversationId,

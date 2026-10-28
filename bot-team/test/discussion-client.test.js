@@ -320,7 +320,7 @@ test('current discussion and debate controls appear below members and remain acc
     const c = loadClient({ state: { ...initialState, loading: false, groups: [group], activeGroupId: 'g1', bots, members, rightPanelCollapsed: true, discussions: { g1: record({ mode }) } } });
     let tree = c.render(c.BotTeamPage);
     assert.equal(walk(tree).some(node => node.type === c.DiscussionProgress || node.props?.className === 'bt-discussion-dock'), false);
-    button(tree, '查看当前讨论').props.onClick(); tree = c.render(c.BotTeamPage);
+    button(tree, mode === 'debate' ? '查看当前辩论' : '查看当前讨论').props.onClick(); tree = c.render(c.BotTeamPage);
     assert.ok(walk(tree).some(node => node.type === c.DiscussionProgress));
     assert.ok(walk(tree).some(node => node.type === c.DiscussionResult && node.props.initiallyExpanded));
     assert.equal(walk(tree).some(node => node.type === c.DiscussionDialog), false);

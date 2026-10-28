@@ -111,6 +111,7 @@ const LABELS = {
     messages: '消息数',
     round: (n) => `第 ${n} 轮`,
     summary: '讨论总结',
+    debateResult: '辩论结果',
     sides: { pro: '正方', con: '反方', neutral: '中立' },
     phases: { discussion: '轮流发言', viewpoint: '提出观点', challenge: '相互检验', converge: '修正收敛',
       checkpoint: '阶段小结', summary: '讨论总结', opening: '立论', question: '质询', answer: '回应', closing: '结辩', judgement: '裁决' },
@@ -130,6 +131,7 @@ const LABELS = {
     messages: 'Messages',
     round: (n) => `Round ${n}`,
     summary: 'Discussion summary',
+    debateResult: 'Debate result',
     sides: { pro: 'Pro', con: 'Con', neutral: 'Neutral' },
     phases: { discussion: 'Round robin', viewpoint: 'Perspectives', challenge: 'Examination', converge: 'Refinement',
       checkpoint: 'Round recap', summary: 'Discussion summary', opening: 'Opening', question: 'Question', answer: 'Answer', closing: 'Closing', judgement: 'Judgement' },
@@ -694,7 +696,12 @@ function renderMessage(layout, message, labels, lang) {
   if (message.meta && message.meta.round) badges.push(labels.round(message.meta.round));
   if (message.meta?.side && labels.sides[message.meta.side]) badges.push(labels.sides[message.meta.side]);
   if (message.meta?.phase && labels.phases[message.meta.phase]) badges.push(labels.phases[message.meta.phase]);
-  if (message.meta?.summary && !['summary', 'judgement'].includes(message.meta.phase)) badges.push(labels.summary);
+  if (message.meta?.summary && !['summary', 'judgement'].includes(message.meta.phase)) {
+    const mode = [message.mode, message.meta.mode].find(value => value === 'discussion' || value === 'debate');
+    const debate = mode ? mode === 'debate'
+      : ['opening', 'question', 'answer', 'closing', 'judgement'].includes(message.meta.phase) || ['pro', 'con', 'judge'].includes(message.meta.side);
+    badges.push(debate ? labels.debateResult : labels.summary);
+  }
   if (message.meta && message.meta.verdict === 'pass') badges.push(labels.pass);
   if (message.meta && message.meta.verdict === 'changes') badges.push(labels.changes);
   if (message.status === 'stopped') badges.push(labels.stopped);
