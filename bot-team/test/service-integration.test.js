@@ -43,6 +43,40 @@ function fakeCtx(storageRoot) {
   return { ctx, routes, tools };
 }
 
+test('bootstrap stays available when optional native services are absent from a guarded scope', async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'bot-team-bootstrap-scope-'));
+  const { ctx, routes } = fakeCtx(path.join(home, 'storages'));
+  for (const name of ['botTeamNativeActivity', 'jobs', 'goals', 'subagents']) {
+    Object.defineProperty(ctx, name, { get() {
+      throw new Error('cannot get property "' + name + '" without inject');
+    } });
+  }
+  const service = new BotTeamService(ctx, resolveConfig({
+    dataDir: path.join(home, 'data'), defaultCwd: home, migrateLegacyLayout: false,
+  }));
+  t.after(async () => {
+    await service.dispose();
+    await rm(home, { recursive: true, force: true });
+  });
+  await service.ready;
+  const route = routes.find(entry => entry.path === '/api/bot-team.bootstrap');
+  const bootstrap = () => route.fetch(new Request('http://localhost/api/bot-team.bootstrap'));
+  const empty = await bootstrap();
+  const emptyBody = await empty.json();
+  assert.equal(empty.status, 200, JSON.stringify(emptyBody));
+  assert.equal(emptyBody.ok, true);
+  assert.deepEqual(emptyBody.groups, []);
+  assert.equal(emptyBody.capabilities.conversations, false);
+
+  const group = await service.createGroup({ title: 'Existing chat' });
+  const populated = await bootstrap();
+  const body = await populated.json();
+  assert.equal(populated.status, 200, JSON.stringify(body));
+  assert.equal(body.groups[0].groupId, group.groupId);
+  assert.equal(body.groups[0].canStartConversation, false);
+  assert.ok(body.groups[0].conversationBlockers.some(item => item.code === 'native-capability-unavailable'));
+});
+
 test('random Bot illustration colors survive saving, reopening and renaming', async (t) => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'bot-team-avatar-colors-'));
   const { ctx } = fakeCtx(path.join(home, 'storages'));
@@ -211,18 +245,20 @@ test('the real service boots, registers its routes/tools, and drives direct chat
   );
   try {
     await service.ready;
-    assert.equal(routes.length, 11, 'bootstrap/messages/execution/session-history/events/action/health/file/upload/skills/export-pdf routes');
+    assert.equal(routes.length, 13, 'bootstrap/messages/conversations/execution/session-history/session-export/events/action/health/file/upload/skills/export-pdf routes');
     assert.deepEqual(
       routes.map((route) => route.path).sort(),
       [
         '/api/bot-team.action',
         '/api/bot-team.bootstrap',
+        '/api/bot-team.conversations',
         '/api/bot-team.events',
         '/api/bot-team.export.pdf',
         '/api/bot-team.file',
         '/api/bot-team.health',
         '/api/bot-team.message-execution',
         '/api/bot-team.messages',
+        '/api/bot-team.session-export',
         '/api/bot-team.session-history',
         '/api/bot-team.skills',
         '/api/bot-team.upload',
@@ -231,7 +267,7 @@ test('the real service boots, registers its routes/tools, and drives direct chat
     assert.equal(tools.length, 8, 'all model tools registered');
 
     const health = service.healthPayload();
-    assert.equal(health.domain.schemaVersion, 6);
+    assert.equal(health.domain.schemaVersion, 7);
     assert.equal(health.domain.counts.folders, 0);
 
     const bot = await service.dispatch('bot.create', {

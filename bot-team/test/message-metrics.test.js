@@ -169,11 +169,13 @@ function engineFixture() {
   const persisted = [];
   const frames = [];
   const members = new Map();
+  const agents = new Map();
   const bots = new Map();
   const messages = new Map();
   const repo = {
     messages,
     allocateSeq: () => ++nextSeq,
+    getGroup: (id) => id === 'group' ? { groupId: id } : undefined,
     getMember: (id) => members.get(id),
     getBot: (id) => bots.get(id),
     appendMessage: (value) => { messages.set(value.messageId, value); },
@@ -182,7 +184,7 @@ function engineFixture() {
     touchMember: () => {},
   };
   const engine = new Engine({
-    ctx: { on: () => () => {}, agents: { get: () => undefined } },
+    ctx: { on: () => () => {}, agents: { get: (id) => agents.get(id) } },
     repo, pool: {}, personas: {},
     bus: { emit: (groupId, frame) => { frames.push({ groupId, ...structuredClone(frame) }); } },
     config: { maxParallelTurns: 3, turnTimeoutMs: 300000 },
@@ -190,7 +192,8 @@ function engineFixture() {
   engine.runJob = () => Promise.resolve();
   const addJob = (id = 'session', turn = 1) => {
     const memberId = `member-${id}`;
-    members.set(memberId, { membershipId: memberId, botId: id });
+    if (!agents.has(id)) agents.set(id, { id, session: { id } });
+    members.set(memberId, { membershipId: memberId, groupId: 'group', botId: id, sessionId: id });
     bots.set(id, { botId: id, name: id, provider: 'mock', model: 'mock-model' });
     const job = { jobId: `job-${id}-${turn}`, groupId: 'group', membershipId: memberId, triggerSeq: 0, kind: 'chat' };
     engine.startJob(job);
@@ -199,15 +202,15 @@ function engineFixture() {
     job.requestMetrics.clock = () => now;
     job.sessionId = id;
     engine.activeBySession.set(id, job);
-    engine.onSessionEvent({ id }, { type: 'turn/start', data: { turn } });
+    engine.onSessionEvent(agents.get(id).session, { type: 'turn/start', data: { turn } });
     return job;
   };
   return {
     engine, persisted, frames, messages, addJob,
     at: (value) => { now = value; },
-    stream: (job, frame) => engine.onAssistantStream({ agent: { id: job.sessionId }, frame }),
-    event: (job, event) => engine.onSessionEvent({ id: job.sessionId }, event),
-    finish: (job, kind = 'completed') => engine.onSessionEvent({ id: job.sessionId }, { type: 'turn/end', data: { turn: job.turn, reason: { kind } } }),
+    stream: (job, frame) => engine.onAssistantStream({ agent: agents.get(job.sessionId), frame }),
+    event: (job, event) => engine.onSessionEvent(agents.get(job.sessionId).session, event),
+    finish: (job, kind = 'completed') => engine.onSessionEvent(agents.get(job.sessionId).session, { type: 'turn/end', data: { turn: job.turn, reason: { kind } } }),
   };
 }
 

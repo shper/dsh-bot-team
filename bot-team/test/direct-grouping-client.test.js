@@ -401,7 +401,7 @@ test('the direct-chat page header and right rail use bot identity, not member ma
   assert.match(text(panel), /deepseek\/deepseek-chat/);
   assert.match(text(panel), /1,200/);
   assert.ok(buttonByText(panel, '编辑 Bot'));
-  assert.ok(buttonByText(panel, '查看会话'));
+  assert.ok(buttonByText(panel, '查看日志'));
 });
 
 test('group and folder dialogs expose folder assignment and naming', () => {

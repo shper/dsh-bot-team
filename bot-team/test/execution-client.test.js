@@ -95,7 +95,7 @@ test('projection pairs real SDK tool and nested PTC IDs, exact arguments, failur
     event(5, 'tool/ptc-dispatch-start', { rootCallId: 'root', parentCallId: 'inner', subCallId: 'leaf', name: 'read', arguments: { path: '/a' } }),
     event(6, 'tool/ptc-dispatch', { rootCallId: 'root', parentCallId: 'inner', subCallId: 'leaf', name: 'read', arguments: { path: '/a' }, isError: false, content: [{ type: 'text', text: 'leaf result' }] }),
     event(7, 'tool/ptc-dispatch', { rootCallId: 'root', parentCallId: 'root', subCallId: 'inner', name: 'bash', arguments: args, isError: true, content: 'permission denied', elapsedMs: 17 }),
-    event(8, 'tool/result', { turn: 3, step: 1, message: { toolCallId: 'root', content: 'outer result', isError: false }, attachments: [{ name: 'image.png' }] }),
+    event(8, 'tool/result', { turn: 3, step: 1, message: { source: { type: 'tool', callId: 'root' }, content: 'outer result', isError: false }, attachments: [{ name: 'image.png' }] }),
     event(9, 'turn/end', { turn: 3, durationMs: 123 }),
   ];
   const projected = client.projectExecutionEvents(records);
@@ -133,7 +133,7 @@ test('projection handles compatibility PTC endings, sparse results and reused ca
   assert.equal(nodes[2].result, 'saved result');
 });
 
-test('projection shows chronological progress, approvals and retries without hidden reasoning or system prompts', () => {
+test('projection preserves every event type including reasoning, attempts, compaction and unknown payloads', () => {
   const nodes = client.projectExecutionEvents([
     event(1, 'step/start', { step: 1 }),
     event(2, 'assistant/attempt', { model: 'model', status: 'retrying' }),
@@ -148,17 +148,19 @@ test('projection shows chronological progress, approvals and retries without hid
     event(11, 'assistant/stream', { text: 'hidden stream' }),
     event(12, 'future/safe-event', { text: 'unknown safe record', systemPrompt: 'never display unknown raw objects' }),
   ]);
-  assert.deepEqual(plain(nodes.map(node => node.seq)), [1, 2, 3, 4, 5, 6, 7, 8, 9, 12]);
+  assert.deepEqual(plain(nodes.map(node => node.seq)), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
   assert.equal(nodes[1].label, '未完成的模型输出');
-  assert.deepEqual(plain(nodes[1].payloads[0].value), {}, 'attempt markers expose no raw provider stream');
+  assert.deepEqual(plain(nodes[1].payloads[0].value.data), { model: 'model', status: 'retrying' });
+  assert.equal(nodes[2].blocks[0].text, 'private', 'recorded reasoning is preserved');
   assert.equal(nodes[2].payloads[0].value, 'intermediate');
   assert.equal(nodes[3].label, '等待审批');
-  assert.equal(nodes[4].payloads[0].value.outcome, 'denied');
+  assert.equal(nodes[4].payloads[0].value.data.outcome, 'denied');
   assert.equal(nodes[5].label, '重试');
   assert.equal(nodes[7].label, '上下文整理');
   assert.match(nodes[9].label, /其他记录/);
-  assert.equal(nodes[9].payloads.length, 0);
-  assert.doesNotMatch(JSON.stringify(nodes), /private|system secret|hidden stream|systemPrompt/);
+  assert.equal(nodes[9].payloads[0].value.data.text, 'system secret');
+  assert.equal(nodes[10].payloads[0].value.data.text, 'hidden stream');
+  assert.equal(nodes[11].payloads[0].value.data.systemPrompt, 'never display unknown raw objects');
 });
 
 test('loader drains pages including filtered empty pages and queues updates received during fetch', async () => {
@@ -320,11 +322,11 @@ test('drawer renders accessible states and uses only the returned fixed session 
   const dialog = walk(available).find(node => node.props?.role === 'dialog');
   assert.equal(dialog.props['aria-modal'], 'true');
   assert.match(text(available), /Timi · 消息 #7/);
-  buttons(available).find(button => text(button) === '打开完整会话').props.onClick();
+  buttons(available).find(button => text(button) === '完整日志').props.onClick();
   assert.deepEqual(opened, ['fixed-session']);
   const legacy = render(page({ availability: 'legacy-unlinked', execution: null, fallbackSessionId: 'member-current' }));
-  assert.doesNotMatch(text(legacy), /打开完整会话/);
-  buttons(legacy).find(button => text(button) === '查看成员当前会话').props.onClick();
+  assert.doesNotMatch(text(legacy), /完整日志/);
+  buttons(legacy).find(button => text(button) === '查看成员当前日志').props.onClick();
   assert.deepEqual(opened, ['fixed-session', 'member-current']);
   for (const [state, expected] of [
     [{ loading: true }, /正在加载执行过程/],
@@ -460,7 +462,7 @@ test('execution English copy translates labels and dynamic templates while prese
   ] }), loading: false };
   const tree = en.render(en.ExecutionDrawer, { target: { groupId: 'g1', message: source }, state, onClose() {}, onRefresh() {}, onOpenSession() {} });
   const visible = text(tree);
-  for (const label of ['Execution details', '执行过程 · Message #7', 'Running', 'Trigger input', 'Full input', 'Unfinished model output', 'Tool · run_code', 'Nested tool · 执行过程', 'Call arguments', 'Tool result · ', 'Other record · future/safe-event', 'Failed', 'Awaiting result', 'Some execution records are missing.', 'Refresh records', 'Open full session']) assert.ok(visible.includes(label), label);
+  for (const label of ['Execution details', '执行过程 · Message #7', 'Running', 'Trigger input', 'Full input', 'Unfinished model output', 'Tool · run_code', 'Nested tool · 执行过程', 'Call arguments', 'Tool result · ', 'Other record · future/safe-event', 'Failed', 'Awaiting result', 'Some execution records are missing.', 'Refresh records', 'Full logs']) assert.ok(visible.includes(label), label);
   const dialog = walk(tree).find(node => node.props?.role === 'dialog');
   assert.equal(buttons(dialog).find(button => text(button) === '×').props['aria-label'], 'Close execution details');
   assert.equal(walk(tree).find(node => node.type === 'ol').props['aria-label'], 'Execution records in chronological order');
@@ -470,7 +472,7 @@ test('execution English copy translates labels and dynamic templates while prese
   const menu = en.render(en.MessageContextMenu, { menu: { message: source, x: 1, y: 1 }, bots: [], allMessages: [source], onClose() {}, onExecution() {} });
   const action = buttons(menu).find(button => text(button) === 'Execution details');
   assert.equal(action.props.title, "View this reply's execution details");
-  for (const key of ['执行过程', '工具 · {tool}', '内部工具 · {tool}', '{bot} · 消息 #{message}', '刷新记录', '打开完整会话']) assert.equal(en.UI_ZH[key], key, 'Chinese registration includes added execution keys');
+  for (const key of ['执行过程', '工具 · {tool}', '内部工具 · {tool}', '{bot} · 消息 #{message}', '刷新记录', '完整日志']) assert.equal(en.UI_ZH[key], key, 'Chinese registration includes added execution keys');
   const zh = localizedExecution('zh');
   assert.equal(zh.uiT('{bot} · 消息 #{message}', { bot: '执行过程', message: 7 }), '执行过程 · 消息 #7');
 });
@@ -482,7 +484,7 @@ test('English execution states and reason messages contain readable fallback and
     [{ loading: true }, 'Loading execution details…'],
     [{ loading: true, events: [event(1, 'turn/start')] }, 'Loading more records…'],
     [{ availability: 'preparing' }, 'Execution records are being prepared'],
-    [{ availability: 'legacy-unlinked', fallbackSessionId: 'member-session' }, "View member's current session"],
+    [{ availability: 'legacy-unlinked', fallbackSessionId: 'member-session' }, "View member's current logs"],
     [{ availability: 'unavailable', reason: 'session-log-missing' }, 'The original session records no longer exist.'],
     [{ availability: 'unavailable', reason: 'unknown-machine-code' }, 'Please refresh the records and try again later.'],
     [{ availability: 'available' }, 'There are no execution records to display yet.'],

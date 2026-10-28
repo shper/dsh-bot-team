@@ -44,6 +44,16 @@ test('turn prompts expose attachment handles and keep the slash gesture at a bou
   assert.match(prompt, /附件是只读文件/);
 });
 
+test('long user instructions retain their final constraints for native compaction', () => {
+  const text = 'Context detail. '.repeat(400) + '\nFinal constraint: preserve the original records.';
+  const prompt = buildTurnPrompt({
+    repo: repoFor(), botId: 'b1', groupId: 'g1', triggeredByMessageId: 'long', mention: true,
+    contextMessages: [{ messageId: 'long', seq: 9, author: { type: 'human' }, text }],
+  });
+  assert.ok(prompt.includes(text));
+  assert.doesNotMatch(prompt, /已截断/);
+});
+
 test('attachment-only messages still render a context line and missing paths are explicit', () => {
   const repo = repoFor();
   const message = {

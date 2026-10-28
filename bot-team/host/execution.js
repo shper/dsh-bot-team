@@ -1,4 +1,5 @@
 /** Read Bot executions and group-owned Session history through session-query. */
+import { conversationIdOf } from './conversations.js';
 const ID = /^[A-Za-z0-9_-]{1,256}$/;
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/;
 const ACTIVE = new Set(['pending', 'streaming', 'running', 'queued']);
@@ -57,18 +58,6 @@ function clone(value, ancestors = new Set()) {
   }
 }
 
-function pick(value, keys) {
-  const result = {};
-  if (!record(value)) return result;
-  for (const key of keys) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (!descriptor || !own(descriptor, 'value')) continue;
-    const copied = clone(descriptor.value);
-    if (copied !== undefined) result[key] = copied;
-  }
-  return result;
-}
-
 function reference(message) {
   const raw = message.meta?.execution;
   if (raw === undefined || raw === null) return { legacy: true, execution: null };
@@ -112,16 +101,36 @@ function response(message, afterSeq, availability, execution, extra = {}) {
   };
 }
 
+function validateExecutionOwnership(repo, message, execution) {
+  if (!repo.getGroup(message.groupId)?.activeConversationId || !execution?.sessionId) return;
+  const conversationId = conversationIdOf(repo, message);
+  const binding = repo.sessionBindingFor?.(execution.sessionId);
+  if (!conversationId || (binding && (binding.groupId !== message.groupId ||
+      binding.conversationId !== conversationId || binding.membershipId !== message.author.membershipId ||
+      binding.botId !== message.author.botId))) fail('invalid-input', 'Execution Session does not belong to this message');
+}
+
 function legacyResponse(repo, message, afterSeq) {
   const member = repo.getMember?.(message.author.membershipId);
-  const fallback = typeof message.author.botId === 'string' && ID.test(message.author.botId) &&
-    typeof message.author.membershipId === 'string' && ID.test(message.author.membershipId) &&
-    member && member.groupId === message.groupId &&
-    member.membershipId === message.author.membershipId && member.botId === message.author.botId &&
-    typeof member.sessionId === 'string' && SESSION_ID.test(member.sessionId);
+  const validAuthor = typeof message.author.botId === 'string' && ID.test(message.author.botId) &&
+    typeof message.author.membershipId === 'string' && ID.test(message.author.membershipId);
+  let fallbackSessionId;
+  if (repo.getGroup(message.groupId)?.activeConversationId) {
+    // A legacy message cannot borrow a newer member Session. Only a unique,
+    // committed binding for this message's own conversation proves a fallback.
+    const conversationId = conversationIdOf(repo, message);
+    const bindings = conversationId && validAuthor ? (repo.sessionBindingsOf?.(message.groupId, conversationId) || []) : [];
+    const candidates = new Set(bindings.filter(binding =>
+      binding.groupId === message.groupId && binding.conversationId === conversationId &&
+      binding.membershipId === message.author.membershipId && binding.botId === message.author.botId &&
+      typeof binding.sessionId === 'string' && SESSION_ID.test(binding.sessionId)).map(binding => binding.sessionId));
+    if (candidates.size === 1) fallbackSessionId = [...candidates][0];
+  } else if (validAuthor && member && member.groupId === message.groupId &&
+      member.membershipId === message.author.membershipId && member.botId === message.author.botId &&
+      typeof member.sessionId === 'string' && SESSION_ID.test(member.sessionId)) fallbackSessionId = member.sessionId;
   return response(message, afterSeq, 'legacy-unlinked', null, {
     reason: 'legacy-message-has-no-execution-reference',
-    ...(fallback ? { fallbackSessionId: member.sessionId } : {}),
+    ...(fallbackSessionId ? { fallbackSessionId } : {}),
   });
 }
 
@@ -140,11 +149,16 @@ function observationEvents(observation, sessionId) {
   if (!observation || observation.header?.id !== sessionId || typeof observation[Symbol.dispose] !== 'function') {
     fail('execution-log-corrupt', 'Session observation identity or lease is invalid');
   }
-  const events = observation.events;
-  const cursor = observation.cursor;
+  return validatedEvents(observation.events, observation.cursor);
+}
+
+function validatedEvents(events, cursor) {
   if (!Array.isArray(events) || !Number.isSafeInteger(cursor) || cursor < -1) fail('execution-log-corrupt', 'Invalid session snapshot');
-  if (events.length !== cursor + 1 || events.some((event, index) => !record(event) || event.seq !== index || typeof event.type !== 'string')) {
-    fail('execution-log-corrupt', 'Session log is not a contiguous snapshot');
+  if (events.length !== cursor + 1) fail('execution-log-corrupt', 'Session log is not a contiguous snapshot');
+  for (const [index, event] of events.entries()) {
+    if (!record(event) || event.seq !== index || typeof event.type !== 'string') {
+      fail('execution-log-corrupt', 'Session log is not a contiguous snapshot');
+    }
   }
   return events;
 }
@@ -236,107 +250,31 @@ function resolveSpan(events, execution) {
   return { span };
 }
 
-function errorInfo(value) {
-  return typeof value === 'string' ? value : pick(value, ['name', 'code', 'message', 'retryable', 'status', 'statusCode', 'providerRetryAfterMs']);
-}
-
-function userMessage(data) {
-  const result = pick(data, ['id', 'role']);
-  result.source = pick(data?.source, ['kind']);
-  result.content = Array.isArray(data?.content) ? data.content.filter((block) =>
-    block && ['text', 'image', 'image-url', 'file', 'audio'].includes(block.type) && block.hidden !== true && block.internal !== true,
-  ).map((block) => block.type === 'text' ? pick(block, ['type', 'text']) : clone(block)) : [];
-  return result;
-}
-
-/** Explicit observable vocabulary: no request envelopes, inbox copies or opaque streams. */
-function project(event, inputMessageId) {
-  const data = record(event.data) ? event.data : {};
-  let projected;
-  switch (event.type) {
-    case 'user/message':
-      if (event.surfaceOp && event.surfaceOp !== 'append') return null;
-      if ((typeof inputMessageId !== 'string' || data.id !== inputMessageId) && data.source?.kind !== 'user') return null;
-      projected = userMessage(data);
-      break;
-    case 'turn/start':
-    case 'step/start':
-    case 'step/end':
-    case 'assistant/attempt':
-      projected = pick(data, ['turn', 'step']);
-      break;
-    case 'turn/end':
-      projected = pick(data, ['turn']);
-      projected.reason = pick(data.reason, ['kind']);
-      if (data.reason?.reason) projected.reason.reason = pick(data.reason.reason, ['kind']);
-      if (data.reason?.error) projected.reason.error = errorInfo(data.reason.error);
-      break;
-    case 'assistant/message': {
-      if (event.surfaceOp && event.surfaceOp !== 'append') return null;
-      const content = Array.isArray(data.message?.content) ? data.message.content
-        .filter((block) => block?.type === 'text' && typeof block.text === 'string' && block.hidden !== true && block.internal !== true && block.visibility !== 'hidden')
-        .map((block) => ({ type: 'text', text: block.text })) : [];
-      if (content.length === 0) return null;
-      projected = pick(data, ['turn', 'step', 'interrupted', 'usage']);
-      projected.message = { ...pick(data.message, ['id', 'role']), content, source: pick(data.message?.source, ['provider', 'model']) };
-      break;
-    }
-    case 'tool/call':
-      projected = pick(data, ['turn', 'step', 'callId', 'name', 'arguments']);
-      break;
-    case 'tool/result':
-      if (event.surfaceOp && event.surfaceOp !== 'append') return null;
-      projected = pick(data, ['turn', 'step', 'meta']);
-      projected.message = pick(data.message, ['id', 'role', 'toolCallId', 'isError', 'content']);
-      projected.message.source = pick(data.message?.source, ['kind', 'callId']);
-      if (data.error !== undefined) projected.error = errorInfo(data.error);
-      break;
-    case 'tool/ptc-dispatch-start':
-    case 'tool/ptc-dispatch':
-    case 'tool/ptc-dispatch-end':
-      projected = pick(data, ['turn', 'step', 'rootCallId', 'parentCallId', 'subCallId', 'name', 'arguments', 'isError', 'content', 'meta']);
-      if (data.error !== undefined) projected.error = errorInfo(data.error);
-      break;
-    case 'approval/asked':
-      projected = pick(data, ['id', 'toolName', 'callId', 'reason']);
-      break;
-    case 'approval/decided':
-      projected = pick(data, ['id', 'outcome']);
-      break;
-    case 'llm/retry':
-    case 'llm/retry-started':
-      projected = pick(data, ['turn', 'step', 'retryId', 'retry', 'provider', 'mode', 'maxRetries', 'delayMs']);
-      if (data.failure !== undefined) projected.failure = errorInfo(data.failure);
-      break;
-    case 'compaction/start':
-    case 'compaction/summary':
-    case 'compaction/end':
-    case 'compaction/prune':
-      // The summary/rawOutput can repeat prompts, reasoning and adjacent turns.
-      projected = pick(data, ['turn', 'compactionId', 'sourceCommandId', 'shadowedRange', 'shadowedSeqs', 'shadowedTokenCount', 'provider', 'model', 'maxTokens', 'usage', 'prunedSeqs']);
-      if (data.error !== undefined) projected.error = errorInfo(data.error);
-      break;
-    default:
-      return null;
-  }
-  return { seq: event.seq, time: clone(event.time) ?? null, type: event.type, data: projected };
-}
-
-function page(events, span, execution, afterSeq, limit) {
-  const visible = [];
+/** Keep the SDK event envelope and payload intact, including future event types. */
+function page(events, span, afterSeq, limit) {
+  const selected = [];
   let nextSeq = afterSeq;
   for (const event of events) {
     if (event.seq < span.startSeq || event.seq > span.lastSeq || event.seq <= afterSeq) continue;
-    const item = project(event, execution.inputMessageId);
-    if (item && visible.length === limit) return { events: visible, nextSeq, hasMore: true };
+    if (selected.length === limit) return { events: selected, nextSeq, hasMore: true };
+    selected.push(clone(event));
     nextSeq = event.seq;
-    if (item) visible.push(item);
   }
-  return { events: visible, nextSeq, hasMore: false };
+  return { events: selected, nextSeq, hasMore: false };
+}
+
+function sessionDescriptor(header) {
+  return {
+    id: header.id,
+    ...(header.origin === undefined ? {} : { origin: clone(header.origin) }),
+    native: header.origin !== 'subagent',
+  };
 }
 
 function failureReason(error) {
-  if (error?.code === 'SESSION_QUERY_SESSION_NOT_FOUND' || error?.code === 'ENOENT') return 'session-log-missing';
+  if (error?.code === 'SESSION_QUERY_SESSION_NOT_FOUND' || error?.code === 'ENOENT' || error?.name === 'SessionPersistenceNotFoundError') return 'session-log-missing';
+  if (error?.name === 'SessionPersistenceCorruptionError') return 'session-log-corrupt';
+  if (error?.name === 'SessionFormatUnsupportedError') return 'session-log-format-unsupported';
   if (['SESSION_QUERY_CORRUPT_SESSION', 'SESSION_QUERY_INVALID_SURFACE', 'execution-log-corrupt'].includes(error?.code)) return 'session-log-corrupt';
   if (error?.code === 'SESSION_QUERY_SOURCE_CONFLICT') return 'session-reference-mismatch';
   return 'session-log-read-failed';
@@ -347,7 +285,11 @@ function sessionReferences(repo, groupId, sessionId) {
   const group = repo.getGroup(groupId);
   if (!group || group.groupId !== groupId) fail('not-found', 'Group not found');
   const validId = (value) => typeof value === 'string' && ID.test(value);
-  const current = repo.membersOf(groupId).some((member) =>
+  const binding = repo.sessionBindingFor?.(sessionId) || repo.sessionBindingsOf?.(groupId).find(candidate => candidate.sessionId === sessionId);
+  if (binding && binding.groupId !== groupId) fail('invalid-input', 'Session does not belong to this group');
+  const bound = binding && validId(binding.membershipId) && validId(binding.botId) &&
+    typeof binding.conversationId === 'string' && conversationIdOf(repo, binding) === binding.conversationId;
+  const current = !group.activeConversationId && repo.membersOf(groupId).some((member) =>
     member?.groupId === groupId && validId(member.membershipId) && validId(member.botId) && member.sessionId === sessionId,
   );
   const references = [];
@@ -355,13 +297,16 @@ function sessionReferences(repo, groupId, sessionId) {
     if (message?.groupId !== groupId || !validId(message.messageId) || message.author?.type !== 'bot' ||
         !validId(message.author.membershipId) || !validId(message.author.botId)) continue;
     const parsed = reference(message);
-    if (parsed.execution?.sessionId === sessionId) references.push(parsed.execution);
+    if (parsed.execution?.sessionId === sessionId && (!group.activeConversationId ||
+        (conversationIdOf(repo, message) && (!binding || conversationIdOf(repo, message) === binding.conversationId)))) {
+      references.push(parsed.execution);
+    }
   }
-  if (!current && references.length === 0) fail('invalid-input', 'Session does not belong to this group');
+  if (!bound && !current && references.length === 0) fail('invalid-input', 'Session does not belong to this group');
   return references;
 }
 
-/** Read every visible turn of a verified Bot Session without creating or resuming an Agent. */
+/** Read all raw events of a verified Bot Session without creating or resuming an Agent. */
 export async function readBotSessionHistory({ ctx, repo, groupId, sessionId, afterSeq, limit, signal } = {}) {
   if (typeof groupId !== 'string' || !ID.test(groupId) || typeof sessionId !== 'string' || !SESSION_ID.test(sessionId)) {
     fail('invalid-input', 'groupId and sessionId must be valid identifiers');
@@ -388,7 +333,7 @@ export async function readBotSessionHistory({ ctx, repo, groupId, sessionId, aft
     const end = references.find((ref) => ref.endSeq === last?.seq && (ref.turn === null || ref.turn === last.data?.turn));
     const events = withoutColdRepairs(raw, observation, { endSeq: end?.endSeq ?? null });
     const span = { startSeq: 0, lastSeq: events.at(-1)?.seq ?? -1 };
-    const response = result('available', page(events, span, { inputMessageId: null }, afterSeq, limit));
+    const response = result('available', { session: sessionDescriptor(observation.header), ...page(events, span, afterSeq, limit) });
     abort(signal);
     return response;
   } catch (error) {
@@ -402,8 +347,67 @@ export async function readBotSessionHistory({ ctx, repo, groupId, sessionId, aft
 }
 
 /**
- * afterSeq is exclusive; nextSeq is the last examined raw seq (including hidden
- * records). Bounds in execution are inclusive. hasMore describes this captured
+ * Read a group-owned committed log for native JSONL export. A prepared query
+ * observation is never an export source: it can contain unpersisted repairs.
+ * Flush only a Session already attached to the store; never open/resume an Agent.
+ * Returns { ok, groupId, sessionId, availability, header, events, session?, reason? }.
+ */
+export async function readBotSessionLog({ ctx, repo, groupId, sessionId, signal } = {}) {
+  if (typeof groupId !== 'string' || !ID.test(groupId) || typeof sessionId !== 'string' || !SESSION_ID.test(sessionId)) {
+    fail('invalid-input', 'groupId and sessionId must be valid identifiers');
+  }
+  abort(signal);
+  sessionReferences(repo, groupId, sessionId);
+  const result = (availability, extra = {}) => ({
+    ok: true, groupId, sessionId, availability, header: null, events: [], ...extra,
+  });
+  try {
+    const service = (name) => typeof ctx?.get === 'function' ? ctx.get(name) : ctx?.[name];
+    const persistence = service('sessionPersistence');
+    if (typeof persistence?.open !== 'function') return result('unavailable', { reason: 'session-persistence-unavailable' });
+    const sessions = service('sessions');
+    const live = sessions?.get?.(sessionId);
+    if (live !== undefined) {
+      if (typeof sessions.flush !== 'function') return result('unavailable', { reason: 'session-flush-unavailable' });
+      await sessions.flush(live);
+      abort(signal);
+      sessionReferences(repo, groupId, sessionId);
+    }
+    const options = signal === undefined ? {} : { signal };
+    let handle;
+    let header;
+    let events;
+    try {
+      handle = await persistence.open(sessionId, 'read', options);
+      abort(signal);
+      sessionReferences(repo, groupId, sessionId);
+      if (!handle || handle.header?.id !== sessionId || typeof handle.read !== 'function' || typeof handle.close !== 'function') {
+        fail('execution-log-corrupt', 'Session persistence identity or read handle is invalid');
+      }
+      const snapshot = await handle.read(0, undefined, options);
+      abort(signal);
+      sessionReferences(repo, groupId, sessionId);
+      header = clone(handle.header);
+      if (header?.id !== sessionId) fail('execution-log-corrupt', 'Session persistence identity changed during read');
+      events = validatedEvents(snapshot?.events, snapshot?.events?.length - 1).map((event) => clone(event));
+    } finally {
+      if (typeof handle?.close === 'function') await handle.close();
+    }
+    abort(signal);
+    sessionReferences(repo, groupId, sessionId);
+    return result('available', { header, events, session: sessionDescriptor(header) });
+  } catch (error) {
+    abort(signal);
+    if (isAbort(error, signal)) throw error;
+    if (error?.code === 'invalid-input' || error?.code === 'not-found') throw error;
+    sessionReferences(repo, groupId, sessionId);
+    return result('unavailable', { reason: failureReason(error) });
+  }
+}
+
+/**
+ * afterSeq is exclusive; nextSeq is the last returned raw seq.
+ * Bounds in execution are inclusive. hasMore describes this captured
  * snapshot only; callers may poll again while status is pending/streaming.
  */
 export async function readMessageExecution({ ctx, repo, groupId, messageId, afterSeq, limit, signal } = {}) {
@@ -418,6 +422,7 @@ export async function readMessageExecution({ ctx, repo, groupId, messageId, afte
   if (parsed.legacy) return legacyResponse(repo, message, afterSeq);
   if (parsed.reason) return response(message, afterSeq, 'unavailable', null, { reason: parsed.reason });
   let execution = parsed.execution;
+  validateExecutionOwnership(repo, message, execution);
   if (!execution.sessionId) return response(message, afterSeq, ACTIVE.has(message.status) ? 'preparing' : 'unavailable', execution, { reason: 'execution-session-not-recorded' });
   let observation;
   try {
@@ -435,15 +440,18 @@ export async function readMessageExecution({ ctx, repo, groupId, messageId, afte
       return response(message, afterSeq, 'unavailable', parsed.execution, { reason: 'execution-reference-changed' });
     }
     execution = parsed.execution;
+    validateExecutionOwnership(repo, message, execution);
     const events = withoutColdRepairs(observationEvents(observation, execution.sessionId), observation, execution);
+    const session = sessionDescriptor(observation.header);
     const resolved = resolveSpan(events, execution);
-    if (!resolved.span) return response(message, afterSeq, resolved.pending && ACTIVE.has(message.status) ? 'preparing' : 'unavailable', execution, { reason: resolved.reason });
+    if (!resolved.span) return response(message, afterSeq, resolved.pending && ACTIVE.has(message.status) ? 'preparing' : 'unavailable', execution, { session, reason: resolved.reason });
     const { span } = resolved;
     execution = { ...execution, turn: span.turn, startSeq: span.startSeq };
     if (execution.endSeq === null && span.end && span.end.data?.reason?.kind !== 'interrupted') execution.endSeq = span.end.seq;
     const incomplete = !span.end || execution.endSeq === null;
     const result = response(message, afterSeq, 'available', execution, {
-      ...page(events, span, execution, afterSeq, limit),
+      session,
+      ...page(events, span, afterSeq, limit),
       ...(incomplete ? { reason: 'execution-log-incomplete' } : {}),
     });
     abort(signal);
@@ -454,6 +462,7 @@ export async function readMessageExecution({ ctx, repo, groupId, messageId, afte
     // A failed read can race terminal lifecycle updates too.
     message = target(repo, groupId, messageId);
     execution = reference(message).execution;
+    validateExecutionOwnership(repo, message, execution);
     // Do not return SDK exception text: storage errors can include private paths.
     return response(message, afterSeq, 'unavailable', execution, { reason: failureReason(error) });
   } finally {

@@ -306,7 +306,7 @@ test('group workspace defaults under dataDir/groups and an empty edit restores t
   assert.equal(repo.getGroup(group.groupId).workspaceCwd, fallback);
 });
 
-test('schema v5 data migrates to v6: groups get ordering and every existing bot gets a direct chat', async () => {
+test('schema v5 data migrates to v7: groups get ordering, direct chats and conversation baselines', async () => {
   const at = 1761500000000;
   const seed = {
     bots: [
@@ -325,9 +325,9 @@ test('schema v5 data migrates to v6: groups get ordering and every existing bot 
   const domain = memoryDomain(seed);
   const { service, repo } = await fixture({ domain, schema: 5 });
   const migration = await repo.runMigrations();
-  assert.equal(migration.version, 6);
-  assert.deepEqual(migration.applied, [5]);
-  assert.equal(repo.schemaVersion(), 6);
+  assert.equal(migration.version, 7);
+  assert.deepEqual(migration.applied, [5, 6]);
+  assert.equal(repo.schemaVersion(), 7);
   const old = repo.getGroup('grp-old-1');
   assert.equal(old.kind, 'group');
   assert.equal(old.folderId, null);

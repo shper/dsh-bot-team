@@ -4,7 +4,7 @@ import { loadClient, walk, text, plain } from './client-harness.js';
 
 const noop = () => {};
 const settle = () => new Promise(resolve => setImmediate(resolve));
-const group = { groupId: 'project-chat', kind: 'direct', title: 'Developer', workspaceCwd: '/default/chat', projectWorkspaceCwd: '' };
+const group = { groupId: 'project-chat', currentConversationId: 'project-c1', conversationVersion: 1, kind: 'direct', title: 'Developer', workspaceCwd: '/default/chat', projectWorkspaceCwd: '' };
 const props = (overrides = {}) => ({ group, locked: false, onClose: noop, onSaved: noop, ...overrides });
 const button = (tree, label) => {
   const result = walk(tree).find(node => node.type === 'button' && text(node) === label);
@@ -84,7 +84,7 @@ test('the ordinary Web client uses DSH host directory picker and saves only on s
   await settle();
   assert.equal(requests.length, 1, 'double clicks cannot dispatch duplicate changes');
   assert.equal(requests[0].url, '/api/bot-team.action');
-  assert.deepEqual(requests[0].body, { action: 'group.workspace.set', payload: { groupId: group.groupId, workspaceCwd: chosen } });
+  assert.deepEqual(requests[0].body, { action: 'group.workspace.set', payload: { groupId: group.groupId, expectedConversationId: group.currentConversationId, workspaceCwd: chosen } });
   assert.equal(saved[0].projectWorkspaceCwd, chosen);
 });
 
@@ -137,7 +137,7 @@ test('project removal updates only its conversation and disables sending while p
   walk(tree).find(node => node.props?.['aria-label'] === '移除项目，恢复默认工作目录').props.onClick();
   tree = client.render(client.Composer, options);
   assert.equal(button(tree, '发送').props.disabled, true);
-  assert.deepEqual(calls, [{ action: 'group.workspace.set', payload: { groupId: group.groupId, workspaceCwd: '' } }]);
+  assert.deepEqual(calls, [{ action: 'group.workspace.set', payload: { groupId: group.groupId, expectedConversationId: group.currentConversationId, workspaceCwd: '' } }]);
   options = { ...options, group: { ...group, groupId: 'another-chat', projectWorkspaceCwd: '/another' } };
   client.render(client.Composer, options);
   resolveRequest({ json: async () => ({ ok: true, result: group }) });

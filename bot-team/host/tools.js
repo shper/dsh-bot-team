@@ -12,6 +12,7 @@
  * Every tool returns concise results with identifiers for follow-up calls.
  */
 import { parseMentionsFromText } from './prompt.js';
+import { currentConversationId, conversationIdOf } from './conversations.js';
 
 export const BOT_TEAM_TOOL_NAMES = [
   'bot_team_list',
@@ -48,6 +49,10 @@ export function registerBotTeamTools({ ctx, service, config, logger }) {
   };
 
   const ready = () => service.ready;
+  const guarded = (groupId, operation) => typeof service.withWorkspaceOperation === 'function'
+    ? service.withWorkspaceOperation(groupId, () => operation(currentConversationId(service.repo, groupId)))
+    : operation(currentConversationId(service.repo, groupId));
+  const currentMessage = (message) => conversationIdOf(service.repo, message) === currentConversationId(service.repo, message.groupId);
 
   const findMemberByName = (groupId, name) => {
     const target = String(name || '').trim().replace(/^@/, '').toLowerCase();
@@ -59,10 +64,10 @@ export function registerBotTeamTools({ ctx, service, config, logger }) {
     return undefined;
   };
 
-  const botMessageAfter = (groupId, seq) =>
+  const botMessageAfter = (groupId, seq, conversationId = currentConversationId(service.repo, groupId)) =>
     service.repo
       .messagesOf(groupId)
-      .filter((message) => message.seq > seq && message.author?.type === 'bot')
+      .filter((message) => message.seq > seq && message.author?.type === 'bot' && conversationIdOf(service.repo, message) === conversationId)
       .map((message) => ({
         seq: message.seq,
         kind: message.kind || 'chat',
@@ -107,11 +112,12 @@ export function registerBotTeamTools({ ctx, service, config, logger }) {
         .filter((group) => group.kind !== 'direct')
         .filter((group) => !args.groupId || group.groupId === args.groupId)
         .map((group) => {
-          const discussions = repo.discussionsOf(group.groupId);
+          const discussions = repo.discussionsOf(group.groupId).filter(currentMessage);
           const active = discussions.find((discussion) => discussion.status === 'running');
-          const last = repo.lastMessageOf(group.groupId);
+          const last = repo.messagesOf(group.groupId).filter(currentMessage).at(-1);
           return {
             groupId: group.groupId,
+            currentConversationId: currentConversationId(repo, group.groupId),
             kind: group.kind || 'group',
             title: group.title,
             topic: group.topic || '',
@@ -136,6 +142,7 @@ export function registerBotTeamTools({ ctx, service, config, logger }) {
                 ? {
                     messages: repo
                       .messagesOf(group.groupId)
+                      .filter(currentMessage)
                       .slice(-10)
                       .map((message) => ({
                         seq: message.seq,
@@ -256,12 +263,14 @@ export function registerBotTeamTools({ ctx, service, config, logger }) {
             .map((entry) => entry.member.membershipId)
         : [];
       if (mentions.length === 0) mentions = parseMentionsFromText(service.repo, group.groupId, String(args.text || ''));
-      const { message } = service.engine.postHumanMessage({
+      const { message } = await guarded(group.groupId, (expectedConversationId) => service.engine.postHumanMessage({
         groupId: group.groupId,
         text: String(args.text || ''),
         mentions,
         author: { type: 'human', name: '助手' },
-      });
+        humanInput: false,
+        expectedConversationId,
+      }));
       const shouldWait = args.wait !== false;
       let wait = { completed: true, running: false };
       if (shouldWait) {
@@ -271,7 +280,7 @@ export function registerBotTeamTools({ ctx, service, config, logger }) {
         posted: { seq: message.seq, text: clip(message.text, 500) },
         acceptedMentions: mentions.length,
         ...wait,
-        replies: botMessageAfter(group.groupId, message.seq),
+        replies: botMessageAfter(group.groupId, message.seq, conversationIdOf(service.repo, message)),
       };
     },
   });
@@ -308,21 +317,22 @@ export function registerBotTeamTools({ ctx, service, config, logger }) {
       if (Number.isInteger(args.messageSeq)) {
         target = service.repo.messagesOf(group.groupId).find((message) => message.seq === args.messageSeq);
       } else {
-        target = [...service.repo.messagesOf(group.groupId)].reverse().find((message) => message.author?.type === 'bot');
+        target = [...service.repo.messagesOf(group.groupId)].reverse().find((message) => message.author?.type === 'bot' && currentMessage(message));
       }
       if (!target) throw new Error('找不到要评审的消息');
-      const result = service.engine.requestReview({
+      const result = await guarded(group.groupId, (expectedConversationId) => service.engine.requestReview({
         groupId: group.groupId,
         targetMessageId: target.messageId,
         reviewerMembershipId: reviewer.member.membershipId,
         instructions: args.instructions || '',
-      });
+        expectedConversationId,
+      }));
       const shouldWait = args.wait !== false;
       let wait = { completed: true, running: false };
       if (shouldWait) {
         wait = await waitIdle(group.groupId, Number(args.timeoutMs) || config.toolWaitTimeoutMs);
       }
-      const replies = botMessageAfter(group.groupId, result.requestMessage.seq).filter(
+      const replies = botMessageAfter(group.groupId, result.requestMessage.seq, conversationIdOf(service.repo, result.requestMessage)).filter(
         (message) => message.kind === 'review',
       );
       const reply = replies[replies.length - 1] || null;
@@ -379,13 +389,14 @@ export function registerBotTeamTools({ ctx, service, config, logger }) {
       if (membershipIds.length === 0) throw new Error('群里没有可用成员');
       const roundsRaw = Number(args.rounds);
       const rounds = Number.isInteger(roundsRaw) ? Math.min(Math.max(roundsRaw, 1), 5) : 2;
-      const discussion = await service.engine.startDiscussion({
+      const discussion = await guarded(group.groupId, (expectedConversationId) => service.engine.startDiscussion({
         groupId: group.groupId,
         topic: String(args.topic || ''),
         membershipIds,
         rounds,
         summarize: args.summarize !== false,
-      });
+        expectedConversationId,
+      }));
       const shouldWait = args.wait !== false;
       let settled = true;
       if (shouldWait) {

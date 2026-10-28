@@ -102,7 +102,8 @@ test('English chrome translates while message, name and title content stays verb
     const approvalText = text(approval);
     assert.match(approvalText, /requests permission: tool bash \(需要写权限\)\./);
     assert.match(approvalText, /Approval request/);
-    assert.match(approvalText, /Go to approval/);
+    assert.match(approvalText, /Respond in the pending interactions at the top of this chat/);
+    assert.doesNotMatch(approvalText, /Go to approval/);
 
     const list = text(client.GroupList({
       state: sampleState(),

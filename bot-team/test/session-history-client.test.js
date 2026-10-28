@@ -167,8 +167,8 @@ test('sidebar history uses the owning group without replacing the original chat 
 });
 
 for (const [locale, title, back, missing] of [
-  ['zh', '完整会话', '返回聊天', '完整会话接口尚未加载'],
-  ['en', 'Full session', 'Back to chat', 'The full session endpoint is not loaded'],
+  ['zh', '完整日志', '返回聊天', '完整会话接口尚未加载'],
+  ['en', 'Full logs', 'Back to chat', 'The full session endpoint is not loaded'],
 ]) {
   test(`full history has a page heading and persistent return in ${locale}, including errors`, async () => {
     const local = loadClient({ fetch: async () => new Response('not found', { status: 404 }) });

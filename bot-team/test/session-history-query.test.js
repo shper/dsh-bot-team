@@ -55,7 +55,7 @@ function fixture(options = {}) {
     if (options.onObserve) await options.onObserve(state, settings);
     if (state.failure) throw state.failure;
     return {
-      header: { id: state.headerId ?? id, origin: 'subagent', delegationDepth: 0, agentPreset: 'bot-team-tools' },
+      header: { id: state.headerId ?? id, origin: 'subagent', delegationDepth: 0, agentPreset: 'bot-team-tools', ...options.header },
       source: state.source, cursor: state.events.length - 1,
       get events() { if (state.eventsError) throw state.eventsError; return state.events.slice(); },
       [Symbol.dispose]() { state.disposed += 1; },
@@ -78,15 +78,19 @@ test('reads parentless subagent history across every turn while preserving execu
   assert.equal(result.groupId, 'group-a');
   assert.equal(result.sessionId, 'saved-session');
   assert.deepEqual(result.events.filter((event) => event.type === 'turn/start').map((event) => event.data.turn), [1, 2, 3]);
-  assert.deepEqual(result.events.filter((event) => event.type === 'user/message').map((event) => event.data.content[0].text), ['Request 1', 'Request 2', 'Request 3']);
+  assert.deepEqual(result.events, f.state.events);
+  assert.deepEqual(result.session, { id: 'saved-session', origin: 'subagent', native: false });
+  assert.deepEqual(result.events.filter((event) => event.type === 'user/message' && event.data.source.kind === 'user').map((event) => event.data.content[0].text), ['Request 1', 'Request 2', 'Request 3']);
   assert.equal(result.events.find((event) => event.type === 'tool/result').data.message.content[0].text, 'Recorded result');
-  assert.equal(JSON.stringify(result).includes('PRIVATE_'), false);
+  assert.equal(result.events.find((event) => event.type === 'assistant/message').data.message.content[1].text, 'PRIVATE_REASONING');
   assert.equal(result.nextSeq, f.state.events.at(-1).seq);
   assert.deepEqual(f.state.calls, [{ id: 'saved-session', settings: { signal: controller.signal, projectionMode: 'none' } }]);
   assert.deepEqual(f.state.gets, ['sessionQuery']);
   assert.equal(f.state.disposed, 1);
   const execution = await readMessageExecution({ ctx: f.ctx, repo: f.repo, groupId: 'group-a', messageId: 'reply-2' });
   assert.deepEqual(execution.events.filter((event) => event.type === 'turn/start').map((event) => event.data.turn), [2]);
+  assert.deepEqual(execution.events, result.events.filter((event) => event.seq >= execution.execution.startSeq && event.seq <= execution.execution.endSeq));
+  assert.deepEqual(execution.session, result.session);
   assert.equal(JSON.stringify(execution).includes('Answer 1'), false);
   assert.equal(JSON.stringify(execution).includes('Answer 3'), false);
 });
@@ -123,7 +127,7 @@ test('validates identifiers and pagination before any observation', async () => 
   assert.equal(f.state.calls.length, 0);
 });
 
-test('paginates all turns without duplicates and advances through filtered tails', async () => {
+test('paginates all raw events across turns without duplicates or dropped request tails', async () => {
   const f = fixture();
   const whole = await f.read();
   const collected = [];
@@ -160,15 +164,15 @@ test('caps page size and retains a detached snapshot as live history grows', asy
   assert.equal(JSON.stringify(page), snapshot);
 });
 
-test('filters non-user inputs even when they have missing ids, plus hidden replacements', async () => {
+test('retains runtime inputs, missing ids, and raw surface replacements', async () => {
   const run = log();
   run.add('user/message', { ...input(null, 'PRIVATE_NULL_ID', 'runtime-context') });
   run.add('user/message', { content: [{ type: 'text', text: 'PRIVATE_MISSING_ID' }] });
   run.add('user/message', input('visible', 'Visible input'));
   run.add('user/message', input('replacement', 'PRIVATE_REPLACEMENT'), { surfaceOp: { op: 'replace', startSeq: 0, endSeq: 1 } });
   const result = await fixture({ events: run.events }).read();
-  assert.equal(JSON.stringify(result).includes('PRIVATE_'), false);
-  assert.deepEqual(result.events.map((event) => event.data.content[0].text), ['Visible input']);
+  assert.deepEqual(result.events, run.events);
+  assert.deepEqual(result.events.at(-1).surfaceOp, { op: 'replace', startSeq: 0, endSeq: 1 });
   assert.equal(result.nextSeq, 3);
 });
 

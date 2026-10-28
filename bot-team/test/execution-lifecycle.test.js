@@ -65,27 +65,35 @@ async function fixture(t, options = {}) {
   const ctx = {
     logger,
     storageDomain: { open: async () => storage.domain },
-    agents: { get: (id) => sessions.get(id) },
-    get: () => undefined,
+    agents: { get: (id) => sessions.get(id), roots: () => [...sessions.values()] },
+    get: (name) => name === 'llm' ? { resolveCallConfig: async request => request } : name === 'sessionProjections' ? { stateOf: () => ({ pending: null, lastUsed: null }) } : undefined,
     on(type, handler) {
-      assert.equal(type, 'session/event');
-      sessionHandlers.add(handler);
-      return () => sessionHandlers.delete(handler);
+      if (type === 'session/event') {
+        sessionHandlers.add(handler);
+        return () => sessionHandlers.delete(handler);
+      }
+      assert.ok(['agent/created', 'agent/disposed', 'goal/activation-changed'].includes(type));
+      return () => {};
     },
   };
   const repo = await openRepository(ctx, logger);
   await repo.putGroup({ groupId: 'group', title: 'Group', nextSeq: 0 });
+  const flushBackend = storage.flush;
+  storage.flush = async () => {
+    await repo.flushGroupWrites('group');
+    await flushBackend();
+  };
   const personas = { refresh: options.refresh || (async () => {}) };
   const config = { maxParallelTurns: 3, turnTimeoutMs: 300000, botApprovalPolicy: 'ask', ...options.config };
   const pool = new AgentPool({ ctx, repo, personas, config, logger });
   for (const suffix of ['a', 'b']) {
     await repo.putBot({ botId: suffix, name: suffix, provider: 'mock', model: 'mock', capability: 'work' });
-    await repo.putMember({ membershipId: suffix, groupId: 'group', botId: suffix, sessionId: `member-session-${suffix}`, lastSeenSeq: 0 });
+    await repo.putMember({ membershipId: suffix, groupId: 'group', botId: suffix, sessionId: `actual-session-${suffix}`, lastSeenSeq: 0 });
     const handlers = new Map();
     callbacks.set(suffix, handlers);
     const agent = {
       id: `actual-session-${suffix}`,
-      session: { id: `actual-session-${suffix}`, seq: 20 },
+      session: { id: `actual-session-${suffix}`, header: { id: `actual-session-${suffix}`, origin: "subagent", cwd: "/tmp" }, seq: 20, append(type, data) { return { type, data, seq: this.seq++ }; } },
       cancelled: 0,
       followup(input) {
         // This assertion runs at the model-submission boundary, before any event.
@@ -105,6 +113,9 @@ async function fixture(t, options = {}) {
     }, agent);
   }
   pool.ensure = options.ensure || (async (id) => sessions.get(`actual-session-${id}`));
+  // This fixture isolates Engine's durable submission boundary; AgentPool's
+  // native admission/model/preset contracts are exercised in its own suite.
+  pool.submit = (agent, input) => agent.followup(input);
   const engine = new Engine({
     ctx, repo, pool, personas, config, logger,
     bus: { emit: (groupId, frame) => frames.push({ groupId, ...structuredClone(frame) }) },
@@ -140,6 +151,16 @@ async function fixture(t, options = {}) {
         turn: job.turn, step: 1, usage: { inputTokens: 5, outputTokens: 10 },
         message: { role: 'assistant', id: `answer-${job.jobId}`, content: [{ type: 'text', text }] },
       });
+    },
+    async seedBusinessTargets() {
+      const conversationId = repo.activeConversation('group').conversationId;
+      await repo.putTask({ taskId: 'task', groupId: 'group', conversationId, title: 'Fixture task',
+        assigneeMembershipId: 'a', reviewerMembershipId: 'b', status: 'draft', dependsOn: [] });
+      for (const [messageId, kind, meta] of [['deliverable', 'chat', null], ['target', 'review', { reviewOf: 'deliverable' }]]) {
+        await repo.appendMessage({ messageId, groupId: 'group', conversationId, seq: repo.allocateSeq('group'),
+          author: { type: 'bot', membershipId: 'a', botId: 'a', name: 'a' },
+          kind, meta, status: 'done', text: messageId, createdAt: Date.now(), updatedAt: Date.now() });
+      }
     },
     async finish(job, reason = { kind: 'completed' }) {
       f.event(job.membershipId, 'step/end', { turn: job.turn, step: 1 });
@@ -249,7 +270,9 @@ test('daily token budget still stops new replies at the boundary and resets at l
 test('every reply starts with a fresh reference and records the ensured agent before submission', async (t) => {
   const ready = deferred();
   const f = await fixture(t, { ensure: () => ready.promise });
+  const submittedSeq = f.agent().session.seq;
   const stale = { version: 1, jobId: 'old', sessionId: 'old-session', inputMessageId: 'old-input', turn: 99, startSeq: 100, endSeq: 200, submittedSeq: 90 };
+  await f.seedBusinessTargets();
   const job = f.start({ meta: { taskId: 'task', execution: stale } });
   await f.storage.flush();
   assert.deepEqual(f.durable(job).meta, { taskId: 'task', execution: {
@@ -259,18 +282,65 @@ test('every reply starts with a fresh reference and records the ensured agent be
   await tick();
   assert.equal(f.submissions.length, 1);
   assert.equal(job.execution.sessionId, f.agent().id);
-  assert.equal(job.execution.submittedSeq, 20);
+  assert.equal(job.execution.submittedSeq, submittedSeq);
   assert.notEqual(job.execution.inputMessageId, stale.inputMessageId);
   assert.equal(f.submissions[0].persisted.meta.execution.inputMessageId, job.execution.inputMessageId);
-  f.repo.getMember('a').sessionId = 'rotated-again';
   const start = f.bind(job, 1);
   f.answer(job);
   const end = await f.finish(job);
   assert.deepEqual(f.durable(job).meta.execution, {
     version: 1, jobId: job.jobId, sessionId: 'actual-session-a', inputMessageId: f.input(job).id,
-    turn: 1, startSeq: start.seq, endSeq: end.seq, submittedSeq: 20,
+    turn: 1, startSeq: start.seq, endSeq: end.seq, submittedSeq,
   });
   assert.equal(f.durable(job).meta.taskId, 'task');
+});
+
+test('an ensured Agent without the current member binding is rejected before submission', async (t) => {
+  const f = await fixture(t);
+  const member = structuredClone(f.repo.getMember('a'));
+  f.pool.ensure = async () => ({ ...f.agent(), id: 'unmapped-session' });
+  const job = f.start(); await job.done; await f.storage.flush();
+  assert.equal(f.submissions.length, 0);
+  assert.equal(f.durable(job).status, 'error');
+  assert.equal(f.repo.getMember('a').sessionId, member.sessionId);
+  assert.equal(f.repo.getMember('a').sessionConversationId, member.sessionConversationId);
+  assert.equal(f.durable(job).meta.execution.sessionId, null);
+});
+
+test('late claim, output and end callbacks are ignored after the member session mapping rotates', async (t) => {
+  const f = await fixture(t); const job = f.start(); await tick(); f.bind(job, 1); await f.storage.flush();
+  const oldMember = f.repo.getMember('a');
+  await f.repo.putMemberStrict({ ...oldMember, sessionId: 'rotated-again' }, {
+    expectedConversationId: job.conversationId, expectedSessionId: oldMember.sessionId,
+  });
+  const frameCount = f.frames.length;
+  f.claim('a', f.input(job), 99);
+  f.stream('a', { type: 'start', turn: 1, step: 1, attemptId: 'stale', revision: 1 });
+  f.stream('a', { type: 'chunk', attemptId: 'stale', chunk: { type: 'text-delta', text: 'stale output' } });
+  f.answer(job, 'stale output');
+  f.event('a', 'turn/end', { turn: 1, reason: { kind: 'completed' } });
+  await f.storage.flush();
+  assert.equal(f.frames.length, frameCount); assert.equal(job.turn, 1);
+  assert.equal(f.message(job).text, ''); assert.equal(f.message(job).meta.execution.endSeq, null);
+  assert.equal(f.message(job).meta.execution.sessionId, 'actual-session-a');
+  assert.equal(f.repo.getMember('a').sessionId, 'rotated-again');
+  f.engine.abortJob(job, 'stop'); await f.storage.flush();
+  assert.ok(!f.frames.slice(frameCount).some(frame => frame.type === 'member.status'));
+});
+
+test('missing task targets and committed historical targets cannot create an execution', async (t) => {
+  const f = await fixture(t);
+  const before = f.repo.messages.size;
+  assert.throws(() => f.start({ meta: { taskId: 'missing-task' } }), { code: 'not-found' });
+  assert.equal(f.repo.messages.size, before);
+  await f.seedBusinessTargets(); await f.storage.flush();
+  await f.repo.commitConversation('group', { expectedConversationId: f.repo.activeConversation('group').conversationId, requestId: 'lifecycle-next' });
+  const historySize = f.repo.messages.size;
+  assert.throws(() => f.engine.enqueueTaskTurn({ taskId: 'task' }), { code: 'historical-target' });
+  assert.throws(() => f.engine.retryMessage('deliverable'), { code: 'historical-target' });
+  assert.throws(() => f.engine.requestReview({ groupId: 'group', targetMessageId: 'deliverable', reviewerMembershipId: 'b' }), { code: 'historical-target' });
+  assert.throws(() => f.engine.requestRevision({ groupId: 'group', reviewMessageId: 'target' }), { code: 'historical-target' });
+  assert.equal(f.repo.messages.size, historySize); assert.equal(f.submissions.length, 0);
 });
 
 test('exact claims isolate concurrent sessions, unrelated inputs and successive turns', async (t) => {
@@ -339,6 +409,7 @@ test('user/message fallback matches direct data.id and recovers the enclosing tu
 for (const kind of ['review', 'revision', 'chat']) {
   test(`${kind} retry preserves business metadata without reusing the prior execution`, async (t) => {
     const f = await fixture(t);
+    await f.seedBusinessTargets();
     const original = f.start({ kind, messageKind: kind, meta: { reviewOf: 'target', taskId: 'task', instructions: 'please review' } });
     await tick();
     f.bind(original, 1);
@@ -435,7 +506,7 @@ test('live metadata and tool/PTC/approval/retry invalidations preserve streamed 
   for (const [type, data] of dataByType) {
     const event = f.event('a', type, data);
     const update = f.frames.findLast((frame) => frame.type === 'execution.updated');
-    assert.deepEqual(update, { groupId: 'group', type: 'execution.updated', messageId: job.placeholderId, sessionId: job.execution.sessionId, seq: event.seq });
+    assert.deepEqual(update, { groupId: 'group', conversationId: job.conversationId, type: 'execution.updated', messageId: job.placeholderId, sessionId: job.execution.sessionId, seq: event.seq });
   }
   assert.equal(messageWrites(), before, 'ordinary events only invalidate; no repeated reply persistence');
   assert.equal(f.frames.filter((frame) => frame.type === 'message.updated' && frame.message.messageId === job.placeholderId).length, 0);
@@ -467,7 +538,7 @@ for (const cause of ['stop', 'timeout', 'dispose']) {
     assert.equal(stored.text, 'partial');
     assert.equal(stored.meta.execution.startSeq, start.seq);
     assert.equal(stored.meta.execution.endSeq, null);
-    assert.equal(f.agent().cancelled, 1);
+    assert.equal(f.agent().cancelled, cause === 'dispose' ? 0 : 1);
     f.event('a', 'turn/end', { turn: 1, reason: { kind: 'completed' } });
     await f.storage.flush();
     assert.deepEqual(f.durable(job), stored);
@@ -641,13 +712,25 @@ test('a stopped job stays pending for workspace switching until asynchronous pre
 test('workspace session rotation seeds the new turn from earlier durable group messages', async (t) => {
   const f = await fixture(t);
   const old = f.engine.postHumanMessage({ groupId: 'group', text: 'Earlier project requirement', mentions: [] }).message;
-  f.repo.getMember('a').lastSeenSeq = old.seq;
+  await f.repo.putMember({ ...f.repo.getMember('a'), lastSeenSeq: old.seq });
+  const priorMember = f.repo.getMember('a');
   f.pool.ensure = async () => {
     const member = f.repo.getMember('a');
-    member.sessionId = f.agent().id;
-    member.lastSeenSeq = 0;
-    await f.repo.putMember(member);
-    return f.agent();
+    const sessionId = 'rotated-session-a';
+    await f.repo.putMemberStrict({ ...member, sessionId, lastSeenSeq: f.repo.activeConversation('group').afterSeq }, {
+      expectedConversationId: f.repo.activeConversation('group').conversationId, expectedSessionId: member.sessionId,
+    });
+    const agent = {
+      ...f.agent(), id: sessionId,
+      session: { ...f.agent().session, id: sessionId, header: { ...f.agent().session.header, id: sessionId } },
+      followup(input) {
+        const persisted = [...f.storage.records('messages').values()].find(message => message.meta?.execution?.inputMessageId === input.id);
+        assert.equal(persisted.meta.execution.sessionId, sessionId);
+        f.submissions.push({ agent, input: structuredClone(input), persisted: structuredClone(persisted) });
+      },
+    };
+    f.sessions.set(sessionId, agent);
+    return agent;
   };
   const sent = f.engine.postHumanMessage({ groupId: 'group', text: 'Continue in the imported project', mentions: ['a'] });
   const job = f.engine.running.get('a');
@@ -655,5 +738,7 @@ test('workspace session rotation seeds the new turn from earlier durable group m
   assert.ok(job.context.some((message) => message.messageId === old.messageId));
   assert.ok(job.context.some((message) => message.messageId === sent.message.messageId));
   assert.equal(f.repo.getMember('a').lastSeenSeq, sent.message.seq);
+  assert.equal(f.repo.getMember('a').sessionId, 'rotated-session-a');
+  assert.equal(priorMember.sessionId, 'actual-session-a', 'ensure replaces the member without mutating a stale reference');
   f.engine.stopGroup('group');
 });

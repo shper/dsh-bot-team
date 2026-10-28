@@ -16,7 +16,8 @@
         defaultCwd: ''
         maxParallelTurns: 3
         maxContextMessages: 40
-        turnTimeoutMs: 300000
+        # Zero lets native goals and human approvals finish on their own schedule.
+        turnTimeoutMs: 0
         # M1 verification finished: stop writing demo/smoke data on activation.
         # Flip back to true only when re-running the end-to-end smoke checks.
         smokeTest: false

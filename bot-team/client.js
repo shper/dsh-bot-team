@@ -143,8 +143,10 @@ window.__ModuleLoader__.load({
     const ROUTES = {
       bootstrap: '/api/bot-team.bootstrap',
       messages: '/api/bot-team.messages',
+      conversations: '/api/bot-team.conversations',
       execution: '/api/bot-team.message-execution',
       sessionHistory: '/api/bot-team.session-history',
+      sessionExport: '/api/bot-team.session-export',
       events: '/api/bot-team.events',
       action: '/api/bot-team.action',
       file: '/api/bot-team.file',
@@ -336,6 +338,7 @@ window.__ModuleLoader__.load({
         const message = body && body.error && body.error.message ? body.error.message : uiT('请求失败 (HTTP {status})', { status: response.status });
         const error = new Error(message);
         error.status = response.status;
+        error.details = body?.error?.details || body?.details;
         error.code = body?.error?.code || (response.status === 404 && body === null ? 'route-not-found' : null);
         throw error;
       }
@@ -351,6 +354,11 @@ window.__ModuleLoader__.load({
           }`,
           { method: 'GET' },
         ),
+      conversations: (groupId, options = {}) => {
+        const query = Object.entries({ groupId, limit: 100, ...options }).filter(([, value]) => value !== undefined && value !== null)
+          .map(([key, value]) => encodeURIComponent(key) + '=' + encodeURIComponent(value)).join('&');
+        return request(ROUTES.conversations + '?' + query, { method: 'GET' });
+      },
       execution: async (groupId, messageId, afterSeq, signal) => {
         try {
           return await request(`${ROUTES.execution}?groupId=${encodeURIComponent(groupId)}&messageId=${encodeURIComponent(messageId)}&afterSeq=${afterSeq}&limit=100`, { method: 'GET', signal });
@@ -470,6 +478,126 @@ window.__ModuleLoader__.load({
       return matches.map((entry) => entry.skill);
     }
 
+    /** Commands are reserved only at the start of a complete, standalone draft. */
+    function parseBuiltinCommand(value) {
+      const text = String(value || '').trim();
+      if (text === '/new') return { command: 'new', valid: true };
+      if (/^\/new\s/.test(text)) return { command: 'new', valid: false };
+      return null;
+    }
+
+    function commandSkillOptions(skills, query, start = 0) {
+      const options = rankSkills(skills, query).map(skill => skill.name === 'new' ? { ...skill, conflict: true } : skill);
+      if (start === 0 && 'new'.startsWith(String(query || ''))) options.unshift({ name: 'new', builtin: true, description: uiT('开始新的对话上下文，历史仍可查看') });
+      return options;
+    }
+
+    function currentConversationId(group) {
+      return group?.currentConversationId || group?.activeConversationId || null;
+    }
+
+    function currentMemberSession(member, group) {
+      const id = currentConversationId(group);
+      if (!id) return member?.sessionId || null;
+      if (member?.sessionConversationId !== id) return null;
+      return member?.currentSessionId === undefined ? member?.sessionId || null : member.currentSessionId;
+    }
+
+    function memberLogLabel(member, group) {
+      if (!currentConversationId(group)) return '查看日志';
+      return currentMemberSession(member, group) ? '本会话日志' : member?.sessionId ? '上一会话日志' : '本会话尚无日志';
+    }
+
+    function historicalMessage(message, group) {
+      const id = currentConversationId(group);
+      if (!id || !message) return false;
+      if (message.conversationId) return message.conversationId !== id;
+      return Number(message.seq) <= Number(group?.currentConversation?.afterSeq || 0);
+    }
+
+    function conversationBlockReason(group, capabilities) {
+      if (group?.conversationStateConflict) return uiT('正在刷新会话状态，请稍后重试');
+      if (!capabilities?.conversations || !capabilities?.expectedConversationId || !currentConversationId(group)) return uiT('Host 尚不支持新建会话，请更新并重新加载');
+      return '';
+    }
+
+    // Native activity may end without a new bootstrap. Keep its explanation, but
+    // let the atomic Host guard re-check it when the user explicitly retries.
+    function conversationActivityHint(group) {
+      if (group?.canStartConversation !== false) return '';
+      const blockers = (group.conversationBlockers || []).map(item => typeof item === 'string' ? item : item.message || item.reason || item.kind || item.code).filter(Boolean);
+      return (blockers.join(' · ') || uiT('当前工作尚未结束，请停止或等待后重试')) + ' · ' + uiT('点击重试检查当前状态');
+    }
+
+    function mergeConversationBoundaries(previous, incoming) {
+      const records = new Map((previous || []).map(item => [item.conversationId, item]));
+      for (const item of incoming || []) if (item?.conversationId) records.set(item.conversationId, { ...records.get(item.conversationId), ...item });
+      return [...records.values()].sort((a, b) => Number(a.afterSeq) - Number(b.afterSeq) || Number(a.ordinal) - Number(b.ordinal));
+    }
+
+    /** Every transport uses this merge; old snapshots can add history, never rewind execution. */
+    function mergeConversationState(state, groupId, incoming, authoritative = false) {
+      if (!groupId || !incoming) return state;
+      if (!currentConversationId(incoming) && !incoming.conversation && !incoming.currentConversation && !incoming.conversationBoundaries && !incoming.conversations) return state;
+      const current = state.groups.find(group => group.groupId === groupId) || {};
+      const records = mergeConversationBoundaries(state.conversationsByGroup?.[groupId], [
+        ...(incoming.conversationBoundaries || incoming.conversations || []), incoming.conversation, incoming.currentConversation,
+      ].filter(Boolean));
+      const id = currentConversationId(incoming);
+      const version = Number(incoming.conversationVersion);
+      const knownVersion = Number(current.conversationVersion) || 0;
+      const conflict = id && version === knownVersion && currentConversationId(current) && id !== currentConversationId(current);
+      let next = { ...state, conversationsByGroup: { ...state.conversationsByGroup, [groupId]: records } };
+      if (conflict && !authoritative) return { ...state, groups: state.groups.map(group => group.groupId === groupId ? { ...group, conversationStateConflict: true } : group), refreshTick: state.refreshTick + (state.conversationConflicts?.[groupId] ? 0 : 1), conversationConflicts: { ...state.conversationConflicts, [groupId]: true } };
+      if (!id || !Number.isSafeInteger(version) || version < knownVersion) return next;
+      if (state.conversationConflicts?.[groupId] && !authoritative && version === knownVersion) return next;
+      const conversation = incoming.currentConversation?.conversationId === id ? incoming.currentConversation : records.find(item => item.conversationId === id);
+      const changed = currentConversationId(current) !== id;
+      next.groups = state.groups.map(group => group.groupId !== groupId ? group : {
+        ...group, activeConversationId: id, currentConversationId: id, conversationVersion: version, conversationStateConflict: false,
+        currentConversation: conversation || (changed ? null : group.currentConversation),
+        ...(incoming.canStartConversation !== undefined ? { canStartConversation: incoming.canStartConversation, conversationBlockers: incoming.conversationBlockers || [] } : {}),
+      });
+      next.conversationConflicts = { ...state.conversationConflicts, [groupId]: false };
+      return next;
+    }
+
+    function refreshConversationSessionBinding(state, frame) {
+      if (!['message.added', 'message.updated', 'execution.updated'].includes(frame.type)) return state;
+      const groupId = frame.message?.groupId || frame.groupId || state.activeGroupId;
+      const group = state.groups.find(item => item.groupId === groupId);
+      const conversationId = currentConversationId(group);
+      const message = frame.message || (state.messagesByGroup[groupId] || []).find(item => item.messageId === frame.messageId);
+      const sessionId = frame.execution?.sessionId || frame.sessionId || message?.meta?.execution?.sessionId;
+      if (!conversationId || (frame.conversationId || message?.conversationId) !== conversationId || !sessionId) return state;
+      if (state.members.some(member => member.groupId === groupId && currentMemberSession(member, group) === sessionId)) return state;
+      const key = groupId + ':' + conversationId + ':' + sessionId;
+      if (state.sessionBindingRefreshes?.[key]) return state;
+      // The message identifies the generation, but bootstrap owns member bindings.
+      // Never promote member.sessionId when currentSessionId is explicitly null.
+      return { ...state, refreshTick: state.refreshTick + 1, sessionBindingRefreshes: { ...state.sessionBindingRefreshes, [key]: true } };
+    }
+
+    function conversationTimeline(messages, conversations) {
+      const rows = [];
+      const boundaries = mergeConversationBoundaries([], conversations);
+      let cursor = 0;
+      for (const message of [...(messages || [])].sort((a, b) => a.seq - b.seq)) {
+        while (cursor < boundaries.length && Number(boundaries[cursor].afterSeq) < Number(message.seq)) rows.push({ conversation: boundaries[cursor++] });
+        rows.push({ message });
+      }
+      while (cursor < boundaries.length) rows.push({ conversation: boundaries[cursor++] });
+      return rows;
+    }
+
+    function conversationLabel(conversation) {
+      return uiT('会话 {ordinal}', { ordinal: conversation.ordinal });
+    }
+
+    function conversationTime(conversation) {
+      return conversation.createdAt ? new Date(conversation.createdAt).toLocaleString(isEnglishUi() ? 'en-US' : 'zh-CN') : '';
+    }
+
     /** Fire-and-forget UI verification report (ends up in the Host smoke log). */
     function uiReport(payload) {
       try {
@@ -541,22 +669,42 @@ window.__ModuleLoader__.load({
     }
 
     /** Page through a group's full timeline (bounded), for Markdown export. */
-    async function collectAllMessages(groupId) {
-      let collected = [];
+    async function collectAllMessages(groupId, { includeConversations = false, fetchMessages = api.messages, fetchConversations = api.conversations } = {}) {
+      const collected = [];
       let before;
+      let conversations = [];
+      let truncated = false;
       const seen = new Set();
       for (let page = 0; page < 50; page += 1) {
-        const result = await api.messages(groupId, before);
+        const result = await fetchMessages(groupId, before);
         const messages = result.messages || [];
+        conversations = mergeConversationBoundaries(conversations, result.conversationBoundaries);
         for (const message of messages) {
           if (seen.has(message.messageId)) continue;
           seen.add(message.messageId);
           collected.push(message);
         }
+        truncated = result.hasMore === true;
         if (!result.hasMore || messages.length === 0) break;
-        before = messages[0].seq;
+        const next = Math.min(...messages.map(message => message.seq));
+        if (before !== undefined && next >= before) break;
+        before = next;
+      }
+      if (includeConversations) {
+        let beforeOrdinal;
+        for (let page = 0; page < 50; page += 1) {
+          const result = await fetchConversations(groupId, { beforeOrdinal, limit: 100 });
+          conversations = mergeConversationBoundaries(conversations, result.conversations);
+          if (!result.hasMore) break;
+          if (page === 49 || !result.conversations?.length) { truncated = true; break; }
+          const next = Math.min(...result.conversations.map(item => item.ordinal));
+          if (beforeOrdinal !== undefined && next >= beforeOrdinal) { truncated = true; break; }
+          beforeOrdinal = next;
+        }
       }
       collected.sort((a, b) => a.seq - b.seq);
+      collected.conversations = conversations;
+      collected.truncated = truncated;
       return collected;
     }
 
@@ -603,7 +751,7 @@ window.__ModuleLoader__.load({
       return source;
     }
 
-    function buildGroupMarkdown({ group, members, bots, messages }) {
+    function buildGroupMarkdown({ group, members, bots, messages, conversations = messages.conversations || [], truncated = messages.truncated === true }) {
       const lines = [];
       const sep = isEnglishUi() ? ', ' : '、';
       lines.push(`# ${group.title}`);
@@ -617,10 +765,19 @@ window.__ModuleLoader__.load({
       }).join(sep)}`);
       lines.push(`${uiT('- 导出时间：')}${new Date().toLocaleString(isEnglishUi() ? 'en-US' : 'zh-CN')}`);
       lines.push(`${uiT('- 消息数：')}${messages.length}`);
+      lines.push(uiT('导出范围：整个聊天，包含所有会话分段'));
+      if (truncated) lines.push('> ' + uiT('导出不完整：已达到 50 页读取上限或历史分页中断，更早内容可能未包含。'));
       lines.push('');
       lines.push('---');
       lines.push('');
-      for (const message of messages) {
+      const entries = conversationTimeline(messages, conversations);
+      for (const [index, entry] of entries.entries()) {
+        if (entry.conversation) {
+          lines.push('## ' + conversationLabel(entry.conversation) + ' · ' + conversationTime(entry.conversation), '');
+          if (!entries[index + 1]?.message) lines.push(uiT('本会话没有消息'), '');
+          continue;
+        }
+        const message = entry.message;
         const author = authorNameOf(message, bots);
         const badges = [];
         if (message.meta && message.meta.round) badges.push(uiT('第 {round} 轮', { round: message.meta.round }));
@@ -727,7 +884,7 @@ window.__ModuleLoader__.load({
       return out.join('\n');
     }
 
-    function buildGroupHtml({ group, members, bots, messages }) {
+    function buildGroupHtml({ group, members, bots, messages, conversations = messages.conversations || [], truncated = messages.truncated === true }) {
       const title = escapeHtml(group.title || 'Bot Team');
       const en = isEnglishUi();
       const sep = en ? ', ' : '、';
@@ -747,8 +904,11 @@ window.__ModuleLoader__.load({
         })
         .filter(Boolean)
         .join(sep);
-      const rows = messages
-        .map((message) => {
+      const entries = conversationTimeline(messages, conversations);
+      const rows = entries
+        .map((entry, index) => {
+          if (entry.conversation) return '<section class="conversation"><h2>' + escapeHtml(conversationLabel(entry.conversation)) + '</h2><p>' + escapeHtml(conversationTime(entry.conversation)) + '</p>' + (!entries[index + 1]?.message ? '<p>' + escapeHtml(uiT('本会话没有消息')) + '</p>' : '') + '</section>';
+          const message = entry.message;
           const author = escapeHtml(authorNameOf(message, bots));
           const badges = [];
           if (message.meta && message.meta.round) badges.push(uiT('第 {round} 轮', { round: message.meta.round }));
@@ -797,7 +957,8 @@ window.__ModuleLoader__.load({
         escapeHtml(new Date().toLocaleString(en ? 'en-US' : 'zh-CN')) +
         ' · ' + escapeHtml(uiT('消息数：')) +
         messages.length +
-        '</p><hr/>' +
+        '</p><p>' + escapeHtml(uiT('导出范围：整个聊天，包含所有会话分段')) + '</p>' +
+        (truncated ? '<p role="alert">' + escapeHtml(uiT('导出不完整：已达到 50 页读取上限或历史分页中断，更早内容可能未包含。')) + '</p>' : '') + '<hr/>' +
         rows +
         '</body></html>'
       );
@@ -827,6 +988,42 @@ window.__ModuleLoader__.load({
     // from the same keys at registration time; UI_EN lives beside it so a missing
     // entry falls back to Chinese instead of blank text.
     const UI_EN = {
+      '点击重试检查当前状态': 'Click to check the current status again',
+      '正在刷新会话状态，请稍后重试': 'Refreshing conversation state. Try again shortly.',
+      '聊天已开始新会话，请关闭对话框后重试': 'A new conversation has started. Close this dialog and try again.',
+      '会话历史与所选会话不匹配': 'Conversation history does not match the selected conversation.',
+      "新建会话": "New conversation",
+      "开始新的对话上下文，历史仍可查看": "Start fresh context; history stays available",
+      "为本群全部成员开始新会话": "Start a new conversation for every group member",
+      "已开始新会话": "New conversation started",
+      "请单独发送 /new": "Send /new on its own",
+      "Skill new 与内建指令冲突，请用自然语言明确要求加载该 Skill": "The Skill named new conflicts with the built-in command. Ask to load that Skill in natural language.",
+      "Host 尚不支持新建会话，请更新并重新加载": "This Host does not support new conversations yet. Update and reload.",
+      "当前工作尚未结束，请停止或等待后重试": "Work is still active. Stop it or wait, then try again.",
+      "聊天已开始新会话，草稿已保留": "A new conversation has started. Your draft is preserved.",
+      "将草稿用于当前会话": "Use draft in current conversation",
+      "会话 {ordinal}": "Conversation {ordinal}",
+      "当前会话": "Current conversation",
+      "查看本会话日志": "View logs for this conversation",
+      "本会话日志": "Current conversation logs",
+      "本会话尚无日志": "No logs in this conversation yet",
+      "上一会话日志": "Previous conversation logs",
+      "加载更多日志": "Load more logs",
+      "加载更早的会话分段": "Load earlier conversation segments",
+      "本会话没有消息": "No messages in this conversation",
+      "引用到当前会话": "Quote in current conversation",
+      "明确引用这条历史消息到当前会话": "Explicitly quote this historical message in the current conversation",
+      "历史会话只读，请明确引用到当前会话": "Historical conversations are read-only. Explicitly quote content in the current conversation.",
+      "导出范围：整个聊天，包含所有会话分段": "Export scope: entire chat, including all conversation segments",
+      "导出不完整：已达到 50 页读取上限或历史分页中断，更早内容可能未包含。": "Incomplete export: the 50-page retrieval limit was reached or history pagination stopped. Earlier content may be missing.",
+      "选择指令或 Skill": "Choose a command or Skill",
+      "↑↓ 选择 · Enter 补全 · Tab 补全 · /new 再次 Enter 执行": "↑↓ choose · Enter/Tab complete · Enter again to run /new",
+      "Enter 发送 · Shift + Enter 换行 · / 选择指令或 Skill": "Enter send · Shift + Enter newline · / choose a command or Skill",
+      "Enter 发送 · Shift + Enter 换行 · @ 提及成员 · / 选择指令或 Skill": "Enter send · Shift + Enter newline · @ mention · / choose a command or Skill",
+      "将整个聊天导出为 Markdown（包含所有会话）": "Export the entire chat as Markdown (all conversations)",
+      "将整个聊天导出为 HTML（包含所有会话）": "Export the entire chat as HTML (all conversations)",
+      "将整个聊天导出为 PDF（包含所有会话）": "Export the entire chat as PDF (all conversations)",
+      "历史引用只包含所选消息，不会带入其他历史内容": "This quote includes only the selected message, without surrounding history",
       "开始使用": "Get started",
       "选择一个单聊或群聊开始对话": "Select a direct or group chat to start a conversation",
       "Bot Team 导航": "Bot Team navigation",
@@ -1009,6 +1206,18 @@ window.__ModuleLoader__.load({
       "回复": "Reply",
       "回复 ": "Reply to ",
       "回复生成中，暂不可回复": "A reply is being generated; you can't reply yet.",
+      "删除消息": "Delete message",
+      "删除这条消息": "Delete this message",
+      "回复生成中，请先停止回复再删除": "Stop the reply before deleting this message",
+      "删除这条消息？删除后无法恢复。": "Delete this message? This cannot be undone.",
+      "已删除消息": "Message deleted",
+      "消息不存在或不属于本聊天": "The message does not exist or belongs to another chat",
+      "只能删除普通聊天消息": "Only regular chat messages can be deleted",
+      "消息正在生成，请结束后再删除": "Wait for the reply to finish before deleting it",
+      "消息状态不支持删除": "This message cannot be deleted in its current state",
+      "消息仍被执行中的任务使用，请结束后再删除": "An active task is using this message. Wait for it to finish before deleting it.",
+      "消息正在删除": "The message is being deleted",
+      "消息已删除": "The message has been deleted",
       "回复使用的模型": "Model used for replies",
       "回复这条消息": "Reply to this message",
       "回复中": "Replying",
@@ -1477,10 +1686,65 @@ window.__ModuleLoader__.load({
       "尚无可显示的会话记录。": "There are no session records to display yet.",
       "按时间排序的会话记录": "Session records in chronological order",
       "完整会话接口尚未加载。请完全退出并重新启动 DSH，再打开此面板。": "The full session endpoint is not loaded. Fully quit and restart DSH, then reopen this panel.",
-      "查看成员当前会话": "View member's current session"
+      "查看成员当前会话": "View member's current session",
+      "打开原生会话": "Open native session",
+      "打开后，可从侧栏的 Bot Team 返回。": "Return through Bot Team in the sidebar after opening.",
+      "查看日志": "View logs",
+      "完整日志": "Full logs",
+      "查看成员当前日志": "View member's current logs",
+      "结构化执行": "Structured execution",
+      "原始事件": "Raw events",
+      "日志视图": "Log view",
+      "事件类型": "Event type",
+      "全部类型": "All types",
+      "筛选原始事件": "Filter raw events",
+      "搜索完整 JSON": "Search full JSON",
+      "显示 {count} / {total} 条事件": "Showing {count} of {total} events",
+      "没有匹配的原始事件。": "No raw events match the filters.",
+      "序号 {seq} · 轮次 {turn} · 步骤 {step}": "Sequence {seq} · Turn {turn} · Step {step}",
+      "完整 JSON": "Full JSON",
+      "思考正文": "Reasoning text",
+      "内容块 · {type}": "Content block · {type}",
+      "导出原始日志": "Export raw logs",
+      "正在导出…": "Exporting…",
+      "原始日志导出接口尚未加载，请完全退出并重新启动 DSH。": "The raw log export endpoint is not loaded. Fully quit and restart DSH.",
+      "此旧版子会话无法在原生会话中打开，请查看只读日志。": "This legacy subagent session cannot open as a native session. View its read-only logs.",
+      "尚无法确认此会话可在原生会话中打开，请刷新日志后重试。": "Native navigation is not yet available for this session. Refresh the logs and retry.",
+      "原生会话导航暂不可用，请重新启动 DSH。": "Native session navigation is unavailable. Please restart DSH.",
+      "原始事件记录": "Raw event records"
     })) {
       if (!(key in UI_EN)) UI_EN[key] = value;
     }
+    Object.assign(UI_EN, {
+      "Bot 提问": "Bot question",
+      "待处理交互": "Pending interactions",
+      "刷新交互": "Refresh interactions",
+      "提交答案": "Submit answers",
+      "允许一次": "Allow once",
+      "填写答案或补充说明": "Enter an answer or additional details",
+      "补充答案：{question}": "Additional answer: {question}",
+      "跳过此问题": "Skip this question",
+      "未选择或填写的问题会记为跳过。": "Questions with no selection or text will be recorded as skipped.",
+      "稍后回答，继续执行": "Answer later and continue",
+      "取消提问": "Cancel question",
+      "Bot 已继续执行，你仍可提交答案。": "The bot has continued working. You can still submit an answer.",
+      "答案已提交，等待 Bot 接收。": "Answer submitted; waiting for the bot to receive it.",
+      "正在继续执行，请稍候。": "Continuing; please wait.",
+      "请在本聊天顶部的待处理交互中回应；此卡片保留审批记录。": "Respond in the pending interactions at the top of this chat. This card keeps the approval record.",
+      "这是后台 Bot 的只读日志。继续对话、回答问题和审批请返回 Bot Team。": "This is the background bot’s read-only log. Return to Bot Team to continue chatting, answer questions, or respond to approvals.",
+      "请提交每个问题的答案。": "Submit an answer for every question.",
+      "问题或答案格式不正确。": "Invalid question or answer format.",
+      "答案包含无效或重复的选项。": "The answer contains invalid or duplicate options.",
+      "此问题只能选择一个选项。": "Choose only one option for this question.",
+      "补充答案格式不正确。": "Invalid additional answer format.",
+      "此交互已失效或不属于当前会话。": "This interaction has expired or belongs to a different session.",
+      "此答案正在处理，请稍后刷新。": "This answer is being processed. Please refresh shortly.",
+      "此交互不能稍后回答。": "This interaction cannot be answered later.",
+      "此问题已继续执行，请提交答案或跳过。": "The bot has continued. Submit an answer or skip the question.",
+      "审批决定无效。": "Invalid approval decision.",
+      "此问题已失效，请刷新。": "This question has expired. Please refresh.",
+      "未知的交互操作。": "Unknown interaction action."
+    });
     Object.assign(UI_EN, {
       "侧边栏设置": "Sidebar settings",
       "控制侧边栏的显示内容；保存后在当前浏览器生效。": "Choose what appears in the sidebar. Saved preferences apply in this browser.",
@@ -1791,6 +2055,8 @@ window.__ModuleLoader__.load({
       pendingDirectBotId: null,
       activeGroupId: null,
       messagesByGroup: {},
+      deletedMessageIdsByGroup: {},
+      interactionsByGroup: {},
       statusByMember: {},
       dialog: null,
       smoke: null,
@@ -1798,6 +2064,11 @@ window.__ModuleLoader__.load({
       messagesTick: 0,
       discussions: {},
       hasMoreByGroup: {},
+      conversationsByGroup: {},
+      conversationHasMoreByGroup: {},
+      conversationConflicts: {},
+      sessionBindingRefreshes: {},
+      capabilities: {},
     };
 
     function upsertMessage(list, message) {
@@ -1816,12 +2087,38 @@ window.__ModuleLoader__.load({
       return next;
     }
 
+    function isDeletedMessage(state, groupId, messageId) {
+      return state.deletedMessageIdsByGroup?.[groupId]?.[messageId] === true;
+    }
+
     function shouldShowWelcome(state) {
       return !state.loading && state.bots.length === 0 && state.groups.length === 0;
     }
 
     function reducer(state, action) {
+      if (action.type === 'bootstrap') {
+        const previousGroups = state.groups;
+        state = { ...state, groups: (action.data.groups || []).map(group => {
+          const previous = previousGroups.find(item => item.groupId === group.groupId);
+          if (!previous?.conversationVersion) return group;
+          return { ...group, activeConversationId: previous.activeConversationId, currentConversationId: currentConversationId(previous), conversationVersion: previous.conversationVersion,
+            currentConversation: previous.currentConversation, canStartConversation: previous.canStartConversation, conversationBlockers: previous.conversationBlockers, conversationStateConflict: previous.conversationStateConflict };
+        }) };
+        for (const group of action.data.groups || []) state = mergeConversationState(state, group.groupId, group, true);
+        action = { ...action, data: { ...action.data, groups: state.groups } };
+      } else if (action.type === 'messages' || action.type === 'prependMessages' || action.type === 'conversations') {
+        state = mergeConversationState(state, action.groupId, action.data || action);
+      } else if (action.type === 'sse') {
+        const frame = action.frame;
+        const data = frame.group || frame;
+        state = mergeConversationState(state, data.groupId || state.activeGroupId, data);
+        state = refreshConversationSessionBinding(state, frame);
+      }
       switch (action.type) {
+        case 'conversationState':
+          return mergeConversationState(state, action.groupId, action.data);
+        case 'conversations':
+          return { ...state, conversationHasMoreByGroup: { ...state.conversationHasMoreByGroup, [action.groupId]: action.hasMore === true } };
         case 'bootstrap': {
           const data = action.data;
           const groups = data.groups || [];
@@ -1849,6 +2146,7 @@ window.__ModuleLoader__.load({
             modelCatalog: data.modelCatalog || { groups: [], default: null },
             pluginInfo: data.plugin || null,
             config: data.config || {},
+            capabilities: data.capabilities || {},
             chatDisplaySettings: normalizeChatDisplaySettings(data.chatDisplaySettings),
             smoke: data.smoke || null,
             activeGroupId,
@@ -1907,16 +2205,64 @@ window.__ModuleLoader__.load({
             ),
           };
         }
-        case 'messages':
+        case 'messageDeleted': {
+          const { groupId, messageId } = action;
+          if (!groupId || !messageId || isDeletedMessage(state, groupId, messageId)) return state;
+          const remaining = (state.messagesByGroup[groupId] || []).filter(message => message.messageId !== messageId);
           return {
             ...state,
-            messagesByGroup: { ...state.messagesByGroup, [action.groupId]: action.messages || [] },
-            hasMoreByGroup: { ...state.hasMoreByGroup, [action.groupId]: action.hasMore === true },
+            // Remember removals for this page's lifetime: an older GET or SSE
+            // snapshot must not put a deleted message back into the timeline.
+            deletedMessageIdsByGroup: {
+              ...state.deletedMessageIdsByGroup,
+              [groupId]: { ...state.deletedMessageIdsByGroup?.[groupId], [messageId]: true },
+            },
+            messagesByGroup: {
+              ...state.messagesByGroup,
+              [groupId]: remaining,
+            },
+            // If this was the last loaded message, fetch the older history so
+            // pagination still has a first message to use as its cursor.
+            messagesTick: state.messagesTick + (groupId === state.activeGroupId && !remaining.length && state.hasMoreByGroup[groupId] ? 1 : 0),
+            dialog: state.dialog?.target?.messageId === messageId ? null : state.dialog,
+            refreshTick: state.refreshTick + 1,
           };
+        }
+        case 'messages': {
+          const groupId = action.groupId;
+          const fetched = action.messages || [];
+          const fetchedIds = new Set(fetched.map(message => message.messageId));
+          const firstSeq = fetched[0]?.seq ?? Infinity;
+          // A reconnect can miss deletion events. Only infer removals for records
+          // observed before this GET and inside its returned history window.
+          const missing = (action.knownMessages || []).filter(message =>
+            !fetchedIds.has(message.messageId) && !isDeletedMessage(state, groupId, message.messageId) &&
+            (action.hasMore !== true || message.seq >= firstSeq));
+          const deleted = { ...state.deletedMessageIdsByGroup?.[groupId] };
+          for (const message of missing) deleted[message.messageId] = true;
+          let messages = fetched.filter(message => !deleted[message.messageId]);
+          if (action.knownMessages) {
+            const knownIds = new Set(action.knownMessages.map(message => message.messageId));
+            // Keep messages that arrived via SSE after the GET began.
+            for (const message of state.messagesByGroup[groupId] || []) {
+              if (!knownIds.has(message.messageId) && !fetchedIds.has(message.messageId) && !deleted[message.messageId]) {
+                messages = upsertMessage(messages, message);
+              }
+            }
+          }
+          return {
+            ...state,
+            messagesByGroup: { ...state.messagesByGroup, [groupId]: messages },
+            hasMoreByGroup: { ...state.hasMoreByGroup, [groupId]: action.hasMore === true },
+            deletedMessageIdsByGroup: missing.length ? { ...state.deletedMessageIdsByGroup, [groupId]: deleted } : state.deletedMessageIdsByGroup,
+            dialog: missing.some(message => message.messageId === state.dialog?.target?.messageId) ? null : state.dialog,
+            refreshTick: state.refreshTick + (missing.length ? 1 : 0),
+          };
+        }
         case 'prependMessages': {
           const current = state.messagesByGroup[action.groupId] || [];
           const seen = new Set(current.map((message) => message.messageId));
-          const merged = [...(action.messages || []).filter((message) => !seen.has(message.messageId)), ...current];
+          const merged = [...(action.messages || []).filter((message) => !seen.has(message.messageId) && !isDeletedMessage(state, action.groupId, message.messageId)), ...current];
           return {
             ...state,
             messagesByGroup: { ...state.messagesByGroup, [action.groupId]: merged },
@@ -1944,14 +2290,24 @@ window.__ModuleLoader__.load({
           return { ...state, sidebarShowDirect: action.showDirect !== false };
         case 'chatDisplaySettings':
           return { ...state, chatDisplaySettings: normalizeChatDisplaySettings(action.settings) };
+        case 'interactions': {
+          const data = action.data;
+          if (!data?.groupId || !Array.isArray(data.interactions)) return state;
+          const previous = state.interactionsByGroup?.[data.groupId];
+          if (action.startedEpoch !== undefined && previous && previous.epoch !== action.startedEpoch && previous.epoch !== data.epoch) return state;
+          if (previous?.epoch === data.epoch && previous.revision > data.revision) return state;
+          return { ...state, interactionsByGroup: { ...state.interactionsByGroup, [data.groupId]: data } };
+        }
         case 'sse': {
           const frame = action.frame;
+          if (frame.type === 'message.deleted') return reducer(state, { type: 'messageDeleted', groupId: frame.groupId, messageId: frame.messageId });
+          if (frame.type === 'interaction.updated') return reducer(state, { type: 'interactions', data: frame });
           if ((frame.type === 'settings.updated' || frame.type === 'hello') && frame.chatDisplaySettings) {
-            return reducer(state, { type: 'chatDisplaySettings', settings: frame.chatDisplaySettings });
+            state = reducer(state, { type: 'chatDisplaySettings', settings: frame.chatDisplaySettings });
           }
           const active = state.activeGroupId;
           if (frame.type === 'message.added' || frame.type === 'message.updated') {
-            if (frame.message.groupId !== active) return state;
+            if (frame.message.groupId !== active || isDeletedMessage(state, active, frame.message.messageId)) return state;
             const settledBot = frame.message.author?.type === 'bot' && ['done', 'error', 'stopped'].includes(frame.message.status);
             return {
               ...state,
@@ -1984,6 +2340,7 @@ window.__ModuleLoader__.load({
           if (frame.type === 'member.status') {
             return {
               ...state,
+              refreshTick: state.refreshTick + (!['running', 'queued'].includes(frame.status) && ['running', 'queued'].includes(state.statusByMember[frame.membershipId]) ? 1 : 0),
               statusByMember: {
                 ...state.statusByMember,
                 [frame.membershipId]: frame.status,
@@ -2017,7 +2374,11 @@ window.__ModuleLoader__.load({
             return {
               ...state,
               groups: state.groups.map((group) =>
-                group.groupId === frame.group.groupId ? { ...group, ...frame.group } : group,
+                group.groupId === frame.group.groupId ? { ...group, ...frame.group,
+                  activeConversationId: group.activeConversationId, currentConversationId: group.currentConversationId,
+                  conversationVersion: group.conversationVersion, currentConversation: group.currentConversation,
+                  canStartConversation: group.canStartConversation, conversationBlockers: group.conversationBlockers,
+                } : group,
               ),
             };
           }
@@ -3449,7 +3810,7 @@ window.__ModuleLoader__.load({
         fontSize: 12,
         lineHeight: '18px',
       },
-      skillPicker: { ...S.picker, width: 360, maxWidth: 'calc(100vw - 48px)', maxHeight: 320 },
+      skillPicker: { ...S.picker, width: 480, maxWidth: 'calc(100vw - 48px)', maxHeight: 320 },
       skillOptionBody: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 },
       skillOptionName: { fontSize: 12.5, color: 'var(--bt-text)', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
       skillOptionDesc: { fontSize: 10.5, color: 'var(--bt-text-3)', lineHeight: 1.4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
@@ -4062,6 +4423,16 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
 .bt-session-source { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 12px; color: var(--bt-text-2); overflow-wrap: anywhere; }
 .bt-session-body { flex: 1; min-height: 0; overflow: auto; padding: 28px; }
 .bt-session-content { max-width: 1080px; margin: 0 auto; font-size: 13px; line-height: 1.7; }
+.bt-log-modes, .bt-raw-filters { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+.bt-log-modes button[aria-pressed="true"] { color: var(--bt-accent) !important; background: var(--bt-accent-soft) !important; }
+.bt-raw-filters label { flex: 1 1 240px; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.bt-raw-filters input, .bt-raw-filters select { box-sizing: border-box; width: 100%; min-width: 0; }
+.bt-raw-json, .bt-execution-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; max-height: 480px; overflow: auto; margin: 10px 0; }
+.bt-raw-json { padding: 12px; border-radius: 6px; border: 1px solid var(--bt-border); background: var(--bt-hover); }
+.bt-execution-block { margin-top: 10px; overflow-wrap: anywhere; }
+.bt-execution-block p { color: var(--bt-text-2); }
+.bt-session-export { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.bt-session-page button:focus-visible, .bt-execution-drawer button:focus-visible, .bt-raw-json:focus-visible, .bt-execution-text:focus-visible, .bt-raw-filters input:focus-visible, .bt-raw-filters select:focus-visible { outline: 2px solid var(--bt-accent); outline-offset: 2px; }
 @media (max-width: 700px) { .bt-session-header, .bt-session-body { padding: 16px; } .bt-session-heading h1 { font-size: 19px; } }
 .bt-execution-layer { position: absolute; inset: 0; z-index: 70; display: flex; justify-content: flex-end; background: rgba(16,24,40,.24); }
 .bt-execution-drawer { width: min(580px, 100%); height: 100%; min-width: 0; display: flex; flex-direction: column; background: var(--bt-surface); color: var(--bt-text); border-left: 1px solid var(--bt-border); box-shadow: -8px 0 28px rgba(0,0,0,.16); }
@@ -4485,7 +4856,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         const handler = (type) => (event) => {
           if (closed) return;
           try {
-            const frame = { ...JSON.parse(event.data), type };
+            const frame = { groupId, ...JSON.parse(event.data), type };
             if (type === 'hello') {
               uiReport({ kind: 'sse-hello', groupId, seq: frame.seq, running: frame.running });
               // Resync after a reconnect: SSE only guarantees frames after connect.
@@ -4504,14 +4875,17 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           'hello',
           'message.added',
           'message.updated',
+          'message.deleted',
           'message.delta',
           'message.replace',
           'execution.updated',
+          'interaction.updated',
           'member.status',
           'member.added',
           'member.removed',
           'member.updated',
           'group.updated',
+          'conversation.started',
           'settings.updated',
         ];
         const listeners = types.map((type) => {
@@ -4549,7 +4923,83 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       const events = mergeExecutionEvents(current.events, page.events);
       // nextSeq is the last raw record examined, even when that page is filtered empty.
       const nextSeq = Math.max(current.nextSeq, Number.isSafeInteger(page.nextSeq) ? page.nextSeq : -1, events.length ? events[events.length - 1].seq : -1);
-      return { ...current, ...page, reason: page.reason, sessionId: page.sessionId, fallbackSessionId: page.fallbackSessionId, events, nextSeq, hasMore: page.hasMore === true, loadError: '' };
+      return { ...current, ...page, reason: page.reason, sessionId: page.sessionId, session: page.session, fallbackSessionId: page.fallbackSessionId, events, nextSeq, hasMore: page.hasMore === true, loadError: '' };
+    }
+
+    function canOpenNativeSession(session, sessionId) {
+      return !!sessionId && session?.id === sessionId && session.native === true && session.origin !== 'subagent';
+    }
+
+    /** A click may require metadata I/O. A newer click, page switch or unmount
+     * cancels that lookup before it can navigate the user's main panel. */
+    function createNativeSessionController({ fetchPage = api.sessionHistory, workspace = () => appCtx?.uiWorkspace } = {}) {
+      let pending = null;
+      const cancel = () => { pending?.abort(); pending = null; };
+      return {
+        cancel,
+        async open({ groupId, sessionId, session, onError }) {
+          cancel();
+          const controller = new AbortController();
+          pending = controller;
+          try {
+            if (!groupId || !sessionId) throw new Error(uiT('这条消息尚未记录对应会话。'));
+            let metadata = session;
+            if (!metadata) {
+              const page = await fetchPage(groupId, sessionId, -1, controller.signal);
+              if (controller.signal.aborted) return false;
+              if (page.groupId !== groupId || page.sessionId !== sessionId) throw new Error(uiT('会话历史与所选会话不匹配'));
+              metadata = page.session;
+            }
+            if (metadata?.id !== sessionId) throw new Error(uiT('尚无法确认此会话可在原生会话中打开，请刷新日志后重试。'));
+            if (metadata.origin === 'subagent' || metadata.native === false) throw new Error(uiT('此旧版子会话无法在原生会话中打开，请查看只读日志。'));
+            if (!canOpenNativeSession(metadata, sessionId)) throw new Error(uiT('尚无法确认此会话可在原生会话中打开，请刷新日志后重试。'));
+            const navigation = workspace();
+            if (typeof navigation?.openSession !== 'function') throw new Error(uiT('原生会话导航暂不可用，请重新启动 DSH。'));
+            if (controller.signal.aborted) return false;
+            await navigation.openSession(sessionId);
+            return true;
+          } catch (error) {
+            if (!controller.signal.aborted) onError?.(String(error?.message || error));
+            return false;
+          } finally {
+            if (pending === controller) pending = null;
+          }
+        },
+      };
+    }
+
+    async function exportRawSessionLog(groupId, sessionId, signal) {
+      const response = await fetch(ROUTES.sessionExport + '?groupId=' + encodeURIComponent(groupId) + '&sessionId=' + encodeURIComponent(sessionId), { method: 'GET', credentials: 'same-origin', signal });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error?.message || uiT(response.status === 404 ? '原始日志导出接口尚未加载，请完全退出并重新启动 DSH。' : '请求失败 (HTTP {status})', { status: response.status }));
+      }
+      const blob = await response.blob();
+      if (signal?.aborted) return;
+      downloadBlob(safeExportName(sessionId, 'bot-session') + '.jsonl', blob);
+    }
+
+    function SessionExportButton({ groupId, sessionId }) {
+      const [loading, setLoading] = React.useState(false);
+      const [error, setError] = React.useState('');
+      const request = React.useRef(null);
+      React.useEffect(() => {
+        setLoading(false); setError('');
+        return () => { request.current?.abort(); request.current = null; };
+      }, [groupId, sessionId]);
+      const download = async () => {
+        request.current?.abort();
+        const controller = new AbortController();
+        request.current = controller;
+        setLoading(true); setError('');
+        try { await exportRawSessionLog(groupId, sessionId, controller.signal); }
+        catch (failure) { if (!controller.signal.aborted) setError(String(failure?.message || failure)); }
+        finally { if (request.current === controller) { request.current = null; setLoading(false); } }
+      };
+      return h('div', { className: 'bt-session-export' },
+        h('button', { type: 'button', style: S.ghostBtn, disabled: loading || !sessionId, onClick: download }, loading ? '正在导出…' : '导出原始日志'),
+        error ? withRaw(() => h('span', { role: 'alert', className: 'bt-execution-failed' }, error)) : null,
+      );
     }
 
     function executionPayload(value) {
@@ -4574,12 +5024,14 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       return '';
     }
 
-    /** Pair tools by scoped call IDs, including every PTC child of run_code. */
+    /** Pair native result.source.callId and every nested PTC dispatch without
+     * discarding the original records that supplied the structured summary. */
     function projectExecutionEvents(events) {
       const ordered = mergeExecutionEvents([], events);
       const toolsByKey = new Map();
       const nodes = [];
       const scope = (data, id) => JSON.stringify([data.turn ?? null, data.step ?? null, id]);
+      const compatible = (a, b) => (a.turn == null || b.turn == null || a.turn === b.turn) && (a.step == null || b.step == null || a.step === b.step);
       const labels = {
         'user/message': '触发输入', 'turn/start': '执行开始', 'turn/end': '执行结束',
         'step/start': '模型开始处理', 'step/end': '模型处理结束', 'assistant/message': '中间文本',
@@ -4591,14 +5043,19 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         const isPtc = ['tool/ptc-dispatch-start', 'tool/ptc-dispatch', 'tool/ptc-dispatch-end'].includes(type);
         const isTool = type === 'tool/call' || type === 'tool/result' || isPtc;
         if (isTool) {
-          const callId = data.subCallId || data.callId || data.message?.toolCallId;
+          const callId = (type === 'tool/result' ? data.message?.source?.callId : null) || data.subCallId || data.callId || data.message?.toolCallId;
           const key = callId ? scope(data, callId) : 'tool:' + event.seq;
           let node = toolsByKey.get(key);
+          if (!node && callId && type !== 'tool/call' && type !== 'tool/ptc-dispatch-start') {
+            const candidates = [...toolsByKey.values()].filter(candidate => candidate.callId === callId && compatible(candidate, data));
+            if (candidates.length === 1) node = candidates[0];
+          }
           if (!node) {
-            node = { key, kind: 'tool', seq: event.seq, time: event.time, callId, turn: data.turn, step: data.step, children: [], status: 'pending', tool: data.tool || data.name || null, ptc: isPtc };
+            node = { key, kind: 'tool', seq: event.seq, time: event.time, callId, turn: data.turn, step: data.step, children: [], records: [], status: 'pending', tool: data.tool || data.name || null, ptc: isPtc };
             toolsByKey.set(key, node);
             nodes.push(node);
           }
+          node.records.push(event);
           node.parentCallId = data.parentCallId || (isPtc ? data.rootCallId : null) || node.parentCallId;
           node.tool = data.tool || data.name || node.tool;
           node.durationMs = executionDuration(data) ?? node.durationMs;
@@ -4614,29 +5071,32 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           }
           continue;
         }
-        // Host filters private records; defense in depth also keeps future raw
-        // prompt/stream/reasoning variants out of this presentation layer.
-        if (/system|prompt|reasoning|stream|delta/.test(type)) continue;
         let label = labels[type];
+        if (!label && /reasoning/.test(type)) label = '思考正文';
         if (!label && /retry/.test(type)) label = '重试';
         if (!label && /compact/.test(type)) label = '上下文整理';
-        const node = { key: 'event:' + event.seq, kind: 'record', seq: event.seq, time: event.time, type, label: label || '其他记录 · ' + type, unknown: !label, durationMs: executionDuration(data), payloads: [] };
-        if (type === 'user/message' || type === 'assistant/message') {
+        const node = { key: 'event:' + event.seq, kind: 'record', seq: event.seq, time: event.time, type, turn: data.turn, step: data.step, label: label || '其他记录 · ' + type, unknown: !label, durationMs: executionDuration(data), payloads: [], blocks: [] };
+        const message = data.message || data;
+        const content = message.content ?? message.text;
+        if (type === 'user/message' || type === 'assistant/message' || type === 'assistant/attempt') {
           const text = executionText(data);
           if (text) node.payloads.push({ label: type === 'user/message' ? '输入原文' : '文本原文', value: text });
+          if (Array.isArray(content)) node.blocks = content.filter(part => part && part.type !== 'text');
+          if (typeof message.reasoning === 'string') node.blocks.push({ type: 'reasoning', text: message.reasoning });
           if (data.attachments) node.payloads.push({ label: '附件记录', value: data.attachments });
-        } else if (type === 'assistant/attempt') {
-          node.payloads.push({ label: '记录详情', value: { turn: data.turn, step: data.step } });
-        } else if (label) {
-          node.payloads.push({ label: '记录详情', value: data });
+        } else if (/reasoning/.test(type) && typeof (message.text ?? message.content) === 'string') {
+          node.blocks.push({ type: 'reasoning', text: message.text ?? message.content });
         }
+        // Unknown variants, attempt diagnostics, compaction, metadata and complete
+        // message blocks remain inspectable even when no summary renderer exists.
+        node.payloads.push({ label: '记录详情', value: event });
         nodes.push(node);
       }
       const parentOf = new Map();
       for (const node of toolsByKey.values()) {
         if (!node.parentCallId) continue;
         const exact = toolsByKey.get(scope(node, node.parentCallId));
-        const candidates = exact ? [exact] : [...toolsByKey.values()].filter(candidate => candidate.callId === node.parentCallId && (node.turn == null || candidate.turn === node.turn));
+        const candidates = exact ? [exact] : [...toolsByKey.values()].filter(candidate => candidate.callId === node.parentCallId && compatible(candidate, node));
         if (candidates.length === 1 && candidates[0] !== node) parentOf.set(node, candidates[0]);
       }
       const roots = [];
@@ -4679,6 +5139,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               if (page.groupId !== groupId || (sessionId ? page.sessionId !== sessionId : page.messageId !== messageId)) {
                 throw new Error(uiT(sessionId ? '会话历史与所选会话不匹配' : '执行记录与所选消息不匹配'));
               }
+              const selectedSessionId = sessionId || page.execution?.sessionId || page.sessionId;
+              if (page.session && page.session.id !== selectedSessionId) throw new Error(uiT('会话历史与所选会话不匹配'));
               const next = mergeExecutionPage(state, page);
               if (next.hasMore && next.nextSeq <= afterSeq) throw new Error(uiT('执行记录分页未前进，请重试'));
               publish(next);
@@ -4744,6 +5206,19 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       );
     }
 
+    function ExecutionBlock({ block }) {
+      const reasoning = block.type === 'reasoning';
+      const body = block.text ?? block.reasoning ?? (typeof block.content === 'string' ? block.content : null);
+      const metadata = block.source && typeof block.source === 'object' ? { ...block.source, ...block } : block;
+      const info = ['name', 'filename', 'mimeType', 'mediaType', 'url', 'path', 'width', 'height', 'durationMs'].filter(key => metadata[key] != null).map(key => key + ': ' + executionPayload(metadata[key])).join(' · ');
+      return h('div', { className: 'bt-execution-block' },
+        h('strong', null, reasoning ? '思考正文' : uiT('内容块 · {type}', { type: block.type || 'unknown' })),
+        reasoning && typeof body === 'string' ? withRaw(() => h('pre', { className: 'bt-execution-text', tabIndex: 0, 'aria-label': uiT('思考正文') }, body)) : null,
+        info ? withRaw(() => h('p', null, info)) : null,
+        h(ExecutionPayload, { label: '完整 JSON', value: block }),
+      );
+    }
+
     function ExecutionEvent({ node }) {
       const duration = Number.isFinite(node.durationMs) ? (node.durationMs < 1000 ? node.durationMs + ' ms' : (node.durationMs / 1000).toFixed(2) + ' s') : '';
       const tool = node.kind === 'tool';
@@ -4759,7 +5234,9 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         tool && node.result !== undefined ? h(ExecutionPayload, { label: node.end?.time ? uiT('工具结果 · {time}', { time: formatTime(node.end.time) }) : uiT('工具结果'), value: node.result }) : null,
         tool && node.error ? h(ExecutionPayload, { label: '错误详情', value: node.error }) : null,
         tool && node.attachments ? h(ExecutionPayload, { label: '附件记录', value: node.attachments }) : null,
+        (node.blocks || []).map((block, index) => h(ExecutionBlock, { key: index, block })),
         (node.payloads || []).map((payload, index) => h(ExecutionPayload, { key: index, ...payload })),
+        tool ? h(ExecutionPayload, { label: '原始事件记录', value: node.records }) : null,
       );
     }
 
@@ -4779,8 +5256,47 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       return '请稍后刷新记录重试。';
     }
 
-    function renderExecutionRecords({ state, history = false, onRefresh }) {
-      const records = projectExecutionEvents(state.events);
+    function executionPosition(event) {
+      return uiT('序号 {seq} · 轮次 {turn} · 步骤 {step}', { seq: event.seq, turn: event.data?.turn ?? event.turn ?? '—', step: event.data?.step ?? event.step ?? '—' });
+    }
+
+    function RawExecutionEvent({ event }) {
+      const [copyStatus, setCopyStatus] = React.useState('');
+      const full = JSON.stringify(event, null, 2);
+      return h('li', { className: 'bt-execution-event bt-raw-event', 'data-execution-seq': event.seq },
+        h('div', { className: 'bt-execution-event-head' },
+          withRaw(() => h('strong', null, String(event.type || 'unknown'))),
+          withRaw(() => h('span', null, executionPosition(event))),
+          h('time', { title: String(event.time ?? '') }, formatTime(event.time)),
+        ),
+        h('button', { type: 'button', style: S.smallBtn, onClick: () => copyTextToClipboard(full).then(() => setCopyStatus('已复制完整内容')).catch(error => setCopyStatus({ error: String(error?.message || error) })) }, '复制完整内容'),
+        withRaw(() => h('span', { role: 'status', 'aria-live': 'polite' }, typeof copyStatus === 'string' ? uiT(copyStatus) : uiT('复制失败：{error}', copyStatus))),
+        withRaw(() => h('pre', { className: 'bt-raw-json', tabIndex: 0, 'aria-label': uiT('完整 JSON') }, full)),
+      );
+    }
+
+    function RawExecutionEvents({ events }) {
+      const [type, setType] = React.useState('');
+      const [query, setQuery] = React.useState('');
+      const ordered = mergeExecutionEvents([], events);
+      const types = [...new Set(ordered.map(event => String(event.type || 'unknown')))];
+      const needle = query.toLocaleLowerCase();
+      const filtered = ordered.filter(event => (!type || String(event.type || 'unknown') === type) && (!needle || JSON.stringify(event).toLocaleLowerCase().includes(needle)));
+      return h(React.Fragment, null,
+        h('div', { className: 'bt-raw-filters', role: 'search', 'aria-label': '筛选原始事件' },
+          h('label', null, '事件类型', h('select', { style: S.input, value: type, onChange: event => setType(event.target.value) },
+            h('option', { value: '' }, '全部类型'),
+            types.map(value => withRaw(() => h('option', { key: value, value }, value))),
+          )),
+          h('label', null, '筛选原始事件', h('input', { type: 'search', style: S.input, value: query, placeholder: '搜索完整 JSON', onChange: event => setQuery(event.target.value) })),
+        ),
+        h('p', { role: 'status', 'aria-live': 'polite' }, uiT('显示 {count} / {total} 条事件', { count: filtered.length, total: ordered.length })),
+        filtered.length ? h('ol', { className: 'bt-execution-events', 'aria-label': '原始事件记录' }, filtered.map(event => h(RawExecutionEvent, { key: event.seq, event }))) : h('p', null, '没有匹配的原始事件。'),
+      );
+    }
+
+    function renderExecutionRecords({ state, history = false, mode = 'structured', onRefresh }) {
+      const records = mode === 'structured' ? projectExecutionEvents(state.events) : state.events;
       const available = state.availability === 'available';
       const reason = state.reason ? executionReasonText(state.reason) : '';
       return h(React.Fragment, null,
@@ -4792,33 +5308,44 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         available && reason ? h('p', { role: 'status' }, reason) : null,
         state.error ? withRaw(() => h('div', { role: 'alert', className: 'bt-execution-failed' }, executionPayload(state.error))) : null,
         available && !records.length && !state.loading ? h('p', { role: 'status' }, history ? '尚无可显示的会话记录。' : '尚无可显示的执行记录。') : null,
-        records.length ? h('ol', { className: 'bt-execution-events', 'aria-label': history ? '按时间排序的会话记录' : '按时间排序的执行记录' }, records.map(node => h(ExecutionEvent, { key: node.key, node }))) : null,
+        mode === 'raw' ? h(RawExecutionEvents, { events: state.events }) : records.length ? h('ol', { className: 'bt-execution-events', 'aria-label': history ? '按时间排序的会话记录' : '按时间排序的执行记录' }, records.map(node => h(ExecutionEvent, { key: node.key, node }))) : null,
       );
     }
 
     /** A separate page with an explicit return path, never a mode of the drawer. */
-    function SessionHistoryPage({ target, state, onBack, onRefresh, returnToExecution = false }) {
+    function SessionHistoryPage({ target, state, onBack, onRefresh, onOpenNativeSession, returnToExecution = false }) {
       const backRef = React.useRef(null);
+      const [mode, setMode] = React.useState('structured');
+      const [sessionError, setSessionError] = React.useState('');
       React.useEffect(() => { backRef.current?.focus({ preventScroll: true }); }, [target.groupId, target.sessionId]);
       return h('section', { className: 'bt-root bt-session-page', role: 'region', 'aria-labelledby': 'bt-session-title', 'data-view': 'full-session' },
         h('header', { className: 'bt-session-header' },
           h('button', { ref: backRef, type: 'button', style: S.ghostBtn, onClick: onBack }, h('span', { 'aria-hidden': true }, '← '), returnToExecution ? '返回执行过程' : '返回聊天'),
           h('div', { className: 'bt-session-heading' },
-            h('h1', { id: 'bt-session-title' }, '完整会话'),
+            h('h1', { id: 'bt-session-title' }, '完整日志'),
             h('div', { className: 'bt-session-source' },
               withRaw(() => h('span', null, [target.groupTitle, target.botName || 'Bot'].filter(Boolean).join(' / '))),
               h('span', null, '全部轮次 · 只读历史'),
             ),
           ),
           h('button', { type: 'button', style: S.ghostBtn, disabled: state.loading, onClick: onRefresh }, '刷新记录'),
+          h(SessionExportButton, { key: target.groupId + ':' + target.sessionId, groupId: target.groupId, sessionId: target.sessionId }),
         ),
         h('div', { className: 'bt-session-body', 'aria-busy': state.loading },
-          h('div', { className: 'bt-session-content' }, renderExecutionRecords({ state, history: true, onRefresh })),
+          h('div', { className: 'bt-session-content' },
+            h('div', { className: 'bt-log-modes', role: 'group', 'aria-label': '日志视图' },
+              h('button', { type: 'button', style: S.ghostBtn, 'aria-pressed': mode === 'structured', onClick: () => setMode('structured') }, '结构化执行'),
+              h('button', { type: 'button', style: S.ghostBtn, 'aria-pressed': mode === 'raw', onClick: () => setMode('raw') }, '原始事件'),
+            ),
+            sessionError ? withRaw(() => h('p', { role: 'alert', className: 'bt-execution-failed' }, sessionError)) : null,
+            h('p', { role: 'status' }, '这是后台 Bot 的只读日志。继续对话、回答问题和审批请返回 Bot Team。'),
+            renderExecutionRecords({ state, history: true, mode, onRefresh }),
+          ),
         ),
       );
     }
 
-    function ExecutionDrawer({ target, state, onClose, onRefresh, onOpenSession }) {
+    function ExecutionDrawer({ target, state, onClose, onRefresh, onOpenSession, onOpenNativeSession }) {
       const dialogRef = React.useRef(null);
       const [sessionError, setSessionError] = React.useState('');
       React.useEffect(() => {
@@ -4853,8 +5380,9 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           ),
           h('footer', { className: 'bt-execution-footer' },
             h('button', { type: 'button', style: S.ghostBtn, onClick: onRefresh, disabled: state.loading }, '刷新记录'),
-            sessionId && !legacy && onOpenSession ? h('button', { type: 'button', style: S.ghostBtn, onClick: () => onOpenSession(sessionId, setSessionError) }, '打开完整会话') : null,
-            legacy && state.fallbackSessionId && onOpenSession ? h('button', { type: 'button', style: S.ghostBtn, onClick: () => onOpenSession(state.fallbackSessionId, setSessionError) }, '查看成员当前会话') : null,
+            sessionId && !legacy && onOpenSession ? h('button', { type: 'button', style: S.ghostBtn, onClick: () => onOpenSession(sessionId, setSessionError) }, '完整日志') : null,
+            sessionId ? h(SessionExportButton, { key: sessionId, groupId: target.groupId, sessionId }) : null,
+            legacy && state.fallbackSessionId && onOpenSession ? h('button', { type: 'button', style: S.ghostBtn, onClick: () => onOpenSession(state.fallbackSessionId, setSessionError) }, '查看成员当前日志') : null,
             sessionError ? h('span', { role: 'alert', className: 'bt-execution-failed' }, sessionError) : null,
           ),
         ),
@@ -5050,6 +5578,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
     function canGroupMessages(previous, message) {
       if (!isPlainChatMessage(previous) || !isPlainChatMessage(message)) return false;
       if (authorKeyOf(previous) !== authorKeyOf(message)) return false;
+      if (previous.conversationId !== message.conversationId) return false;
       const gap = Number(message.createdAt || 0) - Number(previous.createdAt || 0);
       return gap >= 0 && gap < 5 * 60 * 1000;
     }
@@ -5099,6 +5628,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       streaming,
       meta,
       hasQuoted,
+      historical = false,
       onReply,
       onCopy,
       onCopyQuote,
@@ -5107,6 +5637,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       onRevise,
       onRetry,
       onExecution,
+      onDelete,
     }) {
       const actions = [];
       const details = meta || {};
@@ -5117,8 +5648,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       actions.push({
         key: 'reply',
         icon: 'reply',
-        label: '回复',
-        title: streaming ? '回复生成中，暂不可回复' : '回复这条消息',
+        label: historical ? '引用到当前会话' : '回复',
+        title: streaming ? '回复生成中，暂不可回复' : historical ? '明确引用这条历史消息到当前会话' : '回复这条消息',
         section: 'primary',
         disabled: streaming,
         hover: !streaming,
@@ -5207,7 +5738,15 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           section: 'execution', disabled: false, hover: false, danger: false, onSelect: select(onExecution),
         });
       }
-      return actions;
+      if (isPlainChatMessage(message) && typeof onDelete === 'function') {
+        actions.push({
+          key: 'delete', icon: 'delete', label: '删除消息',
+          title: streaming ? '回复生成中，请先停止回复再删除' : '删除这条消息',
+          section: 'delete', disabled: streaming, hover: false, danger: true, onSelect: select(onDelete),
+        });
+      }
+      return actions.map(action => historical && ['review', 'revise', 'retry'].includes(action.key)
+        ? { ...action, disabled: true, hover: false, title: '历史会话只读，请明确引用到当前会话', onSelect: () => {} } : action);
     }
 
     function copyTextToClipboard(text) {
@@ -5925,6 +6464,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       onDeleteGroup,
       onEditBot,
       onViewSession,
+      onOpenNativeSession,
       onCreateGroupInFolder,
       onRenameFolder,
       onDeleteFolder,
@@ -6175,7 +6715,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           { key: 'edit', label: '编辑 Bot', onSelect: () => onEditBot && onEditBot(entry.bot) },
           {
             key: 'session',
-            label: '查看 Bot 会话',
+            label: '查看日志',
             disabled: !membership,
             onSelect: () => membership && onViewSession && onViewSession(membership),
           },
@@ -7604,12 +8144,27 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       return h('div', { className: 'bt-unread-divider', style: S.unreadDivider }, h('span', null, '新消息'));
     }
 
-    function MessageList({ messages, unreadFromSeq, ...rest }) {
+    function ConversationDivider({ conversation, current, onViewLogs }) {
+      return h('div', { className: 'bt-conversation-divider', 'data-conversation-id': conversation.conversationId, role: 'group',
+        'aria-label': conversationLabel(conversation), style: { margin: '20px 0 14px', borderTop: '1px solid var(--dsw-alias-border-l2, #ddd)', paddingTop: 10, textAlign: 'center', fontSize: 12 } },
+        h('strong', null, conversationLabel(conversation)), current ? h('span', null, ' · ', '当前会话') : null,
+        h('div', { style: { ...S.hint, marginBottom: 6 } }, conversationTime(conversation)),
+        onViewLogs ? h('button', { type: 'button', style: S.smallBtn, onClick: () => onViewLogs(conversation) }, '查看本会话日志') : null);
+    }
+
+    function MessageList({ messages, unreadFromSeq, conversations, group, onViewConversationLogs, ...rest }) {
       let unreadShown = false;
       const rows = [];
-      (messages || []).forEach((message, index) => {
-        const previous = messages[index - 1];
-        const next = messages[index + 1];
+      const entries = conversationTimeline(messages, conversations);
+      entries.forEach((entry, index) => {
+        if (entry.conversation) {
+          rows.push(h(ConversationDivider, { key: 'conversation-' + entry.conversation.conversationId, conversation: entry.conversation,
+            current: entry.conversation.conversationId === currentConversationId(group), onViewLogs: onViewConversationLogs }));
+          return;
+        }
+        const message = entry.message;
+        const previous = entries[index - 1]?.message;
+        const next = entries[index + 1]?.message;
         const currentAt = Number(message.createdAt || 0);
         const previousAt = previous ? Number(previous.createdAt || 0) : 0;
         const showTime =
@@ -7624,12 +8179,122 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             ...rest,
             key: message.messageId,
             message,
+            historical: historicalMessage(message, group),
             groupStart: !canGroupMessages(previous, message),
             groupEnd: !canGroupMessages(message, next),
           }),
         );
       });
       return rows;
+    }
+
+    function ConversationLogsDialog({ target, onClose, onOpenSession }) {
+      const [bindings, setBindings] = React.useState([]);
+      const [cursor, setCursor] = React.useState(null);
+      const [hasMore, setHasMore] = React.useState(false);
+      const [busy, setBusy] = React.useState(false);
+      const [error, setError] = React.useState('');
+      const alive = React.useRef(true);
+      const inFlight = React.useRef(false);
+      const load = async nextCursor => {
+        if (inFlight.current) return;
+        inFlight.current = true; setBusy(true); setError('');
+        try {
+          const page = await api.conversations(target.groupId, { conversationId: target.conversation.conversationId, cursor: nextCursor, limit: 100 });
+          if (!alive.current) return;
+          if (page.conversation?.conversationId !== target.conversation.conversationId) throw new Error(uiT('会话历史与所选会话不匹配'));
+          setBindings(current => [...new Map([...current, ...(page.sessionBindings || [])].map(binding => [binding.bindingId || binding.sessionId, binding])).values()]);
+          setCursor(page.nextCursor); setHasMore(page.hasMore === true);
+        } catch (reason) { if (alive.current) setError(String(reason?.message || reason)); }
+        finally { inFlight.current = false; if (alive.current) setBusy(false); }
+      };
+      React.useEffect(() => { alive.current = true; void load(null); return () => { alive.current = false; }; }, [target.groupId, target.conversation.conversationId]);
+      return h(Modal, { title: conversationLabel(target.conversation) + ' · ' + uiT('查看本会话日志'), onClose },
+        error ? h('div', { role: 'alert', style: S.errorBanner }, error) : null,
+        !bindings.length && !busy && !error ? h('p', null, '本会话尚无日志') : null,
+        bindings.map(binding => h('button', { key: binding.bindingId || binding.sessionId, type: 'button', style: { ...S.ghostBtn, display: 'block', width: '100%', marginBottom: 8 },
+          onClick: () => onOpenSession(binding) }, h('strong', { raw: true }, binding.botNameSnapshot || binding.botId || 'Bot'),
+          h('span', { raw: true }, ' · ' + binding.sessionId))),
+        busy ? h('p', { role: 'status' }, '加载中…') : null,
+        hasMore || error ? h('button', { type: 'button', style: S.ghostBtn, disabled: busy, onClick: () => void load(cursor) }, error ? '重试' : '加载更多日志') : null);
+    }
+
+    function backgroundAnswer(questions, drafts) {
+      return { answers: questions.map(question => ({ id: question.id, selected: drafts[question.id]?.selected || [],
+        ...(drafts[question.id]?.custom ? { custom: drafts[question.id].custom } : {}) })) };
+    }
+
+    function BackgroundInteractionCard({ interaction, onSnapshot }) {
+      const [drafts, setDrafts] = React.useState({});
+      const [busy, setBusy] = React.useState(false);
+      const [error, setError] = React.useState('');
+      const submitting = React.useRef(false);
+      const active = React.useRef(true);
+      React.useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
+      const waiting = interaction.state === 'continuing' || interaction.state === 'queued';
+      const submit = async (operation, extra = {}) => {
+        if (submitting.current || waiting) return;
+        submitting.current = true;
+        setBusy(true);
+        setError('');
+        try {
+          const data = await api.action('interaction.respond', { groupId: interaction.groupId, expectedConversationId: interaction.conversationId, sessionId: interaction.sessionId,
+            interactionId: interaction.interactionId, operation, ...extra });
+          if (active.current) onSnapshot(data);
+        } catch (reason) { if (active.current) setError(reason.message || String(reason)); }
+        finally { submitting.current = false; if (active.current) setBusy(false); }
+      };
+      const patch = (id, value) => setDrafts(current => ({ ...current, [id]: { ...current[id], ...value } }));
+      const question = interaction.kind === 'question';
+      return h('section', { style: { ...S.approvalCard, maxWidth: 'none', margin: '8px 0' }, 'aria-label': question ? 'Bot 提问' : '审批请求' },
+        h('div', { style: S.approvalHead }, h('strong', { raw: true }, interaction.botName), h('span', null, question ? 'Bot 提问' : '审批请求')),
+        interaction.state === 'continued' ? h('p', { style: S.approvalHint }, 'Bot 已继续执行，你仍可提交答案。') : null,
+        question ? (interaction.questions || []).map(item => h('fieldset', { key: item.id, disabled: busy || waiting, style: { border: 0, padding: '6px 0', margin: 0, minWidth: 0 } },
+          h('legend', { raw: true, style: { fontWeight: 600 } }, item.header || item.question),
+          item.header ? h('p', { raw: true, style: { margin: '4px 0' } }, item.question) : null,
+          item.detail ? h('pre', { raw: true, style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: 200, overflow: 'auto' } }, item.detail) : null,
+          (item.options || []).map(option => h('label', { key: option.label, style: { display: 'flex', alignItems: 'baseline', gap: 8, margin: '6px 0' } },
+            h('input', { type: item.multiSelect ? 'checkbox' : 'radio', name: interaction.interactionId + ':' + item.id,
+              checked: (drafts[item.id]?.selected || []).includes(option.label), onChange: event => {
+                const previous = drafts[item.id]?.selected || [];
+                patch(item.id, { selected: item.multiSelect ? (event.target.checked ? [...previous, option.label] : previous.filter(label => label !== option.label)) : [option.label] });
+              } }), h('span', { raw: true }, option.label, option.description ? h('small', { raw: true, style: { display: 'block', color: 'var(--bt-text-3)' } }, option.description) : null))),
+          h('textarea', { 'aria-label': uiT('补充答案：{question}', { question: item.header || item.question }), placeholder: '填写答案或补充说明',
+            style: { ...S.input, width: '100%', minHeight: 54, boxSizing: 'border-box' },
+            value: drafts[item.id]?.custom || '', onChange: event => patch(item.id, { custom: event.target.value }) }),
+          h('button', { type: 'button', style: S.ghostBtn, onClick: () => patch(item.id, { selected: [], custom: '' }) }, '跳过此问题')))
+          : h(React.Fragment, null, h('p', { raw: true, style: S.approvalText }, interaction.toolName),
+            h('pre', { raw: true, style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', margin: 0 } }, interaction.reason)),
+        error ? h('p', { role: 'alert', style: { color: 'var(--bt-danger)' } }, error) : null,
+        waiting ? h('p', { role: 'status' }, interaction.state === 'queued' ? '答案已提交，等待 Bot 接收。' : '正在继续执行，请稍候。') : h('div', { style: S.approvalActions },
+          h('button', { type: 'button', style: S.primaryBtn, disabled: busy, onClick: () => submit('answer',
+            question ? { answer: backgroundAnswer(interaction.questions, drafts) } : { outcome: 'allowed-once' }) }, question ? '提交答案' : '允许一次'),
+          question && interaction.timed && interaction.state === 'pending' ? h('button', { type: 'button', style: S.ghostBtn, disabled: busy, onClick: () => submit('continue') }, '稍后回答，继续执行') : null,
+          interaction.state === 'pending' ? h('button', { type: 'button', style: S.ghostBtn, disabled: busy,
+            onClick: () => question ? submit('cancel') : submit('answer', { outcome: 'rejected' }) }, question ? '取消提问' : '拒绝') : null,
+          question ? h('span', { style: S.approvalHint }, '未选择或填写的问题会记为跳过。') : null));
+    }
+
+    function BackgroundInteractionPanel({ groupId, currentConversationId: activeConversationId, snapshot, refreshTick, dispatch }) {
+      const [error, setError] = React.useState('');
+      const [reload, setReload] = React.useState(0);
+      const latestSnapshot = React.useRef(snapshot);
+      latestSnapshot.current = snapshot;
+      React.useEffect(() => {
+        let active = true;
+        const startedEpoch = latestSnapshot.current?.groupId === groupId ? latestSnapshot.current.epoch : null;
+        setError('');
+        api.action('interaction.list', { groupId }).then(data => {
+          if (active) dispatch({ type: 'interactions', data, startedEpoch });
+        }).catch(reason => { if (active) setError(reason.message || String(reason)); });
+        return () => { active = false; };
+      }, [groupId, refreshTick, reload, dispatch]);
+      const interactions = snapshot?.groupId === groupId ? (snapshot.interactions || []).filter(item => !activeConversationId || item.conversationId === activeConversationId) : [];
+      if (!error && !interactions?.length) return null;
+      return h('div', { style: { padding: '0 18px', flexShrink: 0, maxHeight: '42vh', overflowY: 'auto' }, 'aria-label': '待处理交互' },
+        error ? h('div', { role: 'alert' }, error, h('button', { type: 'button', style: S.ghostBtn, onClick: () => setReload(value => value + 1) }, '刷新交互')) : null,
+        (interactions || []).map(interaction => h(BackgroundInteractionCard, { key: interaction.interactionId, interaction,
+          onSnapshot: data => dispatch({ type: 'interactions', data, startedEpoch: snapshot.epoch }) })));
     }
 
     function renderApprovalRow({ message, bots, onOpenSession }) {
@@ -7657,8 +8322,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             ? h(
                 'div',
                 { style: S.approvalActions },
-                h('button', { style: S.primaryBtn, onClick: () => onOpenSession && onOpenSession(meta.sessionId) }, '去审批'),
-                h('span', { style: S.approvalHint }, '在 Bot 会话里选择「允许一次」或「拒绝」；未处理会等到本轮超时，结果会同步回群里。'),
+                h('span', { style: S.approvalHint }, '请在本聊天顶部的待处理交互中回应；此卡片保留审批记录。'),
               )
             : null,
         ),
@@ -7869,6 +8533,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       message,
       groupStart,
       groupEnd,
+      historical = false,
       bots,
       tasks,
       allMessages,
@@ -7921,6 +8586,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         streaming,
         meta,
         hasQuoted: !!quoted,
+        historical,
         onReply,
         onCopy,
         onCopyQuote,
@@ -8073,6 +8739,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
 
     function MessageContextMenu({
       menu,
+      group,
       bots,
       allMessages,
       userProfile,
@@ -8085,10 +8752,12 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       onRevise,
       onRetry,
       onExecution,
+      onDelete,
     }) {
       // Prefer the live message so a streaming reply enables/disables menu items
       // as it finishes; fall back to the snapshot taken when the menu opened.
       const message = (allMessages || []).find((candidate) => candidate.messageId === menu.message.messageId) || menu.message;
+      const historical = historicalMessage(message, group);
       const mine = !!(message.author && message.author.type === 'human');
       const streaming = message.status === 'pending' || message.status === 'streaming';
       const quoted = replyQuoteOf(message, allMessages);
@@ -8098,6 +8767,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         streaming,
         meta: message.meta || {},
         hasQuoted: !!quoted,
+        historical,
         onReply,
         onCopy,
         onCopyQuote,
@@ -8106,6 +8776,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         onRevise,
         onRetry,
         onExecution,
+        onDelete,
       });
       let separatorCount = 0;
       actions.forEach((action, index) => {
@@ -8280,7 +8951,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         setBusy(true);
         setError('');
         try {
-          const result = await api.action('group.workspace.set', { groupId: group.groupId, workspaceCwd: directory.trim() });
+          const result = await api.action('group.workspace.set', { groupId: group.groupId, expectedConversationId: currentConversationId(group), workspaceCwd: directory.trim() });
           if (!result.result || result.result.groupId !== group.groupId) throw new Error(uiT('Host 未返回项目工作目录'));
           if (aliveRef.current) onSaved(result.result);
         } catch (reason) {
@@ -8334,6 +9005,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       onExportHtml,
       onExportPdf,
       onOpenSettings,
+      conversationControlRef,
+      onConversationStarted,
       active = true,
     }) {
       const isDirect = !!(group && group.kind === 'direct');
@@ -8343,12 +9016,31 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       const addMenuRef = React.useRef(null);
       const onResizeRef = React.useRef(onResize);
       onResizeRef.current = onResize;
-      const [text, setText] = React.useState('');
-      const [mentions, setMentions] = React.useState([]);
+      const [text, setTextState] = React.useState('');
+      const [mentions, setMentionsState] = React.useState([]);
       const [picker, setPicker] = React.useState(null);
       const [pickerIndex, setPickerIndex] = React.useState(0);
       const [sending, setSending] = React.useState(false);
-      const [draftAttachments, setDraftAttachments] = React.useState([]);
+      const [draftAttachments, setDraftAttachmentsState] = React.useState([]);
+      const draftsRef = React.useRef(new Map());
+      const draftRef = React.useRef({ groupId: group?.groupId, conversationId: currentConversationId(group), revision: 0, text: '', mentions: [], attachments: [] });
+      const inFlightRef = React.useRef(null);
+      const groupRef = React.useRef(group);
+      groupRef.current = group;
+      const replyTargetRef = React.useRef(replyTarget);
+      replyTargetRef.current = replyTarget;
+      const [draftConversationId, setDraftConversationId] = React.useState(currentConversationId(group));
+      const updateDraft = (key, value, setter) => {
+        const draft = draftRef.current;
+        const next = typeof value === 'function' ? value(draft[key]) : value;
+        if (next !== draft[key]) { draft[key] = next; draft.revision += 1; }
+        setter(next);
+      };
+      const setText = value => updateDraft('text', value, setTextState);
+      const setMentions = value => updateDraft('mentions', value, setMentionsState);
+      const setDraftAttachments = value => updateDraft('attachments', value, setDraftAttachmentsState);
+      const bindDraft = id => { draftRef.current.conversationId = id; setDraftConversationId(id); };
+      const draftIsStale = !!(currentConversationId(group) && draftConversationId !== currentConversationId(group));
       const [addMenuOpen, setAddMenuOpen] = React.useState(false);
       React.useEffect(() => {
         if (!active) { setAddMenuOpen(false); setPicker(null); }
@@ -8395,7 +9087,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         .filter((item) => item.status === 'ready' && item.attachment)
         .map((item) => item.attachment);
       const attachmentsPending = draftAttachments.some((item) => item.status !== 'ready');
-      const canSend = !sending && !workspaceSaving && !attachmentsPending && (text.trim() !== '' || readyAttachments.length > 0);
+      const command = parseBuiltinCommand(text);
+      const canSend = !sending && !workspaceSaving && !draftIsStale && !group?.conversationStateConflict && (!attachmentsPending || !!command) && (text.trim() !== '' || readyAttachments.length > 0);
 
       React.useEffect(() => {
         const node = textareaRef.current;
@@ -8461,10 +9154,18 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         };
       }, []);
 
-      // Draft files belong to one conversation. Reset them when the user
-      // switches chats so a pending upload cannot leak across.
+      // Cache each chat independently; a late request can only consume its own draft.
       React.useEffect(() => {
-        setDraftAttachments([]);
+        if (draftRef.current.groupId !== group?.groupId) {
+          draftsRef.current.set(draftRef.current.groupId, draftRef.current);
+          const saved = draftsRef.current.get(group?.groupId) || { groupId: group?.groupId, conversationId: currentConversationId(group), revision: 0, text: '', mentions: [], attachments: [] };
+          draftRef.current = saved;
+          setTextState(saved.text);
+          setMentionsState(saved.mentions);
+          setDraftAttachmentsState(saved.attachments);
+          setDraftConversationId(saved.conversationId);
+          autoReplyMentionRef.current = null;
+        }
         setAddMenuOpen(false);
         setProjectDialogOpen(false);
         setWorkspaceSaving(false);
@@ -8472,6 +9173,12 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         setPicker(null);
         setPickerIndex(0);
       }, [group && group.groupId]);
+
+      React.useEffect(() => {
+        const draft = draftRef.current;
+        if (draft.groupId !== group?.groupId || draft.conversationId === currentConversationId(group)) return;
+        if (!draft.text.trim() && !draft.attachments.length && !draft.mentions.length && !replyTargetRef.current) bindDraft(currentConversationId(group));
+      }, [group?.groupId, currentConversationId(group), text, draftAttachments.length, mentions.length, replyTarget?.messageId]);
 
       // The skill catalog is workspace-scoped: switching chats, moving the
       // workspace, or changing the roster invalidates it.
@@ -8573,7 +9280,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             skillLoadedGroupRef.current = groupId;
             setPicker((current) => (
               current && current.kind === 'skill'
-                ? { ...current, options: rankSkills(list, current.query), loading: false, error: null, reason }
+                ? { ...current, options: commandSkillOptions(list, current.query, current.start), loading: false, error: null, reason }
                 : current
             ));
             return list;
@@ -8606,7 +9313,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         if (!next) return;
         setPicker((current) => (
           current && current.kind === 'skill'
-            ? { ...current, options: rankSkills(next, current.query), loading: false, error: null }
+            ? { ...current, options: commandSkillOptions(next, current.query, current.start), loading: false, error: null }
             : current
         ));
       };
@@ -8636,7 +9343,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           kind: 'skill',
           start: skillMatch.start,
           query: skillMatch.query,
-          options: rankSkills(list, skillMatch.query),
+          options: commandSkillOptions(list, skillMatch.query, skillMatch.start),
           loading: skillLoadingRef.current || !loaded,
           error: skillErrorRef.current,
           reason: skillReasonRef.current,
@@ -8649,6 +9356,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
 
       const onChange = (event) => {
         const value = event.target.value;
+        if (autoReplyMentionRef.current && !value.startsWith('@' + autoReplyMentionRef.current.name + ' ')) autoReplyMentionRef.current = null;
         setText(value);
         updatePicker(value, event.target.selectionStart ?? value.length);
       };
@@ -8675,11 +9383,15 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
 
       const insertSkill = (skill) => {
         if (!skill || !skill.name) return;
+        if (skill.conflict || (!skill.builtin && skill.name === 'new')) {
+          dispatch({ type: 'error', message: 'Skill new 与内建指令冲突，请用自然语言明确要求加载该 Skill' });
+          return;
+        }
         const caret = textareaRef.current ? textareaRef.current.selectionStart : text.length;
         const start = picker && picker.kind === 'skill' ? picker.start : caret;
         const before = text.slice(0, start);
         const after = text.slice(caret);
-        const inserted = '/' + skill.name + ' ';
+        const inserted = '/' + skill.name + (skill.builtin ? '' : ' ');
         const next = before + inserted + after;
         setText(next);
         setPicker(null);
@@ -8734,7 +9446,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           kind: 'skill',
           start,
           query: '',
-          options: loaded ? rankSkills(skillCatalogRef.current, '') : [],
+          options: commandSkillOptions(loaded ? skillCatalogRef.current : [], '', start),
           loading: skillLoadingRef.current || !loaded,
           error: skillErrorRef.current,
           reason: skillReasonRef.current,
@@ -8753,6 +9465,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       const uploadFile = async (file) => {
         const groupId = group && group.groupId;
         const itemId = 'file-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+        const uploadDraft = draftRef.current;
         setDraftAttachments((current) => current.concat([{
           id: itemId,
           name: file.name || 'file',
@@ -8765,16 +9478,16 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           const result = await api.upload(groupId, file);
           const attachment = result && result.attachment ? result.attachment : null;
           if (!attachment || !attachment.attachmentId) throw new Error('Host 未返回附件引用');
-          if (groupIdRef.current !== groupId) return;
-          setDraftAttachments((current) => current.map((item) => (
-            item.id === itemId ? { ...item, status: 'ready', attachment } : item
-          )));
+          if (!uploadDraft.attachments.some(item => item.id === itemId)) return;
+          const finish = current => current.map(item => item.id === itemId ? { ...item, status: 'ready', attachment } : item);
+          if (draftRef.current !== uploadDraft) { uploadDraft.attachments = finish(uploadDraft.attachments); uploadDraft.revision += 1; return; }
+          setDraftAttachments(finish);
         } catch (error) {
           const message = String(error && error.message ? error.message : error);
-          if (groupIdRef.current !== groupId) return;
-          setDraftAttachments((current) => current.map((item) => (
-            item.id === itemId ? { ...item, status: 'error', error: message } : item
-          )));
+          if (!uploadDraft.attachments.some(item => item.id === itemId)) return;
+          const fail = current => current.map(item => item.id === itemId ? { ...item, status: 'error', error: message } : item);
+          if (draftRef.current !== uploadDraft) { uploadDraft.attachments = fail(uploadDraft.attachments); uploadDraft.revision += 1; return; }
+          setDraftAttachments(fail);
           dispatch({ type: 'error', message: uiT('文件「{name}」上传失败：{error}', { name: file.name || 'file', error: message }) });
         }
       };
@@ -8826,7 +9539,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         workspaceSavingRef.current = true;
         setWorkspaceSaving(true);
         try {
-          const result = await api.action('group.workspace.set', { groupId, workspaceCwd: '' });
+          const result = await api.action('group.workspace.set', { groupId, expectedConversationId: currentConversationId(group), workspaceCwd: '' });
           workspaceSaved(result.result);
         } catch (error) {
           if (groupIdRef.current === groupId) dispatch({ type: 'error', message: uiT(String(error && error.message ? error.message : error)) });
@@ -8838,45 +9551,108 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         }
       };
 
+      const reportRequestError = (error, groupId) => {
+        if (error.details) dispatch({ type: 'conversationState', groupId, data: error.details });
+        if (error.code === 'stale-conversation' || error.code === 'reload-required') dispatch({ type: 'refreshTick' });
+        dispatch({ type: 'error', message: String(error?.message || error) });
+      };
+      const clearOldReply = () => {
+        const draft = draftRef.current;
+        const cleaned = applyReplyMention({ text: draft.text, mentions: draft.mentions, auto: autoReplyMentionRef.current, entry: null });
+        autoReplyMentionRef.current = null;
+        setText(cleaned.text);
+        setMentions(cleaned.mentions);
+        onClearReply?.();
+      };
+      const adoptDraft = () => {
+        if (inFlightRef.current) return;
+        bindDraft(currentConversationId(groupRef.current));
+        clearOldReply();
+      };
+      const startConversation = async (source = 'menu') => {
+        if (inFlightRef.current || workspaceSavingRef.current) return;
+        const reason = conversationBlockReason(groupRef.current, state.capabilities);
+        if (reason) { dispatch({ type: 'error', message: reason }); return; }
+        const draft = draftRef.current;
+        const expectedConversationId = source === 'command' ? draft.conversationId : currentConversationId(groupRef.current);
+        if (expectedConversationId !== currentConversationId(groupRef.current)) { dispatch({ type: 'error', message: '聊天已开始新会话，草稿已保留' }); return; }
+        const snapshot = { groupId: draft.groupId, expectedConversationId, revision: draft.revision,
+          requestId: 'new-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2), replyId: replyTargetRef.current?.messageId };
+        inFlightRef.current = snapshot;
+        setSending(true);
+        try {
+          const response = await api.action('conversation.new', { groupId: snapshot.groupId, expectedConversationId, requestId: snapshot.requestId });
+          const result = response.result;
+          dispatch({ type: 'conversationState', groupId: snapshot.groupId, data: result });
+          if (draftRef.current === draft && groupIdRef.current === snapshot.groupId) {
+            // A later SSE may already know a newer segment than this response.
+            const latest = groupRef.current;
+            const id = Number(latest.conversationVersion) > Number(result.conversationVersion) ? currentConversationId(latest) : result.currentConversationId;
+            if (source === 'command' && draft.revision === snapshot.revision && parseBuiltinCommand(draft.text)?.valid) setText('');
+            bindDraft(id);
+            if (replyTargetRef.current?.messageId === snapshot.replyId) clearOldReply();
+            setPicker(null);
+            setAddMenuOpen(false);
+            onConversationStarted?.(result, snapshot.groupId);
+          }
+          dispatch({ type: 'flash', message: '已开始新会话' });
+        } catch (error) {
+          reportRequestError(error, snapshot.groupId);
+        } finally {
+          if (inFlightRef.current === snapshot) { inFlightRef.current = null; setSending(false); }
+        }
+      };
+      if (conversationControlRef) conversationControlRef.current = { groupId: group?.groupId, startConversation };
+
       const send = async () => {
-        const trimmedText = text.trim();
-        if (sending || workspaceSavingRef.current || attachmentsPending) return;
-        if (!trimmedText && readyAttachments.length === 0) return;
-        const stillMentioned = mentions.filter((membershipId) => {
-          const entry = memberEntries.find((candidate) => candidate.member.membershipId === membershipId);
+        if (inFlightRef.current || workspaceSavingRef.current) return;
+        if (groupRef.current?.conversationStateConflict) { dispatch({ type: 'error', message: '正在刷新会话状态，请稍后重试' }); return; }
+        const draft = draftRef.current;
+        const command = parseBuiltinCommand(draft.text);
+        if (command) {
+          if (!command.valid) { dispatch({ type: 'error', message: '请单独发送 /new' }); return; }
+          return startConversation('command');
+        }
+        if (draft.conversationId !== currentConversationId(groupRef.current)) { dispatch({ type: 'error', message: '聊天已开始新会话，草稿已保留' }); return; }
+        const attachments = draft.attachments.filter(item => item.status === 'ready' && item.attachment).map(item => item.attachment);
+        if (draft.attachments.some(item => item.status !== 'ready')) return;
+        const trimmedText = draft.text.trim();
+        if (!trimmedText && !attachments.length) return;
+        const snapshot = { groupId: draft.groupId, expectedConversationId: draft.conversationId, revision: draft.revision,
+          replyId: replyTargetRef.current?.messageId, requestId: 'send-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2) };
+        const stillMentioned = draft.mentions.filter(membershipId => {
+          const entry = memberEntries.find(candidate => candidate.member.membershipId === membershipId);
           return entry && trimmedText.includes('@' + entry.bot.name);
         });
+        inFlightRef.current = snapshot;
         setSending(true);
         try {
           await api.action('message.post', {
-            groupId: group.groupId,
-            text: trimmedText,
-            mentions: stillMentioned,
-            replyTo: replyTarget ? replyTarget.messageId : undefined,
-            attachments: readyAttachments.map((attachment) => ({
-              attachmentId: attachment.attachmentId,
-              name: attachment.name,
-              bytes: attachment.bytes,
-            })),
+            groupId: snapshot.groupId, expectedConversationId: snapshot.expectedConversationId, requestId: snapshot.requestId,
+            text: trimmedText, mentions: stillMentioned, replyTo: snapshot.replyId,
+            attachments: attachments.map(attachment => ({ attachmentId: attachment.attachmentId, name: attachment.name, bytes: attachment.bytes })),
           });
-          autoReplyMentionRef.current = null;
-          setText('');
-          setMentions([]);
-          setPicker(null);
-          setPickerIndex(0);
-          setDraftAttachments([]);
-          setAddMenuOpen(false);
-          onClearReply && onClearReply();
-          onSent && onSent();
-        } catch (error) {
-          dispatch({ type: 'error', message: String(error && error.message ? error.message : error) });
-        } finally {
-          setSending(false);
-        }
+          if (draftRef.current === draft && groupIdRef.current === snapshot.groupId) {
+            if (draft.revision === snapshot.revision && replyTargetRef.current?.messageId === snapshot.replyId) {
+              autoReplyMentionRef.current = null;
+              setText(''); setMentions([]); setDraftAttachments([]);
+              onClearReply?.();
+            }
+            setPicker(null); setPickerIndex(0); setAddMenuOpen(false);
+            onSent?.();
+          }
+        } catch (error) { reportRequestError(error, snapshot.groupId); }
+        finally { if (inFlightRef.current === snapshot) { inFlightRef.current = null; setSending(false); } }
       };
 
       const onKeyDown = (event) => {
-        const composing = !!(event.nativeEvent && event.nativeEvent.isComposing);
+        const composing = !!(event.isComposing || event.nativeEvent?.isComposing || event.keyCode === 229);
+        if (composing) return;
+        if (event.key === 'Enter' && !event.shiftKey && parseBuiltinCommand(draftRef.current.text)) {
+          event.preventDefault();
+          void send();
+          return;
+        }
         if (picker && picker.options.length > 0) {
           if (event.key === 'ArrowDown') {
             event.preventDefault();
@@ -8901,11 +9677,6 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           setPicker(null);
           return;
         }
-        if (picker && picker.kind === 'skill' && event.key === 'Enter' && !event.shiftKey && !composing) {
-          event.preventDefault();
-          if (!picker.loading) setPicker(null);
-          return;
-        }
         if (event.key === 'Enter' && !event.shiftKey && !composing) {
           event.preventDefault();
           void send();
@@ -8920,6 +9691,9 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       const replyName = replyTarget ? displayNameOf(replyTarget, bots, userProfile) : '';
       const addMenuActions = [];
       const addMenuAction = (group, item) => addMenuActions.push({ group, ...item });
+      addMenuAction('指令', { key: 'new', label: '新建会话', alias: '/new', icon: 'add',
+        description: conversationBlockReason(group, state.capabilities) || conversationActivityHint(group) || (isDirect ? '开始新的对话上下文，历史仍可查看' : '为本群全部成员开始新会话'),
+        disabled: sending || workspaceSaving || !!conversationBlockReason(group, state.capabilities), run: () => void startConversation('menu') });
       addMenuAction('添加', {
         key: 'file',
         label: '文件',
@@ -8963,7 +9737,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           description: '中断当前会话进行中的回复',
           icon: 'stop',
           run: () => {
-            void api.action('message.stop', { groupId: group.groupId }).then(() => onSent && onSent());
+            void api.action('message.stop', { groupId: group.groupId, expectedConversationId: currentConversationId(group) }).then(() => onSent && onSent());
           },
         });
       }
@@ -8972,7 +9746,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           key: 'export-markdown',
           label: '导出 Markdown',
           alias: 'export',
-          description: '将当前会话导出为 Markdown',
+          description: '将整个聊天导出为 Markdown（包含所有会话）',
           icon: 'download',
           run: onExportMarkdown,
         });
@@ -8982,7 +9756,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           key: 'export-html',
           label: '导出 HTML',
           alias: 'export-html',
-          description: '将当前会话导出为 HTML',
+          description: '将整个聊天导出为 HTML（包含所有会话）',
           icon: 'code',
           run: onExportHtml,
         });
@@ -8992,7 +9766,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           key: 'export-pdf',
           label: '导出 PDF',
           alias: 'export-pdf',
-          description: '将当前会话导出为 PDF',
+          description: '将整个聊天导出为 PDF（包含所有会话）',
           icon: 'download',
           run: onExportPdf,
         });
@@ -9009,10 +9783,10 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       }
 
       const hint = isDirect
-        ? 'Enter 发送 · Shift + Enter 换行 · / 选择 Skill'
+        ? 'Enter 发送 · Shift + Enter 换行 · / 选择指令或 Skill'
         : running.length > 0
-          ? 'Enter 发送 · Shift + Enter 换行 · / 选择 Skill'
-          : 'Enter 发送 · Shift + Enter 换行 · @ 提及成员 · / 选择 Skill';
+          ? 'Enter 发送 · Shift + Enter 换行 · / 选择指令或 Skill'
+          : 'Enter 发送 · Shift + Enter 换行 · @ 提及成员 · / 选择指令或 Skill';
 
       const renderPicker = () => {
         if (!picker) return null;
@@ -9023,7 +9797,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               className: 'bt-skill-picker',
               style: S.skillPicker,
               role: 'listbox',
-              'aria-label': '选择 Skill',
+              'aria-label': '选择指令或 Skill',
               onKeyDown: (event) => {
                 if (event.key !== 'Escape') return;
                 event.preventDefault();
@@ -9035,11 +9809,11 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             h(
               'div',
               { style: S.pickerHeader },
-              h('span', null, '选择 Skill'),
+              h('span', null, '选择指令或 Skill'),
               h(
                 'span',
                 { style: { display: 'inline-flex', alignItems: 'center', gap: 8 } },
-                h('span', { style: S.pickerHint }, '↑↓ 选择 · Enter 插入 · Esc 关闭'),
+                h('span', { style: S.pickerHint }, '↑↓ 选择 · Enter 补全 · Tab 补全 · /new 再次 Enter 执行'),
                 h(
                   'button',
                   {
@@ -9096,7 +9870,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                       h(
                         'div',
                         {
-                          key: skill.name,
+                          key: (skill.builtin ? 'command:' : 'skill:') + skill.name,
                           className: 'bt-picker-item',
                           'data-active': index === pickerIndex ? 'true' : 'false',
                           style: S.pickerItem,
@@ -9112,8 +9886,10 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                         h(
                           'div',
                           { style: S.skillOptionBody },
-                          h('span', { style: S.skillOptionName, raw: true }, skill.name),
-                          skill.description
+                          h('span', { style: S.skillOptionName, raw: true }, skill.builtin ? uiT('新建会话') + ' /new' : skill.name),
+                          skill.conflict
+                            ? h('span', { style: S.skillOptionDesc }, 'Skill new 与内建指令冲突，请用自然语言明确要求加载该 Skill')
+                            : skill.description
                             ? h('span', { style: S.skillOptionDesc, title: skill.description, raw: true }, cleanPreview(skill.description, 110))
                             : null,
                         ),
@@ -9212,6 +9988,9 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               )
             : null,
           renderPicker(),
+          draftIsStale ? h('div', { role: 'status', className: 'bt-draft-conversation-warning', style: { ...S.replyBar, alignItems: 'center' } },
+            h('span', null, '聊天已开始新会话，草稿已保留'),
+            h('button', { type: 'button', style: S.smallBtn, disabled: sending, onClick: adoptDraft }, '将草稿用于当前会话')) : null,
           projectCwd
             ? h('div', { className: 'bt-project-workspace', style: { ...S.draftAttachments, flexWrap: 'nowrap', alignItems: 'center' } },
                 h('div', { style: { ...S.draftAttachment('ready'), maxWidth: '100%', flex: 1, color: S.draftAttachmentMeta.color }, title: projectCwd, rawTitle: true },
@@ -9231,6 +10010,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                   { style: S.replyBarBody },
                   h('div', { style: S.replyBarLabel }, uiT('回复 {name}', { name: replyName })),
                   h('div', { style: S.replyBarText, raw: true }, cleanPreview(replyTarget.text, 120) || uiT('[消息]')),
+                  historicalMessage(replyTarget, group) ? h('small', null, '历史引用只包含所选消息，不会带入其他历史内容') : null,
                 ),
                 h(
                   'button',
@@ -9337,7 +10117,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                     type: 'button',
                     className: 'bt-tool-btn bt-tool-danger',
                     style: { ...S.toolButton, ...S.toolDanger },
-                    onClick: () => void api.action('message.stop', { groupId: group.groupId }).then(() => onSent && onSent()),
+                    onClick: () => void api.action('message.stop', { groupId: group.groupId, expectedConversationId: currentConversationId(group) }).then(() => onSent && onSent()),
                   },
                   h('span', { style: { width: 6, height: 6, borderRadius: '50%', background: '#22c55e' } }),
                   pluralUi('1 个 Bot 正在回复 · 停止', '{count} 个 Bot 正在回复 · 停止', running.length),
@@ -9412,7 +10192,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
     }
 
     /** Right rail for a single chat: bot identity + session/persona entry points. */
-    function renderDirectPanel({ bot, group, member, usage, running = false, onEdit, onCollapse, onViewSession }) {
+    function renderDirectPanel({ bot, group, member, usage, running = false, onEdit, onCollapse, onViewSession, onOpenNativeSession }) {
       const name = (bot && bot.name) || (group && group.title) || 'Bot';
       return h(
         'div',
@@ -9470,7 +10250,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               { style: S.directActions },
               h('button', { type: 'button', style: S.ghostBtn, disabled: !bot, onClick: () => bot && onEdit && onEdit(bot) }, '编辑 Bot'),
               member
-                ? h('button', { type: 'button', style: S.ghostBtn, onClick: () => onViewSession && onViewSession(member) }, '查看会话')
+                ? h('button', { type: 'button', style: S.ghostBtn, disabled: !(currentMemberSession(member, group) || member.sessionId), onClick: () => onViewSession && onViewSession(member) }, memberLogLabel(member, group))
                 : null,
             ),
           ),
@@ -9490,7 +10270,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
     }
 
 
-    function renderMembersPanel({ state, members, bots, dispatch, onAdd, onCollapse, onEdit, onViewSession, discussion, usage, onStopDiscussion }) {
+    function renderMembersPanel({ state, members, bots, dispatch, onAdd, onCollapse, onEdit, onViewSession, onOpenNativeSession, discussion, usage, onStopDiscussion }) {
       const runningMembers = members.filter((member) => state.statusByMember[member.membershipId] === 'running');
       return h(
         'div',
@@ -9601,7 +10381,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                   h(
                     'div',
                     { style: S.memberActions },
-                    h('button', { style: S.smallBtn, onClick: () => onViewSession && onViewSession(member) }, '查看会话'),
+                    h('button', { type: 'button', style: S.smallBtn, disabled: !(currentMemberSession(member, state.groups.find(group => group.groupId === member.groupId)) || member.sessionId), onClick: () => onViewSession && onViewSession(member) }, memberLogLabel(member, state.groups.find(group => group.groupId === member.groupId))),
                     h('button', { style: S.smallBtn, onClick: () => onEdit(bot) }, '编辑'),
                     h(
                       'button',
@@ -10496,7 +11276,9 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
     }
 
 
-    function renderReviewDialog({ target, group, members, bots, onClose, onSaved }) {
+    function renderReviewDialog({ target, group, members, bots, onClose, onSaved, onConversationError }) {
+      const expectedConversationId = React.useRef(currentConversationId(group)).current;
+      const stale = historicalMessage(target, group) || expectedConversationId !== currentConversationId(group);
       const candidates = members
         .map((member) => ({ member, bot: bots.find((candidate) => candidate.botId === member.botId) }))
         .filter((entry) => entry.bot);
@@ -10507,12 +11289,13 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       const [error, setError] = React.useState('');
       const [busy, setBusy] = React.useState(false);
       const submit = async () => {
-        if (!reviewerMembershipId) return;
+        if (!reviewerMembershipId || stale || busy) return;
         setBusy(true);
         setError('');
         try {
           await api.action('review.request', {
             groupId: group.groupId,
+            expectedConversationId,
             targetMessageId: target.messageId,
             reviewerMembershipId,
             instructions,
@@ -10520,6 +11303,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           uiReport({ kind: 'action', action: 'review.request' });
           onSaved();
         } catch (reason) {
+          onConversationError?.(reason, group.groupId);
           setError(String(reason && reason.message ? reason.message : reason));
         } finally {
           setBusy(false);
@@ -10532,10 +11316,11 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           onClose,
           footer: [
             h('button', { key: 'cancel', style: S.ghostBtn, onClick: onClose }, '取消'),
-            h('button', { key: 'ok', style: S.primaryBtn, disabled: busy || !reviewerMembershipId, onClick: () => void submit() }, '发起评审'),
+            h('button', { key: 'ok', style: S.primaryBtn, disabled: busy || !reviewerMembershipId || stale, onClick: () => void submit() }, '发起评审'),
           ],
         },
         error ? h('div', { style: { ...S.errorBanner, borderRadius: 8, marginBottom: 10 } }, error) : null,
+        stale ? h('p', { role: 'status' }, '历史会话只读，请明确引用到当前会话') : null,
         h(Field, { label: uiT('被评审消息 #{seq}', { seq: target.seq }) }, h('div', { style: { ...S.input, maxHeight: 120, overflow: 'auto', whiteSpace: 'pre-wrap', fontSize: 12, color: 'var(--bt-text-2)' } }, translateSystemText(target.text) || '（空）')),
         h(
           Field,
@@ -10568,7 +11353,9 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
     }
 
 
-    function renderDiscussionDialog({ group, members, bots, defaultTopic, onClose, onSaved }) {
+    function renderDiscussionDialog({ group, members, bots, defaultTopic, onClose, onSaved, onConversationError }) {
+      const expectedConversationId = React.useRef(currentConversationId(group)).current;
+      const stale = expectedConversationId !== currentConversationId(group);
       const candidates = members
         .map((member) => ({ member, bot: bots.find((candidate) => candidate.botId === member.botId) }))
         .filter((entry) => entry.bot);
@@ -10584,11 +11371,13 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           : current.concat([membershipId]));
       };
       const submit = async () => {
+        if (busy || stale) return;
         setBusy(true);
         setError('');
         try {
           await api.action('discussion.start', {
             groupId: group.groupId,
+            expectedConversationId,
             topic,
             membershipIds: selected,
             rounds,
@@ -10597,6 +11386,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           uiReport({ kind: 'action', action: 'discussion.start' });
           onSaved();
         } catch (reason) {
+          onConversationError?.(reason, group.groupId);
           setError(String(reason && reason.message ? reason.message : reason));
         } finally {
           setBusy(false);
@@ -10609,10 +11399,11 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           onClose,
           footer: [
             h('button', { key: 'cancel', style: S.ghostBtn, onClick: onClose }, '取消'),
-            h('button', { key: 'ok', style: S.primaryBtn, disabled: busy || selected.length === 0, onClick: () => void submit() }, '开始讨论'),
+            h('button', { key: 'ok', style: S.primaryBtn, disabled: busy || selected.length === 0 || stale, onClick: () => void submit() }, '开始讨论'),
           ],
         },
         error ? h('div', { style: { ...S.errorBanner, borderRadius: 8, marginBottom: 10 } }, error) : null,
+        stale ? h('p', { role: 'status' }, '聊天已开始新会话，请关闭对话框后重试') : null,
         h(Field, { label: '讨论议题' }, h('textarea', {
           style: { ...S.input, minHeight: 70 },
           value: topic,
@@ -10762,7 +11553,10 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
 
       const [executionTarget, setExecutionTarget] = React.useState(null);
       const [sessionTarget, setSessionTarget] = React.useState(null);
-      const activeExecutionTarget = executionTarget?.groupId === state.activeGroupId ? executionTarget : null;
+      const [conversationLogTarget, setConversationLogTarget] = React.useState(null);
+      const conversationControlRef = React.useRef(null);
+      const pendingConversationScrollRef = React.useRef(null);
+      const activeExecutionTarget = executionTarget?.groupId === state.activeGroupId && !isDeletedMessage(state, executionTarget.groupId, executionTarget.message.messageId) ? executionTarget : null;
       const execution = useMessageExecution(sessionTarget ? null : activeExecutionTarget);
       const sessionHistory = useMessageExecution(sessionTarget);
       const historyReturnFocus = React.useRef(null);
@@ -10773,9 +11567,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         historyReturnFocus.current = null;
       }, [sessionTarget, activeExecutionTarget]);
       const closeExecution = React.useCallback(() => setExecutionTarget(null), []);
-      // Bot Team manages its own agents, whose durable records may have no DSH
-      // parent address. Read their history without activating a native session.
-      const openBotSession = (sessionId, onError, groupId = state.activeGroupId) => {
+      // Log viewing stays read-only and independent of native main-panel navigation.
+      const openBotHistory = (sessionId, onError, groupId = state.activeGroupId, botNameSnapshot) => {
         if (!sessionId || !groupId) {
           onError?.(uiT('这条消息尚未记录对应会话。'));
           return;
@@ -10788,8 +11581,17 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         setSessionTarget({
           mode: 'session', groupId, sessionId,
           groupTitle: state.groups.find(group => group.groupId === groupId)?.title || '',
-          botName: (activeExecutionTarget?.groupId === groupId ? activeExecutionTarget.message?.author?.name : null) || (member ? nameOfBot(state.bots, member.botId) : 'Bot'),
+          botName: (typeof botNameSnapshot === 'string' ? botNameSnapshot : null) || (activeExecutionTarget?.groupId === groupId ? activeExecutionTarget.message?.author?.name : null) || (member ? nameOfBot(state.bots, member.botId) : 'Bot'),
         });
+      };
+      const openMemberHistory = member => {
+        const owner = state.groups.find(group => group.groupId === member.groupId);
+        openBotHistory(currentMemberSession(member, owner) || member.sessionId,
+          message => dispatch({ type: 'error', message }), member.groupId);
+      };
+      const mergeConversationError = (error, groupId = state.activeGroupId) => {
+        if (error?.details) dispatch({ type: 'conversationState', groupId, data: error.details });
+        if (error?.code === 'stale-conversation' || error?.code === 'reload-required') dispatch({ type: 'refreshTick' });
       };
       useSse(sessionTarget?.groupId || state.activeGroupId, dispatch, frame => {
         if (sessionTarget) sessionHistory.controller.current?.notify(frame);
@@ -10812,10 +11614,11 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       React.useEffect(() => {
         if (!state.activeGroupId) return;
         let cancelled = false;
+        const knownMessages = state.messagesByGroup[state.activeGroupId] || [];
         api.messages(state.activeGroupId)
           .then((result) => {
             if (cancelled) return;
-            dispatch({ type: 'messages', groupId: state.activeGroupId, messages: result.messages || [], hasMore: result.hasMore === true });
+            dispatch({ type: 'messages', groupId: state.activeGroupId, messages: result.messages || [], hasMore: result.hasMore === true, knownMessages, data: result });
             uiReport({
               kind: 'messages-loaded',
               groupId: state.activeGroupId,
@@ -10829,6 +11632,20 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       }, [state.activeGroupId, state.messagesTick]);
 
       const activeGroup = state.groups.find((group) => group.groupId === state.activeGroupId) || null;
+      const conversations = state.conversationsByGroup?.[state.activeGroupId] || EMPTY_MESSAGES;
+      const openConversationLogs = conversation => {
+        if (!conversation || !activeGroup) return;
+        setHeaderMenuOpen(false);
+        setConversationLogTarget({ groupId: activeGroup.groupId, conversation });
+      };
+      React.useEffect(() => {
+        if (!state.activeGroupId || !state.capabilities?.conversations) return;
+        let cancelled = false;
+        api.conversations(state.activeGroupId).then(data => {
+          if (!cancelled) dispatch({ type: 'conversations', groupId: state.activeGroupId, data, hasMore: data.hasMore });
+        }).catch(error => { if (!cancelled) dispatch({ type: 'error', message: String(error?.message || error) }); });
+        return () => { cancelled = true; };
+      }, [state.activeGroupId, activeGroup?.conversationVersion, state.capabilities?.conversations]);
       const showWelcome = shouldShowWelcome(state);
       const members = state.members.filter((member) => member.groupId === state.activeGroupId);
       const activeIsDirect = isDirectGroup(activeGroup);
@@ -10858,12 +11675,31 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       }, [mobileSidebarOpen]);
       const [replyTarget, setReplyTarget] = React.useState(null);
       const [messageMenu, setMessageMenu] = React.useState(null);
+      const deletingMessageIds = React.useRef(new Set());
+      React.useEffect(() => {
+        setReplyTarget(current => current && isDeletedMessage(state, current.groupId || state.activeGroupId, current.messageId) ? null : current);
+        setMessageMenu(current => current && isDeletedMessage(state, current.groupId, current.message.messageId) ? null : current);
+        setExecutionTarget(current => current && isDeletedMessage(state, current.groupId, current.message.messageId) ? null : current);
+      }, [state.deletedMessageIdsByGroup, state.activeGroupId]);
       const [headerMenuOpen, setHeaderMenuOpen] = React.useState(false);
       const [showJump, setShowJump] = React.useState(false);
       const [newCount, setNewCount] = React.useState(0);
       const [unreadFromSeq, setUnreadFromSeq] = React.useState(null);
       const scrollStateRef = React.useRef({ groupId: null, lastSeq: 0, stick: true });
       const pendingPrependRef = React.useRef(null);
+      React.useEffect(() => {
+        const node = timelineRef.current;
+        if (!node) return;
+        const pending = pendingConversationScrollRef.current;
+        if (pending?.groupId === state.activeGroupId) {
+          const divider = Array.from(node.querySelectorAll('[data-conversation-id]')).find(item => item.getAttribute('data-conversation-id') === pending.conversationId);
+          if (divider) { divider.scrollIntoView({ block: 'end' }); pendingConversationScrollRef.current = null; scrollStateRef.current.stick = true; }
+        } else if (pendingPrependRef.current?.metadataOnly) {
+          const anchor = pendingPrependRef.current;
+          pendingPrependRef.current = null;
+          node.scrollTop = anchor.top + node.scrollHeight - anchor.height;
+        }
+      }, [conversations, state.activeGroupId]);
 
       const scrollToLatest = (behavior) => {
         const node = timelineRef.current;
@@ -11030,43 +11866,65 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       const openMemberAdd = () => dispatch({ type: 'dialog', dialog: { kind: 'member' } });
       const openFolderCreate = () => dispatch({ type: 'dialog', dialog: { kind: 'folder' } });
       const openFolderEdit = (folder) => dispatch({ type: 'dialog', dialog: { kind: 'folder', folder } });
-      const openReview = (message) => dispatch({ type: 'dialog', dialog: { kind: 'review', target: message } });
+      const openReview = (message) => { if (!historicalMessage(message, activeGroup)) dispatch({ type: 'dialog', dialog: { kind: 'review', target: message } }); };
       const openDiscussion = () =>
         dispatch({ type: 'dialog', dialog: { kind: 'discussion', defaultTopic: '' } });
 
       const doRevise = async (reviewMessage) => {
+        if (historicalMessage(reviewMessage, activeGroup)) return;
         try {
-          await api.action('review.revise', { groupId: activeGroup.groupId, reviewMessageId: reviewMessage.messageId });
+          await api.action('review.revise', { groupId: activeGroup.groupId, expectedConversationId: currentConversationId(activeGroup), reviewMessageId: reviewMessage.messageId });
           uiReport({ kind: 'action', action: 'review.revise' });
           dispatch({ type: 'messagesTick' });
         } catch (error) {
+          mergeConversationError(error, activeGroup.groupId);
           dispatch({ type: 'error', message: String(error && error.message ? error.message : error) });
         }
       };
       const doRetry = async (message) => {
+        if (historicalMessage(message, activeGroup)) return;
         try {
-          await api.action('message.retry', { messageId: message.messageId });
+          await api.action('message.retry', { groupId: activeGroup.groupId, expectedConversationId: currentConversationId(activeGroup), messageId: message.messageId });
           uiReport({ kind: 'action', action: 'message.retry' });
           dispatch({ type: 'messagesTick' });
         } catch (error) {
+          mergeConversationError(error, activeGroup.groupId);
           dispatch({ type: 'error', message: String(error && error.message ? error.message : error) });
+        }
+      };
+      const deleteMessage = async (message) => {
+        if (!isPlainChatMessage(message) || ['pending', 'streaming'].includes(message.status)) return;
+        const groupId = message.groupId || activeGroup?.groupId;
+        const messageId = message.messageId;
+        if (!groupId || deletingMessageIds.current.has(messageId) || isDeletedMessage(state, groupId, messageId)) return;
+        if (!window.confirm(uiT('删除这条消息？删除后无法恢复。'))) return;
+        deletingMessageIds.current.add(messageId);
+        try {
+          await api.action('message.delete', { groupId, messageId });
+          dispatch({ type: 'messageDeleted', groupId, messageId });
+          dispatch({ type: 'flash', message: '已删除消息' });
+        } catch (error) {
+          dispatch({ type: 'error', message: String(error && error.message ? error.message : error) });
+        } finally {
+          deletingMessageIds.current.delete(messageId);
         }
       };
       const stopDiscussion = async () => {
         const discussion = state.discussions[activeGroup.groupId];
         if (!discussion) return;
         try {
-          await api.action('discussion.stop', { discussionId: discussion.discussionId });
+          await api.action('discussion.stop', { groupId: activeGroup.groupId, expectedConversationId: currentConversationId(activeGroup), discussionId: discussion.discussionId });
           dispatch({ type: 'messagesTick' });
           dispatch({ type: 'refreshTick' });
         } catch (error) {
+          mergeConversationError(error, activeGroup.groupId);
           dispatch({ type: 'error', message: String(error && error.message ? error.message : error) });
         }
       };
       const loadEarlier = async () => {
         if (!activeGroup) return;
         const first = messages[0];
-        if (!first) return;
+        if (!first) { await loadEarlierConversations(); return; }
         const node = timelineRef.current;
         try {
           const result = await api.messages(activeGroup.groupId, first.seq);
@@ -11074,6 +11932,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           if (node) pendingPrependRef.current = { height: node.scrollHeight, top: node.scrollTop };
           dispatch({
             type: 'prependMessages',
+            data: result,
             groupId: activeGroup.groupId,
             messages: result.messages || [],
             hasMore: result.hasMore === true,
@@ -11082,6 +11941,18 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           pendingPrependRef.current = null;
           dispatch({ type: 'error', message: String(error && error.message ? error.message : error) });
         }
+      };
+
+      const loadEarlierConversations = async () => {
+        if (!activeGroup || !state.capabilities?.conversations) return;
+        const first = conversations[0];
+        try {
+          const data = await api.conversations(activeGroup.groupId, { beforeOrdinal: first?.ordinal });
+          if (scrollStateRef.current.groupId !== activeGroup.groupId) return;
+          const node = timelineRef.current;
+          if (node) pendingPrependRef.current = { height: node.scrollHeight, top: node.scrollTop, metadataOnly: true };
+          dispatch({ type: 'conversations', groupId: activeGroup.groupId, data, hasMore: data.hasMore });
+        } catch (error) { dispatch({ type: 'error', message: String(error?.message || error) }); }
       };
 
       const closeDialog = () => dispatch({ type: 'dialog', dialog: null });
@@ -11202,7 +12073,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           ]
             .filter(Boolean)
             .join(' · ');
-      const menuItem = (label, onClick, danger) =>
+      const menuItem = (label, onClick, danger, disabled = false, title) =>
         h(
           'button',
           {
@@ -11210,6 +12081,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             role: 'menuitem',
             className: `bt-menu-item${danger ? ' bt-menu-danger' : ''}`,
             style: { ...S.menuItem, ...(danger ? S.menuDanger : null) },
+            disabled, title,
             onClick,
           },
           label,
@@ -11218,7 +12090,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       const exportMarkdown = async () => {
         if (!activeGroup) return;
         try {
-          const allMessages = await collectAllMessages(activeGroup.groupId);
+          const allMessages = await collectAllMessages(activeGroup.groupId, { includeConversations: state.capabilities?.conversations === true });
+          if (allMessages.truncated) dispatch({ type: 'flash', message: '导出不完整：已达到 50 页读取上限或历史分页中断，更早内容可能未包含。' });
           const markdown = buildGroupMarkdown({ group: activeGroup, members, bots: state.bots, messages: allMessages });
           const date = new Date().toISOString().slice(0, 10);
           downloadText(safeExportName(activeGroup.title, 'bot-team') + '-' + date + '.md', markdown);
@@ -11231,7 +12104,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       const exportHtml = async () => {
         if (!activeGroup) return;
         try {
-          const allMessages = await collectAllMessages(activeGroup.groupId);
+          const allMessages = await collectAllMessages(activeGroup.groupId, { includeConversations: state.capabilities?.conversations === true });
+          if (allMessages.truncated) dispatch({ type: 'flash', message: '导出不完整：已达到 50 页读取上限或历史分页中断，更早内容可能未包含。' });
           const html = buildGroupHtml({ group: activeGroup, members, bots: state.bots, messages: allMessages });
           const date = new Date().toISOString().slice(0, 10);
           downloadText(safeExportName(activeGroup.title, 'bot-team') + '-' + date + '.html', html, 'text/html;charset=utf-8');
@@ -11290,7 +12164,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             onEditGroup: openGroupEdit,
             onDeleteGroup: deleteGroup,
             onEditBot: openBotEdit,
-            onViewSession: (member) => openBotSession(member.sessionId, (message) => dispatch({ type: 'error', message }), member.groupId),
+            onViewSession: openMemberHistory,
+            onOpenNativeSession: openMemberHistory,
             onCreateGroupInFolder: openGroupCreate,
             onRenameFolder: openFolderEdit,
             onDeleteFolder: deleteFolder,
@@ -11406,6 +12281,13 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                               h(
                                 'div',
                                 { className: 'bt-menu', style: S.headerMenu, role: 'menu' },
+                                 menuItem('新建会话', () => { setHeaderMenuOpen(false); void conversationControlRef.current?.startConversation('menu'); }, false,
+                                   !!conversationBlockReason(activeGroup, state.capabilities), conversationBlockReason(activeGroup, state.capabilities) || conversationActivityHint(activeGroup) || uiT(activeIsDirect ? '开始新的对话上下文，历史仍可查看' : '为本群全部成员开始新会话')),
+                                 currentConversationId(activeGroup) ? menuItem(members.some(member => currentMemberSession(member, activeGroup)) ? '本会话日志' : '本会话尚无日志', () => openConversationLogs(activeGroup.currentConversation)) : null,
+                                 activeGroup.currentConversation?.previousConversationId ? menuItem('上一会话日志', () => {
+                                   const previous = conversations.find(item => item.conversationId === activeGroup.currentConversation.previousConversationId);
+                                   openConversationLogs(previous || { conversationId: activeGroup.currentConversation.previousConversationId, ordinal: activeGroup.currentConversation.ordinal - 1 });
+                                 }) : null,
                                 activeIsDirect
                                   ? menuItem('编辑 Bot', () => {
                                       setHeaderMenuOpen(false);
@@ -11416,10 +12298,10 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                                       openMemberAdd();
                                     }),
                                 activeIsDirect
-                                  ? menuItem('查看 Bot 会话', () => {
+                                  ? currentConversationId(activeGroup) ? null : menuItem('查看日志', () => {
                                       setHeaderMenuOpen(false);
                                       if (activeDirectMember) {
-                                        openBotSession(activeDirectMember.sessionId, (message) => dispatch({ type: 'error', message }));
+                                        openBotHistory(activeDirectMember.sessionId, (message) => dispatch({ type: 'error', message }));
                                       } else {
                                         dispatch({ type: 'error', message: '这个单聊的成员已不存在' });
                                       }
@@ -11462,6 +12344,10 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                       ),
                     ),
                   ),
+                  h(BackgroundInteractionPanel, {
+                    groupId: activeGroup.groupId, currentConversationId: currentConversationId(activeGroup), snapshot: state.interactionsByGroup?.[activeGroup.groupId],
+                    refreshTick: state.messagesTick, dispatch,
+                  }),
                   h(
                     'div',
                     { style: S.timelineWrap },
@@ -11476,6 +12362,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                       h(
                         'div',
                         { style: S.messageColumn },
+                        state.conversationHasMoreByGroup?.[activeGroup.groupId]
+                          ? h('button', { type: 'button', className: 'bt-load-earlier', style: S.loadEarlier, onClick: () => void loadEarlierConversations() }, '加载更早的会话分段') : null,
                         state.hasMoreByGroup[activeGroup.groupId]
                           ? h(
                               'button',
@@ -11483,7 +12371,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                               '加载更早的消息',
                             )
                           : null,
-                        messages.length === 0
+                        messages.length === 0 && conversations.length === 0
                           ? activeIsDirect
                             ? h(
                                 'div',
@@ -11514,6 +12402,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                               )
                           : h(MessageList, {
                               messages,
+                              conversations, group: activeGroup, onViewConversationLogs: openConversationLogs,
                               unreadFromSeq,
                               bots: state.bots,
                               userProfile,
@@ -11528,8 +12417,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                               onRevise: activeIsDirect ? undefined : doRevise,
                               onRetry: doRetry,
                               onJumpToMessage: jumpToMessage,
-                              onOpenSession: (sessionId) =>
-                                openBotSession(sessionId, (message) => dispatch({ type: 'error', message })),
+                              onOpenSession: (sessionId, nativeSession) =>
+                                openBotHistory(sessionId, (message) => dispatch({ type: 'error', message }), activeGroup.groupId, typeof nativeSession === 'boolean' ? { id: sessionId, native: nativeSession, ...(nativeSession ? {} : { origin: 'subagent' }) } : undefined),
                             }),
                         h('div', { style: { height: 4, flex: '0 0 auto' } }),
                       ),
@@ -11546,6 +12435,11 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                   ),
                   h(Composer, {
                     active: !sessionTarget,
+                    conversationControlRef,
+                    onConversationStarted: (result, groupId) => {
+                      pendingConversationScrollRef.current = { groupId, conversationId: result.currentConversationId };
+                      dispatch({ type: 'conversationState', groupId, data: result });
+                    },
                     state,
                     dispatch,
                     group: activeGroup,
@@ -11611,7 +12505,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                   running: activeDirectMember && state.statusByMember[activeDirectMember.membershipId] === 'running',
                   onEdit: openBotEdit,
                   onCollapse: () => dispatch({ type: 'toggleRightPanel' }),
-                  onViewSession: (member) => openBotSession(member.sessionId, (message) => dispatch({ type: 'error', message }), member.groupId),
+                  onViewSession: openMemberHistory,
+                  onOpenNativeSession: openMemberHistory,
                 })
               : h(MembersPanel, {
                   state,
@@ -11624,12 +12519,14 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                   onAdd: openMemberAdd,
                   onCollapse: () => dispatch({ type: 'toggleRightPanel' }),
                   onEdit: openBotEdit,
-                  onViewSession: (member) => openBotSession(member.sessionId, (message) => dispatch({ type: 'error', message }), member.groupId),
+                  onViewSession: openMemberHistory,
+                  onOpenNativeSession: openMemberHistory,
                   onStopDiscussion: stopDiscussion,
                 })
             : null,
-          messageMenu && messageMenu.groupId === state.activeGroupId
+          messageMenu && messageMenu.groupId === state.activeGroupId && !isDeletedMessage(state, messageMenu.groupId, messageMenu.message.messageId)
             ? h(MessageContextMenu, {
+                group: activeGroup,
                 menu: messageMenu,
                 bots: state.bots,
                 allMessages: messages,
@@ -11643,6 +12540,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                 onRevise: activeIsDirect ? undefined : doRevise,
                 onRetry: doRetry,
                 onExecution: message => setExecutionTarget({ groupId: messageMenu.groupId, message, returnFocus: messageMenu.returnFocus }),
+                onDelete: deleteMessage,
               })
             : null,
         ),
@@ -11653,7 +12551,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               state: execution.state,
               onClose: closeExecution,
               onRefresh: () => execution.controller.current?.refresh(),
-              onOpenSession: openBotSession,
+              onOpenSession: openBotHistory,
+              onOpenNativeSession: openBotHistory,
             })
           : null,
         dialog && dialog.kind === 'getting-started'
@@ -11711,10 +12610,11 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           ? h(AddMemberDialog, { group: activeGroup, bots: state.bots, members, onClose: closeDialog, onSaved: afterChange })
           : null,
         dialog && dialog.kind === 'review' && activeGroup
-          ? h(ReviewDialog, { target: dialog.target, group: activeGroup, members, bots: state.bots, onClose: closeDialog, onSaved: afterChange })
+          ? h(ReviewDialog, { onConversationError: mergeConversationError, target: dialog.target, group: activeGroup, members, bots: state.bots, onClose: closeDialog, onSaved: afterChange })
           : null,
         dialog && dialog.kind === 'discussion' && activeGroup
           ? h(DiscussionDialog, {
+              onConversationError: mergeConversationError,
               group: activeGroup,
               members,
               bots: state.bots,
@@ -11729,11 +12629,17 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       // message. The execution drawer unmounts while this distinct page is open.
       return h('div', { className: 'bt-page-host', style: { height: '100%', minHeight: 0, minWidth: 0 } },
         chat,
+        conversationLogTarget ? h(ConversationLogsDialog, {
+          key: conversationLogTarget.groupId + ':' + conversationLogTarget.conversation.conversationId,
+          target: conversationLogTarget, onClose: () => setConversationLogTarget(null),
+          onOpenSession: binding => { setConversationLogTarget(null); openBotHistory(binding.sessionId, message => dispatch({ type: 'error', message }), conversationLogTarget.groupId, binding.botNameSnapshot); },
+        }) : null,
         sessionTarget ? h(SessionHistoryPage, {
           key: sessionTarget.groupId + ':' + sessionTarget.sessionId,
           target: sessionTarget, state: sessionHistory.state, onBack: returnFromSession,
           onRefresh: () => sessionHistory.controller.current?.refresh(),
           returnToExecution: !!activeExecutionTarget,
+          onOpenNativeSession: openBotHistory,
         }) : null,
       );
     }

@@ -27,7 +27,9 @@ export function resolveConfig(raw = {}) {
     migrateLegacyLayout: raw.migrateLegacyLayout !== false,
     maxParallelTurns: positiveInt(raw.maxParallelTurns, 3, 1, 8),
     maxContextMessages: positiveInt(raw.maxContextMessages, 40, 5, 200),
-    turnTimeoutMs: positiveInt(raw.turnTimeoutMs, 300000, 5000, 3600000),
+    // Native sessions may wait for approval, children, or a continuing goal.
+    // Zero follows the native lifecycle instead of imposing a five-minute cap.
+    turnTimeoutMs: raw.turnTimeoutMs === 0 || raw.turnTimeoutMs === undefined ? 0 : positiveInt(raw.turnTimeoutMs, 0, 5000, 3600000),
     maxMessageChars: positiveInt(raw.maxMessageChars, 40000, 1000, 200000),
     maxGroups: positiveInt(raw.maxGroups, 50, 1, 500),
     enableModelTools: raw.enableModelTools !== false,

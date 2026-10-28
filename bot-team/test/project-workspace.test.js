@@ -50,7 +50,7 @@ async function fixture(t) {
     tools: { register: () => () => {} },
     on: () => () => {},
     get: () => undefined,
-    agents: {},
+    agents: { get: () => undefined },
   };
   const config = resolveConfig({ dataDir: path.join(root, 'data'), migrateLegacyLayout: false });
   const service = new BotTeamService(ctx, config);

@@ -18,8 +18,10 @@
 export const ROUTES = {
   bootstrap: '/api/bot-team.bootstrap',
   messages: '/api/bot-team.messages',
+  conversations: '/api/bot-team.conversations',
   execution: '/api/bot-team.message-execution',
   sessionHistory: '/api/bot-team.session-history',
+  sessionExport: '/api/bot-team.session-export',
   events: '/api/bot-team.events',
   action: '/api/bot-team.action',
   health: '/api/bot-team.health',
@@ -46,6 +48,12 @@ export function registerRoutes(ctx, service) {
     fetch: (request) => service.handleMessages(request),
   });
   register({
+    path: ROUTES.conversations,
+    methods: ['GET'],
+    requestBody: 'buffered',
+    fetch: (request) => service.handleConversations(request),
+  });
+  register({
     path: ROUTES.execution,
     methods: ['GET'],
     requestBody: 'buffered',
@@ -56,6 +64,12 @@ export function registerRoutes(ctx, service) {
     methods: ['GET'],
     requestBody: 'buffered',
     fetch: (request) => service.handleSessionHistory(request),
+  });
+  register({
+    path: ROUTES.sessionExport,
+    methods: ['GET'],
+    requestBody: 'buffered',
+    fetch: (request) => service.handleSessionExport(request),
   });
   register({
     path: ROUTES.events,

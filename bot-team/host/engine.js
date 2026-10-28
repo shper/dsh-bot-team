@@ -24,13 +24,14 @@ import {
 } from './prompt.js';
 import { newId, now, withTimeout } from './util.js';
 import { LastRequestMetrics } from './message-metrics.js';
+import { currentConversationId, conversationFloor, conversationIdOf, isCurrentMemberSession } from './conversations.js';
 
 const executionSeq = (value) => Number.isSafeInteger(value) && value >= 0;
 const executionTurn = (value) => Number.isSafeInteger(value) && value > 0;
-const executionEvent = (type) => /^(?:turn|step|user|assistant|tool|tools|ptc|approval|llm|request|compaction)\//.test(type);
+const executionEvent = (type) => typeof type === 'string';
 
 export class Engine {
-  constructor({ ctx, repo, pool, personas, bus, config, logger, quotaGuard, taskHook, workspaceGuard }) {
+  constructor({ ctx, repo, pool, personas, bus, config, logger, quotaGuard, taskHook, workspaceGuard, assertAdmission }) {
     this.ctx = ctx;
     this.repo = repo;
     this.pool = pool;
@@ -41,6 +42,7 @@ export class Engine {
     this.quotaGuard = quotaGuard || (() => ({ ok: true }));
     this.taskHook = taskHook || (() => {});
     this.workspaceGuard = workspaceGuard || (() => {});
+    this.assertAdmission = assertAdmission || this.workspaceGuard;
     this.pendingWork = new Set();
 
     this.queue = [];
@@ -50,16 +52,148 @@ export class Engine {
     this.discussionWaiters = new Map(); // discussionId -> [{ resolve }]
     this.disposed = false;
 
-    this.offSession = ctx.on('session/event', (session, event) => this.onSessionEvent(session, event));
+    this.offSession = ctx.on('session/event', (session, event) => this.onSessionEvent(session, event), { global: true });
     this.offClaim = pool.attachClaimHandler?.((payload) => this.onInboxClaim(payload));
+    if (ctx.get?.('goals')) this.offGoal = ctx.on('goal/activation-changed', ({ sessionId }) => {
+      const job = this.activeBySession.get(sessionId);
+      queueMicrotask(() => this.checkNativeGoal(sessionId, job));
+    }, { global: true });
+  }
+
+  admitConversation(groupId, expectedConversationId) {
+    this.assertAdmission(groupId);
+    const conversationId = currentConversationId(this.repo, groupId);
+    const group = this.repo.getGroup(groupId);
+    if (group?.activeConversationId) {
+      if (conversationId !== group.activeConversationId) throw Object.assign(new Error('聊天会话归属不可用'), { code: 'conversation-corrupt' });
+      conversationFloor(this.repo, groupId);
+    }
+    if (expectedConversationId !== undefined && expectedConversationId !== conversationId) {
+      throw Object.assign(new Error('聊天已开始新会话，请重新选择当前会话'), {
+        code: 'stale-conversation', details: { currentConversationId: conversationId },
+      });
+    }
+    return conversationId;
+  }
+
+  isCurrentRecord(record, groupId = record?.groupId) {
+    if (!record || record.groupId !== groupId) return false;
+    try {
+      const current = currentConversationId(this.repo, groupId);
+      if (this.repo.getGroup(groupId)?.activeConversationId && !current) return false;
+      return !current || conversationIdOf(this.repo, record) === current;
+    } catch { return false; }
+  }
+
+  assertCurrentTarget(groupId, record) {
+    if (!record || record.groupId !== groupId) {
+      throw Object.assign(new Error('目标不存在或不属于本群'), { code: 'not-found' });
+    }
+    if (!this.isCurrentRecord(record, groupId)) {
+      throw Object.assign(new Error('历史会话不能继续执行，请选取内容后在当前会话重新发送'), { code: 'historical-target' });
+    }
+    return record;
+  }
+
+  isCurrentJob(job) {
+    if (!job || !this.isCurrentRecord(job)) return false;
+    const member = this.repo.getMember(job.membershipId);
+    if (!member || member.groupId !== job.groupId) return false;
+    // Legacy adapters without a conversation pointer may expose a different
+    // actual Agent id. Once migrated, session ownership is mandatory.
+    if (this.repo.getGroup(job.groupId)?.activeConversationId && job.sessionId) {
+      return isCurrentMemberSession(this.repo, member, job.sessionId);
+    }
+    return true;
+  }
+
+  assertJobCurrent(job) {
+    if (!this.isCurrentJob(job)) {
+      throw Object.assign(new Error('本次执行所属会话已结束'), { code: 'stale-conversation' });
+    }
+  }
+
+  assertJobTargets(job) {
+    // The pre-migration test adapters have no task/conversation repositories.
+    if (!this.repo.getGroup(job.groupId)?.activeConversationId) return;
+    const messageIds = [job.triggerMessageId, job.reviewTargetId, job.reviewMessageId,
+      job.meta?.retryOf, job.meta?.reviewOf, job.meta?.revisionOf];
+    if (job.meta?.taskId) {
+      const task = this.assertCurrentTarget(job.groupId, this.repo.getTask?.(job.meta.taskId));
+      messageIds.push(task.deliverableMessageId, task.reviewReplyMessageId);
+      for (const dependencyId of task.dependencies || task.dependsOn || []) {
+        this.assertCurrentTarget(job.groupId, this.repo.getTask?.(dependencyId));
+      }
+    }
+    if (job.discussionId) this.assertCurrentTarget(job.groupId, this.repo.getDiscussion?.(job.discussionId));
+    for (const id of messageIds.filter(Boolean)) this.assertCurrentTarget(job.groupId, this.repo.getMessage(id));
+    const review = job.reviewMessageId ? this.repo.getMessage(job.reviewMessageId) : null;
+    if (review?.meta?.reviewOf) this.assertCurrentTarget(job.groupId, this.repo.getMessage(review.meta.reviewOf));
+  }
+
+  contextFor(job, member, rebuild = false) {
+    this.assertJobCurrent(job);
+    const floor = conversationFloor(this.repo, job.groupId);
+    const from = rebuild ? floor : Math.max(floor, Number.isInteger(member.lastSeenSeq) ? member.lastSeenSeq : 0);
+    const context = this.repo.messagesBetween(job.groupId, from, job.triggerSeq)
+      .filter(message => message.messageId !== job.placeholderId && this.isCurrentRecord(message, job.groupId));
+    const maximum = this.config.maxContextMessages;
+    return Number.isInteger(maximum) && maximum > 0 ? context.slice(-maximum) : context;
+  }
+
+  async advanceMemberCursor(job) {
+    this.assertJobCurrent(job);
+    const member = this.repo.getMember(job.membershipId);
+    const lastSeenSeq = Math.max(member.lastSeenSeq || 0, conversationFloor(this.repo, job.groupId), job.triggerSeq || 0);
+    const updated = { ...member, lastSeenSeq };
+    if (this.repo.putMemberStrict) await this.repo.putMemberStrict(updated, {
+      expectedConversationId: job.conversationId, expectedSessionId: member.sessionId, preserveSession: true,
+    });
+    else {
+      // Compatibility with adapters predating strict, copy-on-write members.
+      Object.assign(member, updated);
+      this.repo.touchMember(member);
+    }
+    this.assertJobCurrent(job);
+  }
+
+  captureQuote(groupId, replyTo) {
+    if (!replyTo) return null;
+    const target = this.repo.getMessage(replyTo);
+    if (!target || target.groupId !== groupId) {
+      throw Object.assign(new Error('回复的原消息不存在或不属于本群'), { code: 'invalid-input' });
+    }
+    const attachments = (target.attachments || []).map(attachment => {
+      const store = this.ctx.get?.('attachments');
+      let path;
+      try { path = store?.fileHostPath?.(attachment); } catch { /* rejected below */ }
+      if (typeof path !== 'string' || !path) {
+        throw Object.assign(new Error('引用消息的附件已不可用，请重新选择'), { code: 'invalid-input' });
+      }
+      return { attachmentId: attachment.attachmentId, name: attachment.name, bytes: attachment.bytes, path };
+    });
+    const conversationId = conversationIdOf(this.repo, target);
+    if (this.repo.getGroup(groupId)?.activeConversationId && !conversationId) {
+      throw Object.assign(new Error('引用消息的会话归属不可用'), { code: 'invalid-input' });
+    }
+    return {
+      messageId: target.messageId, conversationId,
+      author: { ...target.author }, text: String(target.text || ''), attachments, capturedAt: now(),
+    };
   }
 
   // ── message helpers ──────────────────────────────────────────────────────
   createMessage(fields) {
+    const conversationId = fields.conversationId ?? currentConversationId(this.repo, fields.groupId);
+    if (conversationId !== currentConversationId(this.repo, fields.groupId)) {
+      throw Object.assign(new Error('本次执行所属会话已结束'), { code: 'stale-conversation' });
+    }
     const seq = this.repo.allocateSeq(fields.groupId);
     const message = {
       messageId: newId('msg'),
       groupId: fields.groupId,
+      conversationId,
+      ...(fields.quote ? { quote: structuredClone(fields.quote) } : {}),
       seq,
       author: fields.author,
       kind: fields.kind ?? 'chat',
@@ -100,6 +234,7 @@ export class Engine {
    * points the user there and tracks the outcome.
    */
   approvalMessage(job, data) {
+    if (!this.isCurrentJob(job)) return;
     const member = this.repo.getMember(job.membershipId);
     const bot = member ? this.repo.getBot(member.botId) : undefined;
     const name = bot?.name || 'Bot';
@@ -107,6 +242,7 @@ export class Engine {
     const text = `${name} 请求权限：工具 ${data.toolName}${reason ? `（${reason}）` : ''}。`;
     const message = this.createMessage({
       groupId: job.groupId,
+      conversationId: job.conversationId,
       author: { type: 'system', name: '审批' },
       text,
       status: 'done',
@@ -116,6 +252,7 @@ export class Engine {
         membershipId: job.membershipId,
         botId: member?.botId ?? null,
         sessionId: job.sessionId,
+        nativeSession: true,
         toolName: String(data.toolName || ''),
         reason,
         approvalState: 'pending',
@@ -140,7 +277,7 @@ export class Engine {
 
   // ── public dispatch ──────────────────────────────────────────────────────
   assertQuota(groupId) {
-    this.workspaceGuard(groupId);
+    this.assertAdmission(groupId);
     const result = this.quotaGuard(groupId);
     if (!result || result.ok) return;
     const error = new Error(result.reason || '本群额度已用完，请稍后再试');
@@ -148,18 +285,20 @@ export class Engine {
     throw error;
   }
 
-  postHumanMessage({ groupId, text, mentions, author, replyTo, attachments }) {
-    this.workspaceGuard(groupId);
+  postHumanMessage({ groupId, text, mentions = [], author, replyTo, attachments, humanInput = true, expectedConversationId }) {
+    const conversationId = this.admitConversation(groupId, expectedConversationId);
     const group = this.repo.getGroup(groupId);
-    if (!group) throw new Error(`group ${groupId} does not exist`);
-    let replyToId = null;
-    if (replyTo) {
-      const target = this.repo.getMessage(replyTo);
-      if (!target || target.groupId !== groupId) {
-        throw Object.assign(new Error('回复的原消息不存在或不属于本群'), { code: 'invalid-input' });
-      }
-      replyToId = target.messageId;
+    if (!group) throw new Error('group ' + groupId + ' does not exist');
+    const command = String(text || '').trim();
+    if (command === '/new') throw Object.assign(new Error('请使用新建会话管理操作'), { code: 'command-required' });
+    if (/^\/new\s/.test(command)) throw Object.assign(new Error('/new 不接受参数'), { code: 'invalid-command' });
+    const quote = this.captureQuote(groupId, replyTo);
+    const quoteSize = quote ? quote.text.length + JSON.stringify(quote.author).length + JSON.stringify(quote.attachments).length : 0;
+    const inputSize = String(text || '').length + quoteSize + (attachments?.length ? JSON.stringify(attachments).length : 0);
+    if (inputSize > (this.config.maxMessageChars || 40000)) {
+      throw Object.assign(new Error('消息与引用内容超过输入大小上限，请减少内容后重试'), { code: 'invalid-input' });
     }
+    const replyToId = quote?.messageId || null;
     const message = this.createMessage({
       groupId,
       author: author || { type: 'human', name: '用户' },
@@ -167,6 +306,8 @@ export class Engine {
       mentions,
       attachments,
       replyTo: replyToId,
+      conversationId,
+      quote,
       status: 'done',
     });
     this.bus.emit(groupId, { type: 'message.added', message });
@@ -183,10 +324,12 @@ export class Engine {
       this.queue.push({
         jobId: newId('job'),
         groupId,
+        conversationId,
         membershipId: member.membershipId,
         triggerSeq: message.seq,
         triggerMessageId: message.messageId,
         kind: 'chat',
+        humanInput,
         state: 'queued',
       });
     }
@@ -226,7 +369,23 @@ export class Engine {
     return this.queue.filter((job) => job.groupId === groupId).length;
   }
 
-  startJob(job) {
+  startJob(job, observed = null) {
+    try {
+      job.conversationId = this.admitConversation(job.groupId, job.conversationId);
+      this.assertJobCurrent(job);
+      this.assertJobTargets(job);
+      if (observed && !isCurrentMemberSession(this.repo, this.repo.getMember(job.membershipId), observed.session.id)) {
+        throw Object.assign(new Error('原生会话已不是当前会话'), { code: 'stale-conversation' });
+      }
+    } catch (error) {
+      job.finished = true;
+      job.state = 'error';
+      job.error = String(error?.message || error);
+      job.done = Promise.resolve();
+      job.resolveDone?.();
+      this.checkIdle(job.groupId);
+      return;
+    }
     job.state = 'running';
     job.turn = null;
     job.submitted = false;
@@ -246,6 +405,9 @@ export class Engine {
     job.streamText = '';
     job.requestMetrics = new LastRequestMetrics();
     job.finished = false;
+    job.following = [];
+    job.awaitingContinuation = false;
+    job.nativeObserved = observed !== null;
     job.done = new Promise((resolve) => {
       job.resolveDone = resolve;
     });
@@ -257,8 +419,9 @@ export class Engine {
       this.finishJob(job, 'error', '成员或 Bot 已不存在');
       return;
     }
-    const placeholder = this.createMessage({
+    const placeholder = observed?.message || this.createMessage({
       groupId: job.groupId,
+      conversationId: job.conversationId,
       author: {
         type: 'bot',
         botId: member.botId,
@@ -275,45 +438,57 @@ export class Engine {
       meta: { ...(job.meta || {}), execution: job.execution },
     });
     job.placeholderId = placeholder.messageId;
-    this.bus.emit(job.groupId, { type: 'message.added', message: placeholder });
+    if (observed?.message) {
+      placeholder.status = 'pending';
+      placeholder.error = null;
+      this.bus.emit(job.groupId, { type: 'message.updated', message: placeholder });
+    } else this.bus.emit(job.groupId, { type: 'message.added', message: placeholder });
     this.bus.emit(job.groupId, {
       type: 'member.status',
+      conversationId: job.conversationId,
       membershipId: member.membershipId,
       status: 'running',
     });
 
-    const previousSeen = Number.isInteger(member.lastSeenSeq) ? member.lastSeenSeq : 0;
-    const context = this.repo
-      .messagesBetween(job.groupId, previousSeen, job.triggerSeq)
-      .filter((message) => message.messageId !== placeholder.messageId);
-    member.lastSeenSeq = job.triggerSeq;
-    this.repo.touchMember(member);
+    const context = this.contextFor(job, member);
     job.context = context;
 
-    job.timer = setTimeout(() => this.abortJob(job, 'timeout'), this.config.turnTimeoutMs);
+    if (observed) {
+      job.sessionId = observed.session.id;
+      job.submitted = true;
+      job.nativeInput = true;
+      this.activeBySession.set(job.sessionId, job);
+      this.recordExecution(job, { sessionId: job.sessionId, submittedSeq: observed.event.seq }, observed.event.seq);
+      return;
+    }
+    if (this.config.turnTimeoutMs > 0) job.timer = setTimeout(() => this.abortJob(job, 'timeout'), this.config.turnTimeoutMs);
     void this.runJob(job, member, bot, context);
   }
 
   async runJob(job, member, bot, context) {
     this.pendingWork.add(job);
     try {
+      this.admitConversation(job.groupId, job.conversationId);
+      this.assertJobTargets(job);
       const previousSessionId = member.sessionId;
+      const previousConversationId = member.sessionConversationId;
       const agent = await this.pool.ensure(member.membershipId);
       if (job.finished) return;
       if (this.disposed || job.state === 'stopped') {
         this.finishJob(job, 'stopped', '已停止');
         return;
       }
-      if (member.sessionId !== previousSessionId) {
-        // A workspace switch creates a new DSH history; seed it from the durable
-        // group timeline rather than only the delta consumed by the old session.
-        context = this.repo.messagesBetween(job.groupId, 0, job.triggerSeq)
-          .slice(-this.config.maxContextMessages);
-        job.context = context;
-        member.lastSeenSeq = job.triggerSeq;
-        this.repo.touchMember(member);
-      }
+      // ensure persists a replacement member. Never write the pre-ensure object
+      // back over the new session mapping or its conversation ownership.
+      member = this.repo.getMember(job.membershipId);
       job.sessionId = agent.id;
+      this.assertJobCurrent(job);
+      this.assertJobTargets(job);
+      const rebuild = member.sessionId !== previousSessionId || previousConversationId !== member.sessionConversationId;
+      context = this.contextFor(job, member, rebuild);
+      job.context = context;
+      await this.advanceMemberCursor(job);
+      if (job.finished) return;
       this.activeBySession.set(agent.id, job);
       await this.persistExecution(job, { sessionId: agent.id });
       if (job.finished) return;
@@ -325,6 +500,9 @@ export class Engine {
       }
 
       if (job.finished) return;
+      this.admitConversation(job.groupId, job.conversationId);
+      this.assertJobCurrent(job);
+      this.assertJobTargets(job);
       const prompt = this.buildPrompt(job, bot, context);
       job.promptPreview = prompt.slice(0, 2000);
       const inputMessageId = newId('umsg');
@@ -337,16 +515,24 @@ export class Engine {
       // A stop/timeout may have occurred while the durable write was pending.
       if (job.finished) return;
 
+      this.admitConversation(job.groupId, job.conversationId);
+      this.assertJobCurrent(job);
+      this.assertJobTargets(job);
+
       // M0 P1: followup puts the EXACT value into the durable inbox — it must be
       // a complete UserMessage (role + id + content + source). Claims may fire
       // synchronously, so arm correlation only after the write has succeeded.
       job.submitted = true;
-      await agent.followup({
+      const input = {
         role: 'user',
         id: inputMessageId,
         content: [{ type: 'text', text: prompt }],
-        source: { kind: 'user' },
-      });
+        source: job.humanInput === true
+          ? { kind: 'user' }
+          : { kind: 'bot-team', groupId: job.groupId, ...(job.conversationId ? { conversationId: job.conversationId } : {}), jobId: job.jobId },
+      };
+      if (this.pool.submit) await this.pool.submit(agent, input);
+      else await agent.followup(input);
       await job.done;
     } catch (error) {
       this.finishJob(job, 'error', String(error && error.message ? error.message : error));
@@ -360,6 +546,7 @@ export class Engine {
     this.bus.emit(job.groupId, {
       type: 'execution.updated',
       messageId: job.placeholderId,
+      conversationId: job.conversationId,
       sessionId: job.execution.sessionId,
       seq: executionSeq(seq) ? seq : null,
       ...(includeExecution ? { execution: { ...job.execution } } : {}),
@@ -367,6 +554,7 @@ export class Engine {
   }
 
   async persistExecution(job, patch, seq = null) {
+    this.assertJobCurrent(job);
     const message = this.repo.messages.get(job.placeholderId);
     if (!message) throw new Error('无法保存执行记录：回复消息不存在');
     job.execution = { ...job.execution, ...patch };
@@ -374,14 +562,18 @@ export class Engine {
     message.updatedAt = now();
     // Do not use putMessage here: it deliberately swallows storage failures.
     const saved = this.repo.putMessageStrict(message);
-    this.emitExecutionUpdated(job, seq, true);
     await saved;
+    if (this.isCurrentJob(job)) this.emitExecutionUpdated(job, seq, true);
+  }
+
+  recordExecution(job, patch, seq) {
+    void this.persistExecution(job, patch, seq).catch(error => this.executionFailed(job, error));
   }
 
   executionFailed(job, error) {
     if (job.finished) return;
     this.finishJob(job, 'error', `无法保存执行记录：${String(error?.message || error)}`);
-    if (job.submitted && job.execution.endSeq === null) {
+    if (!job.nativeObserved && job.submitted && job.execution.endSeq === null) {
       try {
         this.ctx.agents.get(job.sessionId)?.cancel?.({ kind: 'user' }, { keepInbox: false });
       } catch (cancelError) {
@@ -403,17 +595,157 @@ export class Engine {
 
   onInboxClaim(payload) {
     const job = this.activeBySession.get(payload?.agent?.id);
-    if (!job || job.finished || job.ending || !job.submitted) return;
+    if (!job || job.finished || job.ending || !job.submitted || !this.isCurrentJob(job)) return;
+    if (this.ctx.agents.get(payload.agent.id) !== payload.agent) return;
     if (!job.execution.inputMessageId || payload.message?.id !== job.execution.inputMessageId) return;
     this.bindExecutionTurn(job, payload.turn);
   }
 
+  /** Reattach group observation to already-live native Agents after plugin reload. */
+  async recoverNativeSessions() {
+    const query = this.ctx.get?.('sessionQuery');
+    for (const member of this.repo.members?.values() || []) {
+      if (!isCurrentMemberSession(this.repo, member, member.sessionId)) continue;
+      const conversationId = currentConversationId(this.repo, member.groupId);
+      const agent = member.sessionId ? this.ctx.agents.get?.(member.sessionId) : null;
+      if (!agent || this.activeBySession.has(agent.id)) continue;
+      try {
+        const snapshot = typeof agent.session?.snapshotEvents === 'function'
+          ? { events: agent.session.snapshotEvents() }
+          : await query?.readSession?.(agent.id);
+        if (this.disposed) return;
+        if (currentConversationId(this.repo, member.groupId) !== conversationId ||
+            !isCurrentMemberSession(this.repo, this.repo.getMember(member.membershipId), agent.id)) continue;
+        this.admitConversation(member.groupId, conversationId);
+        if (this.ctx.agents.get(agent.id) !== agent || this.pool.memberForSession?.(agent.id)?.membershipId !== member.membershipId || this.running.has(member.membershipId)) continue;
+        const events = snapshot?.events;
+        if (!Array.isArray(events)) continue;
+        const startIndex = events.findLastIndex(event => event.type === 'turn/start');
+        if (startIndex < 0) continue;
+        const turnEvents = events.slice(startIndex);
+        const start = turnEvents[0];
+        if (!executionTurn(start.data?.turn) || !executionSeq(start.seq)) continue;
+        const ended = turnEvents.some(event => event.type === 'turn/end' && event.data?.turn === start.data.turn);
+        if (ended && !this.nativeGoalPending(agent.id)) continue;
+        const previous = this.repo.messagesOf(member.groupId).findLast(message =>
+          this.isCurrentRecord(message, member.groupId) && message.author?.membershipId === member.membershipId &&
+          message.meta?.execution?.sessionId === agent.id &&
+          message.meta.execution.turn === start.data.turn && message.meta.execution.startSeq === start.seq);
+        const kind = previous?.meta?.taskPhase === 'revision' ? 'task_revision' : previous?.kind || 'native';
+        const job = {
+          jobId: previous?.meta?.execution?.jobId || newId('job'),
+          groupId: member.groupId, conversationId, membershipId: member.membershipId,
+          triggerSeq: member.lastSeenSeq || 0, triggerMessageId: previous?.replyTo || null,
+          kind, messageKind: previous?.kind, meta: { ...(previous?.meta || {}), nativeSession: true },
+        };
+        this.startJob(job, { session: agent.session, event: start, message: previous });
+        for (const event of turnEvents) this.onSessionEvent(agent.session, event);
+      } catch (error) {
+        this.logger?.warn?.('bot-team: native observation recovery failed: ' + String(error));
+      }
+    }
+  }
+
+  /** Follow native goals without treating their first completed turn as the task end. */
+  nativeGoalPending(sessionId) {
+    const member = this.pool.memberForSession?.(sessionId);
+    if (!member || !isCurrentMemberSession(this.repo, member, sessionId)) return false;
+    const agent = this.ctx.agents.get(sessionId);
+    const goals = this.ctx.get?.('goals');
+    if (!agent || !goals?.get) return false;
+    try {
+      const goal = goals.get(agent);
+      return goal?.phase === 'active' && goal.activation === 'armed';
+    } catch { return false; }
+  }
+
+  checkNativeGoal(sessionId, expectedJob = this.activeBySession.get(sessionId)) {
+    const job = this.activeBySession.get(sessionId);
+    if (job !== expectedJob || this.disposed || !job?.awaitingContinuation || job.finished || !this.isCurrentJob(job)) return;
+    if (this.nativeGoalPending(sessionId)) return;
+    const agent = this.ctx.agents.get(sessionId);
+    const goal = agent ? this.ctx.get?.('goals')?.get(agent) : null;
+    if (goal?.phase === 'blocked') this.finishJob(job, 'error', goal.blockedReason?.message || '原生目标已阻塞');
+    else if (goal?.phase === 'paused' || (goal?.phase === 'active' && goal.activation !== 'armed')) this.finishJob(job, 'stopped', '原生目标已暂停');
+    else this.finishJob(job, 'done');
+  }
+
+  /** A turn started from the native window, scheduler, or a child reply still belongs in the group. */
+  adoptNativeTurn(session, event) {
+    if (event.type !== 'turn/start' || !executionTurn(event.data?.turn) || !executionSeq(event.seq)) return null;
+    const member = this.pool.memberForSession?.(session.id);
+    if (!member || !isCurrentMemberSession(this.repo, member, session.id) || this.running.has(member.membershipId)) return null;
+    let conversationId;
+    try { conversationId = this.admitConversation(member.groupId); } catch { return null; }
+    const job = {
+      jobId: newId('job'), groupId: member.groupId, conversationId, membershipId: member.membershipId,
+      triggerSeq: member.lastSeenSeq || 0, triggerMessageId: null, kind: 'native',
+      meta: { nativeSession: true },
+    };
+    this.startJob(job, { session, event });
+    return job.finished ? null : job;
+  }
+
+  startNativeContinuation(job, session, event) {
+    if (!this.isCurrentJob(job)) return false;
+    try { this.admitConversation(job.groupId, job.conversationId); } catch { return false; }
+    const previous = this.repo.getMessage(job.placeholderId);
+    if (!previous) throw new Error('Native continuation lost its preceding reply');
+    job.previousReplies = [...(job.previousReplies || []), job.placeholderId];
+    job.turn = null;
+    job.turnStarts = new Map();
+    job.observedTurn = null;
+    job.observedTurnSeq = -1;
+    job.steps = [];
+    job.streamText = '';
+    job.streamAttemptId = null;
+    job.usage = null;
+    job.requestMetrics = new LastRequestMetrics();
+    job.awaitingContinuation = false;
+    job.nativeInput = true;
+    job.execution = {
+      version: 1, jobId: job.jobId, sessionId: session.id, inputMessageId: null,
+      turn: null, startSeq: null, endSeq: null, submittedSeq: event.seq,
+    };
+    const message = this.createMessage({
+      groupId: job.groupId, conversationId: job.conversationId, author: previous.author, status: 'pending',
+      kind: previous.kind, provider: previous.provider, model: previous.model,
+      reasoningEffort: previous.reasoningEffort, replyTo: previous.messageId,
+      meta: { ...(job.meta || {}), nativeSession: true, execution: job.execution },
+    });
+    job.placeholderId = message.messageId;
+    this.bus.emit(job.groupId, { type: 'message.added', message });
+    return true;
+  }
+
+  replayFollowing(job) {
+    const following = job.following?.splice(0) || [];
+    for (const item of following) {
+      if (item.stream) this.onAssistantStream(item.stream);
+      else this.onSessionEvent(item.session, item.event);
+    }
+  }
+
   onSessionEvent(session, event) {
     if (!session || !event) return;
-    const job = this.activeBySession.get(session.id);
-    if (!job || job.finished || job.ending) return;
+    if (this.disposed) return;
+    const live = this.ctx.agents.get(session.id);
+    if (live?.session && live.session !== session) return;
+    const job = this.activeBySession.get(session.id) || this.adoptNativeTurn(session, event);
+    if (!job || job.finished || !this.isCurrentJob(job)) return;
+    if (job.ending) { job.following.push({ session, event }); return; }
     const data = event.data || {};
-    const correlated = Boolean(job.execution.inputMessageId);
+    if (job.awaitingContinuation) {
+      if (event.type === 'turn/start') {
+        if (!this.startNativeContinuation(job, session, event)) return;
+      }
+      else {
+        if (event.type.startsWith('goal/')) queueMicrotask(() => this.checkNativeGoal(session.id, job));
+        if (executionSeq(event.seq)) this.emitExecutionUpdated(job, event.seq);
+        return;
+      }
+    }
+    const correlated = Boolean(job.execution.inputMessageId) || job.nativeInput;
     if (correlated && !job.submitted) return;
     if (executionSeq(event.seq) && executionSeq(job.execution.submittedSeq) && event.seq < job.execution.submittedSeq) return;
 
@@ -442,7 +774,11 @@ export class Engine {
       return;
     }
     if (event.type === 'user/message' && correlated) {
-      if ((data.id ?? data.message?.id) !== job.execution.inputMessageId) return;
+      const inputId = data.id ?? data.message?.id;
+      if (job.nativeInput && !job.execution.inputMessageId && typeof inputId === 'string') {
+        this.recordExecution(job, { inputMessageId: inputId }, event.seq);
+      }
+      if (inputId !== job.execution.inputMessageId) return;
       // Accepted user/message contains the UserMessage itself, without a turn.
       // Its exact ID disambiguates the enclosing turn/start candidate.
       this.bindExecutionTurn(job, executionTurn(data.turn) ? data.turn : job.observedTurn);
@@ -481,6 +817,7 @@ export class Engine {
       if (combined) {
         this.bus.emit(job.groupId, {
           type: 'message.replace',
+          conversationId: job.conversationId,
           messageId: job.placeholderId,
           text: combined,
         });
@@ -491,7 +828,16 @@ export class Engine {
   }
 
   finishTurn(job, reason = {}) {
+    if (job.finished) return;
+    if (!this.isCurrentJob(job)) { this.finishJob(job, 'stopped', '本次执行所属会话已结束'); return; }
+    job.ending = false;
     if (reason.kind === 'completed') {
+      if (this.nativeGoalPending(job.sessionId) || job.following?.some(item => item.event?.type === 'turn/start')) {
+        this.settleMessage(job, 'done');
+        job.awaitingContinuation = true;
+        this.replayFollowing(job);
+        return;
+      }
       this.finishJob(job, 'done');
     } else if (reason.kind === 'aborted') {
       this.finishJob(job, 'stopped', reason.reason && reason.reason.kind === 'user' ? '已停止' : '已中断');
@@ -505,8 +851,11 @@ export class Engine {
 
   onAssistantStream(payload) {
     if (!payload || !payload.agent || !payload.frame) return;
+    if (this.ctx.agents.get(payload.agent.id) !== payload.agent) return;
     const job = this.activeBySession.get(payload.agent.id);
-    if (!job || job.finished || job.ending || job.turn === null || job.observedTurn !== job.turn) return;
+    if (!job || job.finished || !this.isCurrentJob(job)) return;
+    if (job.ending) { job.following.push({ stream: payload }); return; }
+    if (job.awaitingContinuation || job.turn === null || job.observedTurn !== job.turn) return;
     const frame = payload.frame;
     if (executionTurn(frame.turn) && frame.turn !== job.turn) return;
     if (frame.type === 'start') {
@@ -530,6 +879,7 @@ export class Engine {
       job.streamText += frame.chunk.text;
       this.bus.emit(job.groupId, {
         type: 'message.delta',
+        conversationId: job.conversationId,
         messageId: job.placeholderId,
         chunk: frame.chunk.text,
       });
@@ -545,25 +895,19 @@ export class Engine {
       /* noop */
     }
     const agent = job.sessionId ? this.ctx.agents.get(job.sessionId) : undefined;
-    if (agent && typeof agent.cancel === 'function') {
+    const owned = agent && this.pool.owns?.(agent);
+    if (agent && (cause !== 'dispose' || owned) && typeof agent.cancel === 'function') {
       try {
         agent.cancel({ kind: 'user' }, { keepInbox: false });
       } catch (error) {
         this.logger?.warn?.(`bot-team: cancel agent failed: ${String(error)}`);
       }
     }
-    const reason = cause === 'timeout' ? '本轮超时，已停止' : cause === 'dispose' ? '插件已卸载' : '已停止';
+    const reason = cause === 'timeout' ? '本轮超时，已停止' : cause === 'dispose' ? (owned ? 'Bot Team 已卸载，后台执行已停止' : 'Bot Team 已断开观察；原生会话仍由 DSH 管理') : '已停止';
     this.finishJob(job, 'stopped', reason);
   }
 
-  finishJob(job, status, error) {
-    if (!job || job.finished) return;
-    job.finished = true;
-    job.state = status;
-    if (job.timer) clearTimeout(job.timer);
-    if (job.sessionId) this.activeBySession.delete(job.sessionId);
-    this.running.delete(job.membershipId);
-
+  settleMessage(job, status, error) {
     const text = (job.steps.filter(Boolean).join('\n\n') || job.streamText || '').trim();
     const message = job.placeholderId ? this.repo.messages.get(job.placeholderId) : undefined;
     if (message) {
@@ -586,21 +930,35 @@ export class Engine {
       // A null seq also refreshes stopped jobs and bypasses event deduplication.
       this.emitExecutionUpdated(job, null, true);
     }
+    return message;
+  }
+
+  finishJob(job, status, error) {
+    if (!job || job.finished) return;
+    job.finished = true;
+    job.state = status;
+    if (job.timer) clearTimeout(job.timer);
+    const current = this.isCurrentJob(job);
+    if (job.sessionId && this.activeBySession.get(job.sessionId) === job) this.activeBySession.delete(job.sessionId);
+    if (this.running.get(job.membershipId) === job) this.running.delete(job.membershipId);
+
+    const message = this.settleMessage(job, status, error);
     if (job.approvalMessages && job.approvalMessages.size > 0) {
       for (const approvalId of [...job.approvalMessages.keys()]) {
         this.settleApproval(job, approvalId, 'cancelled');
       }
     }
-    this.bus.emit(job.groupId, {
+    if (current) this.bus.emit(job.groupId, {
       type: 'member.status',
+      conversationId: job.conversationId,
       membershipId: job.membershipId,
       status: status === 'done' ? 'idle' : status === 'stopped' ? 'idle' : 'error',
       ...(status === 'error' ? { error: error ?? '未知错误' } : {}),
     });
     try {
-      const hookResult = this.taskHook(job, message, status);
+      const hookResult = current ? this.taskHook(job, message, status) : undefined;
       if (hookResult && typeof hookResult.then === 'function') {
-        const pendingHook = { groupId: job.groupId };
+        const pendingHook = { groupId: job.groupId, conversationId: job.conversationId };
         this.pendingWork.add(pendingHook);
         hookResult.catch((hookError) => {
           this.logger?.warn?.('bot-team: task hook failed: ' + String(hookError));
@@ -612,20 +970,20 @@ export class Engine {
     job.resolveDone?.();
     job.state = status;
     this.pump(job.groupId);
-    this.afterJobFinished(job);
+    if (current) this.afterJobFinished(job);
     this.checkIdle(job.groupId);
   }
 
   /** Discussion bookkeeping + review-side effects after one job settles. */
   afterJobFinished(job) {
-    if (!job) return;
+    if (!job || !this.isCurrentJob(job)) return;
     if (job.kind === 'discussion' && job.discussionId) {
       this.advanceDiscussion(job.discussionId, job.state === 'done');
       return;
     }
     if (job.kind === 'summary' && job.discussionId) {
       const discussion = this.repo.getDiscussion(job.discussionId);
-      if (discussion && discussion.status === 'running') {
+      if (discussion && discussion.status === 'running' && this.isCurrentRecord(discussion)) {
         discussion.status = job.state === 'done' ? 'done' : 'stopped';
         discussion.updatedAt = now();
         this.repo.putDiscussion(discussion);
@@ -643,7 +1001,7 @@ export class Engine {
 
   advanceDiscussion(discussionId, ok) {
     const discussion = this.repo.getDiscussion(discussionId);
-    if (!discussion || discussion.status !== 'running') return;
+    if (!discussion || discussion.status !== 'running' || !this.isCurrentRecord(discussion)) return;
     if (!ok) {
       discussion.status = 'stopped';
       discussion.stopReason = 'member-error';
@@ -666,14 +1024,17 @@ export class Engine {
   }
 
   /** Enqueue one task delivery turn for the task's assignee. */
-  enqueueTaskTurn({ taskId, phase }) {
+  enqueueTaskTurn({ taskId, phase, expectedConversationId }) {
     const task = this.repo.getTask(taskId);
     if (!task) throw Object.assign(new Error('任务不存在'), { code: 'not-found' });
     const group = this.repo.getGroup(task.groupId);
     if (!group) throw Object.assign(new Error('任务所在群不存在'), { code: 'not-found' });
+    const conversationId = this.admitConversation(task.groupId, expectedConversationId);
+    this.assertCurrentTarget(task.groupId, task);
     const triggerSeq = this.repo.lastMessageOf(task.groupId)?.seq ?? 0;
     this.enqueueJob({
       groupId: task.groupId,
+      conversationId,
       membershipId: task.assigneeMembershipId,
       kind: phase === 'revision' ? 'task_revision' : 'task',
       triggerSeq,
@@ -698,11 +1059,13 @@ export class Engine {
 
   // ── M2: review / revision ───────────────────────────────────────────────
   enqueueJob(spec) {
-    this.workspaceGuard(spec.groupId);
+    const conversationId = this.admitConversation(spec.groupId, spec.conversationId ?? spec.expectedConversationId);
+    this.assertJobTargets(spec);
     const job = {
       jobId: newId('job'),
       state: 'queued',
       ...spec,
+      conversationId,
     };
     this.queue.push(job);
     this.pump(job.groupId);
@@ -717,9 +1080,12 @@ export class Engine {
     return bot?.name ?? message.author?.name ?? 'Bot';
   }
 
-  requestReview({ groupId, targetMessageId, reviewerMembershipId, instructions, taskId }) {
+  requestReview({ groupId, targetMessageId, reviewerMembershipId, instructions, taskId, expectedConversationId }) {
+    const conversationId = this.admitConversation(groupId, expectedConversationId);
     const target = this.repo.messages.get(targetMessageId);
     if (!target || target.groupId !== groupId) throw Object.assign(new Error('待评审消息不存在'), { code: 'not-found' });
+    this.assertCurrentTarget(groupId, target);
+    if (taskId) this.assertCurrentTarget(groupId, this.repo.getTask?.(taskId));
     const member = this.repo.getMember(reviewerMembershipId);
     if (!member || member.groupId !== groupId) throw Object.assign(new Error('评审者不在群里'), { code: 'invalid-input' });
     const reviewer = this.repo.getBot(member.botId);
@@ -738,6 +1104,7 @@ export class Engine {
     this.bus.emit(groupId, { type: 'message.added', message: requestMessage });
     this.enqueueJob({
       groupId,
+      conversationId,
       membershipId: reviewerMembershipId,
       kind: 'review',
       triggerSeq: requestMessage.seq,
@@ -750,12 +1117,15 @@ export class Engine {
     return { requestMessage, reviewer: reviewer.name };
   }
 
-  requestRevision({ groupId, reviewMessageId }) {
+  requestRevision({ groupId, reviewMessageId, expectedConversationId }) {
+    const conversationId = this.admitConversation(groupId, expectedConversationId);
     const review = this.repo.messages.get(reviewMessageId);
     if (!review || review.groupId !== groupId) throw Object.assign(new Error('评审消息不存在'), { code: 'not-found' });
+    this.assertCurrentTarget(groupId, review);
     const targetId = review.meta && review.meta.reviewOf;
     const target = targetId ? this.repo.messages.get(targetId) : undefined;
     if (!target) throw Object.assign(new Error('找不到被评审的原消息'), { code: 'not-found' });
+    this.assertCurrentTarget(groupId, target);
     const membershipId = target.author && target.author.membershipId;
     if (!membershipId || target.author.type !== 'bot') {
       throw Object.assign(new Error('只有 Bot 的消息可以要求作者修改'), { code: 'invalid-input' });
@@ -778,6 +1148,7 @@ export class Engine {
     this.bus.emit(groupId, { type: 'message.added', message: requestMessage });
     this.enqueueJob({
       groupId,
+      conversationId,
       membershipId,
       kind: 'revision',
       triggerSeq: requestMessage.seq,
@@ -789,9 +1160,11 @@ export class Engine {
     return { requestMessage, author: bot.name };
   }
 
-  retryMessage(messageId) {
+  retryMessage(messageId, expectedConversationId) {
     const message = this.repo.messages.get(messageId);
     if (!message) throw Object.assign(new Error('消息不存在'), { code: 'not-found' });
+    const conversationId = this.admitConversation(message.groupId, expectedConversationId);
+    this.assertCurrentTarget(message.groupId, message);
     if (message.author?.type !== 'bot') throw Object.assign(new Error('只能重试 Bot 的回复'), { code: 'invalid-input' });
     const member = this.repo.getMember(message.author.membershipId);
     if (!member) throw Object.assign(new Error('该 Bot 已不在群里'), { code: 'not-found' });
@@ -803,6 +1176,7 @@ export class Engine {
     if (message.kind === 'review' && meta.reviewOf) {
       return this.enqueueJob({
         groupId: message.groupId,
+        conversationId,
         membershipId: member.membershipId,
         kind: 'review',
         triggerSeq: message.seq,
@@ -816,6 +1190,7 @@ export class Engine {
     if (message.kind === 'revision' && meta.reviewOf) {
       return this.enqueueJob({
         groupId: message.groupId,
+        conversationId,
         membershipId: member.membershipId,
         kind: 'revision',
         triggerSeq: message.seq,
@@ -827,6 +1202,7 @@ export class Engine {
     }
     return this.enqueueJob({
       groupId: message.groupId,
+      conversationId,
       membershipId: member.membershipId,
       kind: 'chat',
       triggerSeq: message.seq,
@@ -837,10 +1213,13 @@ export class Engine {
   }
 
   // ── M2: multi-round discussion ──────────────────────────────────────────
-  async startDiscussion({ groupId, topic, membershipIds, rounds, summarize }) {
+  async startDiscussion({ groupId, topic, membershipIds, rounds, summarize, expectedConversationId }) {
+    const conversationId = this.admitConversation(groupId, expectedConversationId);
     const group = this.repo.getGroup(groupId);
     if (!group) throw Object.assign(new Error('群不存在'), { code: 'not-found' });
-    if (this.repo.activeDiscussionOf(groupId)) {
+    const active = this.repo.discussionsOf?.(groupId)?.find(discussion => discussion.status === 'running' && this.isCurrentRecord(discussion, groupId))
+      || this.repo.activeDiscussionOf(groupId);
+    if (this.isCurrentRecord(active, groupId)) {
       throw Object.assign(new Error('该群已有进行中的讨论，请先停止或等待结束'), { code: 'conflict' });
     }
     const members = [];
@@ -855,6 +1234,7 @@ export class Engine {
     const discussion = {
       discussionId: newId('dsc'),
       groupId,
+      conversationId,
       topic,
       memberIds: members,
       rounds,
@@ -879,7 +1259,11 @@ export class Engine {
     });
     discussion.startSeq = startMessage.seq;
     discussion.startMessageId = startMessage.messageId;
-    await this.repo.putDiscussion(discussion);
+    const pending = { groupId, conversationId };
+    this.pendingWork.add(pending);
+    try { await this.repo.putDiscussion(discussion); } finally { this.pendingWork.delete(pending); }
+    this.admitConversation(groupId, conversationId);
+    this.assertCurrentTarget(groupId, this.repo.getDiscussion(discussion.discussionId));
     this.bus.emit(groupId, { type: 'message.added', message: startMessage });
     this.bus.emit(groupId, { type: 'discussion.updated', discussion });
     this.scheduleDiscussion(discussion.discussionId);
@@ -889,7 +1273,7 @@ export class Engine {
   scheduleDiscussion(discussionId) {
     if (this.disposed) return;
     const discussion = this.repo.getDiscussion(discussionId);
-    if (!discussion || discussion.status !== 'running') return;
+    if (!discussion || discussion.status !== 'running' || !this.isCurrentRecord(discussion)) return;
     try {
       this.assertQuota(discussion.groupId);
     } catch (error) {
@@ -904,6 +1288,7 @@ export class Engine {
         this.bus.emit(discussion.groupId, { type: 'discussion.updated', discussion });
         this.enqueueJob({
           groupId: discussion.groupId,
+          conversationId: conversationIdOf(this.repo, discussion),
           membershipId: discussion.memberIds[0],
           kind: 'summary',
           discussionId,
@@ -942,6 +1327,7 @@ export class Engine {
     this.bus.emit(discussion.groupId, { type: 'discussion.updated', discussion });
     this.enqueueJob({
       groupId: discussion.groupId,
+      conversationId: conversationIdOf(this.repo, discussion),
       membershipId,
       kind: 'discussion',
       discussionId,
@@ -955,7 +1341,7 @@ export class Engine {
   }
 
   stopDiscussionInternal(discussion, reason, message) {
-    if (!discussion || discussion.status !== 'running') return;
+    if (!discussion || discussion.status !== 'running' || !this.isCurrentRecord(discussion)) return;
     discussion.status = 'stopped';
     discussion.stopReason = reason;
     discussion.currentSpeaker = null;
@@ -972,6 +1358,8 @@ export class Engine {
   stopDiscussion(discussionId) {
     const discussion = this.repo.getDiscussion(discussionId);
     if (!discussion) throw Object.assign(new Error('讨论不存在'), { code: 'not-found' });
+    this.admitConversation(discussion.groupId);
+    this.assertCurrentTarget(discussion.groupId, discussion);
     if (discussion.status !== 'running') return { stopped: false };
     discussion.status = 'stopped';
     discussion.stopReason = 'user';
@@ -1002,6 +1390,8 @@ export class Engine {
   discussionTranscript(discussion) {
     return this.repo.messagesOf(discussion.groupId).filter(
       (message) =>
+        this.isCurrentRecord(message, discussion.groupId) &&
+        conversationIdOf(this.repo, message) === conversationIdOf(this.repo, discussion) &&
         message.meta &&
         message.meta.discussionId === discussion.discussionId &&
         message.author &&
@@ -1033,6 +1423,9 @@ export class Engine {
   }
 
   buildPrompt(job, bot, context) {
+    this.assertJobCurrent(job);
+    this.assertJobTargets(job);
+    context = context.filter(message => this.isCurrentRecord(message, job.groupId) && message.seq > conversationFloor(this.repo, job.groupId));
     if (job.promptText) return job.promptText;
     if (job.kind === 'task') {
       const task = job.meta && job.meta.taskId ? this.repo.getTask(job.meta.taskId) : undefined;
@@ -1169,7 +1562,7 @@ export class Engine {
     let stopped = 0;
     // Stop running discussions first so their jobs do not advance afterwards.
     for (const discussion of this.repo.discussionsOf(groupId)) {
-      if (discussion.status === 'running') {
+      if (discussion.status === 'running' && this.isCurrentRecord(discussion, groupId)) {
         discussion.status = 'stopped';
         discussion.stopReason = 'user';
         discussion.currentSpeaker = null;
@@ -1236,6 +1629,7 @@ export class Engine {
     try {
       this.offSession?.();
       this.offClaim?.();
+      this.offGoal?.();
     } catch {
       /* noop */
     }

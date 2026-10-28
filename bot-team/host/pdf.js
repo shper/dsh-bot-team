@@ -792,7 +792,7 @@ function fontObjects(builder, engine, font, name) {
 }
 
 /** Build a complete PDF for one group timeline. */
-export async function buildGroupPdf({ group, members = [], bots = [], messages = [], lang = 'zh', fontPath = '' }) {
+export async function buildGroupPdf({ group, members = [], bots = [], messages = [], conversations = [], conversationBoundaries = [], truncated = false, lang = 'zh', fontPath = '' }) {
   const labels = labelsFor(lang);
   const found = await findPdfFont(fontPath);
   if (!found) {
@@ -825,11 +825,31 @@ export async function buildGroupPdf({ group, members = [], bots = [], messages =
   layout.rule();
   layout.space(4);
 
-  if (messages.length === 0) {
-    layout.writeRuns([{ text: labels.noMessages }], { size: 10.5, lineHeight: 18, color: [0.5, 0.53, 0.58] });
-  } else {
-    for (const message of messages) renderMessage(layout, message, labels, lang);
+  const en = labels === LABELS.en;
+  layout.writeRuns([{ text: en ? 'Export scope: entire chat, including all conversation segments.' : '导出范围：整个聊天，包含所有会话分段。' }], { size: 9, lineHeight: 16 });
+  if (truncated) layout.writeRuns([{ text: en
+    ? 'Incomplete export: the 50-page retrieval limit was reached or history pagination stopped. Earlier content may be missing.'
+    : '导出不完整：已达到 50 页读取上限或历史分页中断，更早内容可能未包含。' }], { size: 10, lineHeight: 17, color: [0.7, 0.22, 0.1] });
+  const boundaries = [...new Map([...conversationBoundaries, ...conversations].filter(item => item?.conversationId).map(item => [item.conversationId, item])).values()]
+    .sort((a, b) => Number(a.afterSeq) - Number(b.afterSeq) || Number(a.ordinal) - Number(b.ordinal));
+  const orderedMessages = [...messages].sort((a, b) => a.seq - b.seq);
+  let cursor = 0;
+  const renderBoundary = (conversation, empty) => {
+    layout.space(10);
+    layout.rule();
+    layout.writeRuns([{ text: (en ? 'Conversation ' : '会话 ') + conversation.ordinal }], { size: 13, bold: true, lineHeight: 23 });
+    if (conversation.createdAt) layout.writeRuns([{ text: new Date(conversation.createdAt).toLocaleString(en ? 'en-US' : 'zh-CN') }], { size: 9, lineHeight: 16 });
+    if (empty) layout.writeRuns([{ text: en ? 'No messages in this conversation.' : '本会话没有消息。' }], { size: 10, lineHeight: 18, color: [0.5, 0.53, 0.58] });
+  };
+  for (const message of orderedMessages) {
+    while (cursor < boundaries.length && Number(boundaries[cursor].afterSeq) < Number(message.seq)) {
+      const conversation = boundaries[cursor++];
+      renderBoundary(conversation, cursor < boundaries.length && Number(boundaries[cursor].afterSeq) < Number(message.seq));
+    }
+    renderMessage(layout, message, labels, lang);
   }
+  while (cursor < boundaries.length) renderBoundary(boundaries[cursor++], true);
+  if (!orderedMessages.length && !boundaries.length) layout.writeRuns([{ text: labels.noMessages }], { size: 10.5, lineHeight: 18, color: [0.5, 0.53, 0.58] });
   layout.finishFooters(title);
 
   const builder = new PdfBuilder();

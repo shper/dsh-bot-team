@@ -10,12 +10,17 @@ import { appendFile, mkdir, stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 
 import { openRepository } from './domain.js';
+import { currentConversationId, conversationIdOf, isCurrentMemberSession } from './conversations.js';
+import { collectNativeConversationBlockers, nativeConversationCapability } from './native-activity.js';
 import { openPluginStorageDomain } from './storage-layout.js';
 import { CHAT_DISPLAY_SETTINGS_KEY, isChatDisplaySettings, normalizeChatDisplaySettings } from './chat-settings.js';
 import { Personas } from './personas.js';
 import { AgentPool } from './agents.js';
+import { BackgroundInteractions } from './background-interactions.js';
+import { BotSessionVisibility } from './session-visibility.js';
 import { Engine } from './engine.js';
-import { readBotSessionHistory, readMessageExecution } from './execution.js';
+import { readBotSessionHistory, readBotSessionLog, readMessageExecution } from './execution.js';
+import { serializeBotSessionLog } from './session-export.js';
 import { registerRoutes } from './routes.js';
 import { BOT_TEAM_TOOL_NAMES, registerBotTeamTools } from './tools.js';
 import { GroupBus, asString, fail, json, newId, now, trimmed } from './util.js';
@@ -38,9 +43,10 @@ import { buildGroupPdf } from './pdf.js';
 import { defaultWorkspaceDir, ensureWorkspaceDir, isStandardLayout, migrateLegacyLayout, normalizeWorkspacePath, sessionCwdMatches, validateProjectWorkspace } from './workspace.js';
 
 class ServiceError extends Error {
-  constructor(code, message) {
+  constructor(code, message, details) {
     super(message);
     this.code = code;
+    if (details) this.details = details;
   }
 }
 
@@ -136,6 +142,7 @@ export class BotTeamService {
     this.personas = null;
     this.pool = null;
     this.engine = null;
+    this.conversationChanges = new Set();
     this.workspaceChanges = new Set();
     this.workspaceOperations = new Map();
     this.modelCatalogCache = null;
@@ -181,6 +188,7 @@ export class BotTeamService {
       config: this.config,
       logger: this.logger,
     });
+    this.pool.assertAdmission = (groupId) => this.assertWorkspaceStable(groupId);
     this.pool.attachPrompt({
       renderPersona: (botId, groupId) => renderPersona(this.repo, this.personas, botId, groupId),
       renderGroupContext: (botId, groupId) => renderGroupContext(this.repo, botId, groupId),
@@ -195,9 +203,14 @@ export class BotTeamService {
       logger: this.logger,
       quotaGuard: (groupId) => this.checkQuota(groupId),
       workspaceGuard: (groupId) => this.assertWorkspaceStable(groupId),
-      taskHook: (job, message, status) => this.onTaskJobFinished(job, message, status),
+      taskHook: async (job, message, status) => {
+        await this.onTaskJobFinished(job, message, status);
+        await this.visibility?.reconcile();
+      },
     });
+    this.engine.assertAdmission = (groupId) => this.assertWorkspaceStable(groupId);
     this.pool.attachStreamHandler((payload) => this.engine.onAssistantStream(payload));
+    this.interactions = new BackgroundInteractions({ ctx: this.ctx, repo: this.repo, bus: this.bus });
     this.toolDispose = registerBotTeamTools({
       ctx: this.ctx,
       service: this,
@@ -205,6 +218,13 @@ export class BotTeamService {
       logger: this.logger,
     });
     await this.personas.preload(this.repo.allBots().map((bot) => bot.botId));
+    await this.pool.ready;
+    await this.engine.recoverNativeSessions();
+    this.visibility = new BotSessionVisibility({
+      ctx: this.ctx, repo: this.repo, logger: this.logger,
+      isBusy: sessionId => this.engine.activeBySession.has(sessionId),
+    });
+    await this.visibility.ready;
     this.logger?.info?.(`bot-team: ready (domain bot_team, bots=${this.repo.bots.size}, groups=${this.repo.groups.size})`);
 
     if (this.config.smokeTest) {
@@ -213,6 +233,168 @@ export class BotTeamService {
       });
     }
     return this;
+  }
+
+  conversationState(groupId) {
+    const conversation = this.repo?.activeConversation?.(groupId) || null;
+    const group = this.repo?.getGroup?.(groupId);
+    return {
+      activeConversationId: conversation?.conversationId || group?.activeConversationId || null,
+      currentConversationId: conversation?.conversationId || group?.activeConversationId || null,
+      conversationVersion: conversation?.ordinal || group?.conversationVersion || 0,
+      currentConversation: conversation,
+    };
+  }
+
+  conversationCapability() {
+    if (typeof this.repo?.commitConversation !== 'function') return { supported: false, reason: '会话存储尚未就绪' };
+    return nativeConversationCapability({ ctx: this.ctx, pool: this.pool });
+  }
+
+  isCurrentRecord(record) {
+    return !!record && conversationIdOf(this.repo, record) === currentConversationId(this.repo, record.groupId);
+  }
+
+  assertCurrentRecord(record) {
+    if (record && !this.isCurrentRecord(record)) {
+      throw new ServiceError('historical-target', '目标属于已结束的会话，请选取内容后在当前会话重新发起', this.conversationState(record.groupId));
+    }
+  }
+
+  assertExpectedConversation(groupId, expected, required = false) {
+    const state = this.conversationState(groupId);
+    if (!state.currentConversationId) return;
+    if (expected === undefined || expected === null || expected === '') {
+      if (required) throw new ServiceError('reload-required', '聊天已支持独立会话，请刷新页面后重试', state);
+      return;
+    }
+    if (expected !== state.currentConversationId) throw new ServiceError('stale-conversation', '聊天已开始新会话，草稿已保留', state);
+  }
+
+  async conversationBlockers(groupId, { ownChange = false } = {}) {
+    const blockers = [];
+    const add = (code, message) => blockers.push({ code, kind: 'chat', groupId, message });
+    if (!ownChange && this.conversationChanges?.has(groupId)) add('conversation-changing', '正在新建会话');
+    if (this.workspaceChanges?.has(groupId)) add('workspace-changing', '正在切换项目目录');
+    if (this.workspaceOperations?.get(groupId) > 0) add('operation-pending', '聊天操作尚未完成');
+    if (this.engine?.isRunning?.(groupId)) add('execution-running', '仍有运行或排队的回复');
+    if (this.engine?.hasPendingWork?.(groupId)) add('execution-settling', '执行结果尚未保存完成');
+    if (this.repo?.activeDiscussionOf?.(groupId)) add('discussion-running', '讨论尚未结束');
+    if (this.pool?.isPreparingGroup?.(groupId)) add('agent-preparing', 'Bot 正在准备会话');
+    const capability = this.conversationCapability();
+    if (!capability.supported) add('native-capability-unavailable', capability.reason || '宿主无法验证后台工作状态');
+    else {
+      try {
+        blockers.push(...await collectNativeConversationBlockers({ ctx: this.ctx, repo: this.repo, pool: this.pool, groupId, interactions: this.interactions }));
+      } catch (error) {
+        add('native-state-unavailable', '无法确认后台工作状态：' + String(error?.message || error));
+      }
+    }
+    return blockers;
+  }
+
+  async newConversation(input) {
+    this.conversationRequests ??= new Map();
+    const key = JSON.stringify([input.groupId, input.requestId]);
+    const existing = this.conversationRequests.get(key);
+    if (existing) {
+      if (existing.expectedConversationId !== input.expectedConversationId) throw new ServiceError('conflict', 'requestId 已用于其他会话请求');
+      return { ...await existing.promise, created: false };
+    }
+    const promise = this.performNewConversation(input);
+    this.conversationRequests.set(key, { expectedConversationId: input.expectedConversationId, promise });
+    try { return await promise; }
+    finally { this.conversationRequests.delete(key); }
+  }
+
+  async performNewConversation(input) {
+    const groupId = String(input.groupId || '');
+    if (!this.repo.getGroup(groupId)) throw new ServiceError('not-found', '群不存在');
+    const requestId = String(input.requestId || '');
+    if (!/^[a-zA-Z0-9_-]{1,160}$/.test(requestId)) throw new ServiceError('invalid-input', '新建会话需要有效的 requestId');
+    const previous = this.repo.conversationsOf(groupId).find((item) => item.requestId === requestId);
+    if (previous) {
+      if (previous.previousConversationId !== input.expectedConversationId) throw new ServiceError('conflict', 'requestId 已用于其他会话请求');
+      return { created: false, conversation: previous, ...this.conversationState(groupId) };
+    }
+    this.assertExpectedConversation(groupId, input.expectedConversationId, true);
+    this.assertWorkspaceStable(groupId);
+    const capability = this.conversationCapability();
+    if (!capability.supported) throw new ServiceError('conversation-capability-unavailable', capability.reason || '宿主无法验证后台工作状态');
+    this.conversationChanges ??= new Set();
+    this.conversationChanges.add(groupId);
+    try {
+      const check = async () => {
+        this.assertExpectedConversation(groupId, input.expectedConversationId, true);
+        const blockers = await this.conversationBlockers(groupId, { ownChange: true });
+        if (blockers.length) throw new ServiceError('conversation-busy', blockers.map((item) => item.message).join('；'), { ...this.conversationState(groupId), blockers });
+      };
+      const flush = async () => {
+        try { await this.repo.flushGroupWrites(groupId); }
+        catch (error) { throw new ServiceError('storage-failed', '聊天更改尚未保存成功：' + String(error?.message || error)); }
+      };
+      await check();
+      await flush();
+      await check();
+      for (const member of this.repo.membersOf(groupId)) {
+        try { await this.pool.disposeMember(member.membershipId, { strict: true }); }
+        catch (error) { throw new ServiceError('session-release-failed', '旧会话释放失败：' + String(error?.message || error)); }
+      }
+      await check();
+      await flush();
+      let result;
+      try { result = await this.repo.commitConversation(groupId, { expectedConversationId: input.expectedConversationId, requestId }); }
+      catch (error) {
+        if (['stale-conversation', 'conflict', 'invalid-input', 'conversation-corrupt'].includes(error?.code)) throw error;
+        throw new ServiceError('storage-failed', '新会话保存失败：' + String(error?.message || error));
+      }
+      try {
+        Promise.resolve(this.interactions?.reconcile?.()).catch((error) => this.logger?.warn?.('bot-team: conversation interaction refresh failed: ' + String(error)));
+        this.bus.emit(groupId, { type: 'conversation.started', groupId, ...result, ...this.conversationState(groupId) });
+      } catch (error) {
+        this.logger?.warn?.('bot-team: conversation committed; notification failed: ' + String(error));
+      }
+      return { ...result, ...this.conversationState(groupId) };
+    } finally {
+      this.conversationChanges.delete(groupId);
+    }
+  }
+
+  messageConversationBoundaries(groupId, messages, { beforeSeq, afterSeq } = {}) {
+    const all = this.repo.conversationsOf?.(groupId) || [];
+    if (!messages.length) return all.filter((item) => (beforeSeq === undefined || item.afterSeq < beforeSeq) && (afterSeq === undefined || item.afterSeq >= afterSeq));
+    const first = messages[0].seq;
+    const last = messages.at(-1).seq;
+    const leading = [...all].reverse().find((item) => item.afterSeq < first);
+    return all.filter((item) => item.afterSeq === leading?.afterSeq || (item.afterSeq >= first && (beforeSeq === undefined || item.afterSeq <= last)));
+  }
+
+  handleConversations(request) {
+    return this.withReady(() => {
+      const params = new URL(request.url).searchParams;
+      const groupId = params.get('groupId') || '';
+      if (!this.repo.getGroup(groupId)) return json(fail('not-found', '群不存在'), 404);
+      const requestedLimit = Number(params.get('limit'));
+      const limit = Number.isSafeInteger(requestedLimit) && requestedLimit > 0 ? Math.min(requestedLimit, 200) : 100;
+      const all = this.repo.conversationsOf(groupId);
+      const id = params.get('conversationId');
+      if (id) {
+        const conversation = all.find((item) => item.conversationId === id);
+        if (!conversation) return json(fail('not-found', '会话不存在'), 404);
+        const rawCursor = params.get('cursor');
+        const cursor = rawCursor === null ? 0 : Number(rawCursor);
+        if (!Number.isSafeInteger(cursor) || cursor < 0) return json(fail('invalid-input', '会话日志游标无效'), 400);
+        const bindings = this.repo.sessionBindingsOf(groupId, id);
+        const sessionBindings = bindings.slice(cursor, cursor + limit);
+        const hasMore = cursor + sessionBindings.length < bindings.length;
+        return json({ ok: true, groupId, conversation, sessionBindings, hasMore, nextCursor: hasMore ? cursor + sessionBindings.length : null, ...this.conversationState(groupId) });
+      }
+      const before = params.has('beforeOrdinal') ? Number(params.get('beforeOrdinal')) : Infinity;
+      if (before !== Infinity && (!Number.isSafeInteger(before) || before < 1)) return json(fail('invalid-input', '会话分页游标无效'), 400);
+      const filtered = all.filter((item) => item.ordinal < before);
+      const conversations = filtered.slice(-limit);
+      return json({ ok: true, groupId, conversations, hasMore: filtered.length > conversations.length, nextBeforeOrdinal: conversations[0]?.ordinal ?? null, ...this.conversationState(groupId) });
+    });
   }
 
   // ── HTTP handlers ────────────────────────────────────────────────────────
@@ -249,14 +431,18 @@ export class BotTeamService {
       }
       usageByGroup.set(group.groupId, { inputTokens: input, outputTokens: output, totalTokens: input + output });
     }
-    const groups = this.repo.allGroups().map((group) => {
+    const groups = await Promise.all(this.repo.allGroups().map(async (group) => {
+      const blockers = await this.conversationBlockers(group.groupId);
       const members = this.repo.membersOf(group.groupId);
       const lastMessage = this.repo.lastMessageOf(group.groupId);
-      const discussions = this.repo.discussionsOf(group.groupId);
+      const discussions = this.repo.discussionsOf(group.groupId).filter((item) => this.isCurrentRecord(item));
       const activeDiscussion = discussions.find((discussion) => discussion.status === 'running') || null;
       const latestDiscussion = discussions[0] || null;
       return {
         ...group,
+        ...this.conversationState(group.groupId),
+        canStartConversation: blockers.length === 0,
+        conversationBlockers: blockers,
         memberIds: members.map((member) => member.membershipId),
         running: this.engine.isRunning(group.groupId),
         usage: usageByGroup.get(group.groupId) || { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
@@ -276,9 +462,10 @@ export class BotTeamService {
             }
           : null,
       };
-    });
+    }));
     return {
       ok: true,
+      capabilities: { conversations: this.conversationCapability().supported, expectedConversationId: true },
       bots: this.repo.allBots(),
       groups,
       folders: this.repo.allFolders(),
@@ -286,6 +473,7 @@ export class BotTeamService {
       directGroupCount: [...this.repo.groups.values()].filter(isDirectGroup).length,
       members: [...this.repo.members.values()].map((member) => ({
         ...member,
+        currentSessionId: isCurrentMemberSession(this.repo, member) ? member.sessionId : null,
         running: this.engine.running.has(member.membershipId),
       })),
       config: {
@@ -332,6 +520,8 @@ export class BotTeamService {
         groupId,
         messages,
         hasMore,
+        ...this.conversationState(groupId),
+        conversationBoundaries: this.messageConversationBoundaries(groupId, messages, { beforeSeq: beforeRaw, afterSeq: afterRaw }),
         running: this.engine.isRunning(groupId),
       });
     });
@@ -351,6 +541,8 @@ export class BotTeamService {
           members: this.repo.membersOf(groupId),
           bots: this.repo.allBots(),
           messages: this.repo.messagesOf(groupId),
+          conversations: this.repo.conversationsOf?.(groupId) || [],
+          truncated: false,
           lang,
           fontPath: this.config.pdfFontPath || '',
         });
@@ -426,6 +618,37 @@ export class BotTeamService {
     }, request.signal);
   }
 
+  /** Export the canonical persisted log without activating the Bot session. */
+  handleSessionExport(request) {
+    return this.withReady(async () => {
+      const url = new URL(request.url);
+      try {
+        const result = await readBotSessionLog({
+          ctx: this.ctx,
+          repo: this.repo,
+          groupId: url.searchParams.get('groupId') || '',
+          sessionId: url.searchParams.get('sessionId') || '',
+          signal: request.signal,
+        });
+        if (!result.ok || result.availability !== 'available') return json(result, 503);
+        const filename = 'session-' + result.sessionId.replace(/[^a-zA-Z0-9._-]/g, '_') + '.jsonl';
+        return new Response(serializeBotSessionLog(result.header, result.events), {
+          headers: {
+            'content-type': 'application/x-ndjson; charset=utf-8',
+            'content-disposition': 'attachment; filename="' + filename + '"',
+            'cache-control': 'no-store',
+            'x-content-type-options': 'nosniff',
+          },
+        });
+      } catch (error) {
+        if (request.signal.aborted) throw error;
+        const code = ['not-found', 'invalid-input'].includes(error?.code) ? error.code : 'session-export-failed';
+        return json(fail(code, code === 'session-export-failed' ? 'Session log export failed' : String(error?.message || error)),
+          code === 'not-found' ? 404 : code === 'invalid-input' ? 400 : 500);
+      }
+    }, request.signal);
+  }
+
   handleEvents(request) {
     const url = new URL(request.url);
     const groupId = url.searchParams.get('groupId') || '';
@@ -487,6 +710,7 @@ export class BotTeamService {
             at: now(),
             running: service.engine.isRunning(groupId),
             chatDisplaySettings: service.getChatDisplaySettings(),
+            ...service.conversationState(groupId),
           });
           // Push current member statuses so a reconnecting page is consistent.
           for (const member of service.repo.membersOf(groupId)) {
@@ -550,7 +774,7 @@ export class BotTeamService {
     }
     return this.withReady(async () => {
       try {
-        const result = await this.dispatch(body && body.action, body && body.payload);
+        const result = await this.dispatch(body && body.action, body && body.payload, { external: true });
         return json({ ok: true, result });
       } catch (error) {
         const code = error instanceof ServiceError
@@ -558,7 +782,13 @@ export class BotTeamService {
           : error && typeof error.code === 'string'
             ? error.code
             : 'internal';
-        return json(fail(code, String(error && error.message ? error.message : error)), code === 'internal' ? 500 : 400);
+        const status = ['stale-conversation', 'conversation-busy', 'historical-target', 'reload-required', 'conflict'].includes(code) ? 409
+          : code === 'not-found' && body?.action === 'conversation.new' ? 404
+            : code === 'conversation-capability-unavailable' ? 503
+              : ['internal', 'storage-failed', 'session-release-failed', 'conversation-corrupt'].includes(code) ? 500 : 400;
+        const conversationError = ['stale-conversation', 'conversation-busy', 'historical-target', 'reload-required', 'storage-failed', 'session-release-failed', 'conversation-corrupt'].includes(code);
+        const details = error?.details || (conversationError && body?.payload?.groupId ? this.conversationState(body.payload.groupId) : undefined);
+        return json({ ...fail(code, String(error && error.message ? error.message : error)), ...(details ? { details } : {}) }, status);
       }
     });
   }
@@ -756,10 +986,49 @@ export class BotTeamService {
   }
 
   // ── action dispatch ──────────────────────────────────────────────────────
-  async dispatch(action, payload = {}) {
+  actionGroupIds(action, input) {
+    const ids = new Set();
+    const add = (value) => { if (value && this.repo.getGroup(value)) ids.add(value); };
+    add(input.groupId);
+    add(this.repo.getMember?.(input.membershipId)?.groupId);
+    add(this.repo.getTask?.(input.taskId)?.groupId);
+    add(this.repo.getDiscussion?.(input.discussionId)?.groupId);
+    for (const key of ['messageId', 'targetMessageId', 'reviewMessageId']) add(this.repo.messages?.get(input[key])?.groupId);
+    if (input.botId && ['bot.update', 'bot.delete', 'persona.write', 'direct.open'].includes(action)) {
+      for (const member of this.repo.membersOfBot(input.botId)) add(member.groupId);
+    }
+    if (['group.reorder', 'folder.delete'].includes(action)) for (const group of this.repo.allGroups()) add(group.groupId);
+    return [...ids].sort();
+  }
+
+  async dispatch(action, payload = {}, { external = false } = {}) {
     await this.ready;
-    const input = payload && typeof payload === 'object' ? payload : {};
+    const input = payload && typeof payload === 'object' && !Array.isArray(payload) ? { ...payload } : {};
+    if (action === 'conversation.new') return this.newConversation(input);
+    const groupIds = this.actionGroupIds(action, input);
+    const executing = ['message.post', 'message.retry', 'message.stop', 'review.request', 'review.revise',
+      'discussion.start', 'discussion.stop', 'interaction.respond', 'task.create', 'task.dispatch',
+      'task.dispatch_ready', 'task.review', 'task.accept', 'task.request_changes', 'task.revise', 'task.update', 'task.cancel'].includes(action);
+    if (executing) {
+      for (const groupId of groupIds) this.assertExpectedConversation(groupId, input.expectedConversationId, external);
+      if (input.expectedConversationId === undefined && groupIds.length === 1) input.expectedConversationId = currentConversationId(this.repo, groupIds[0]);
+    }
+    // Workspace changes provide their own exclusive admission; counting that
+    // same request as an ordinary operation would make it block itself.
+    if (action === 'group.workspace.set' || (action === 'group.update' && input.workspaceCwd !== undefined)
+      || ['interaction.list', 'ui.report'].includes(action)) return this.dispatchAction(action, input);
+    const perform = (index) => index < groupIds.length
+      ? this.withWorkspaceOperation(groupIds[index], () => perform(index + 1))
+      : this.dispatchAction(action, input);
+    return perform(0);
+  }
+
+  async dispatchAction(action, input) {
     switch (action) {
+      case 'interaction.list':
+        return this.interactions.snapshot(input.groupId);
+      case 'interaction.respond':
+        return this.interactions.respond(input);
       case 'settings.chatDisplay.update':
         return this.updateChatDisplaySettings(input);
       case 'group.create':
@@ -796,6 +1065,8 @@ export class BotTeamService {
         return this.updateMember(input);
       case 'message.post':
         return this.postMessage(input);
+      case 'message.delete':
+        return this.deleteMessage(input);
       case 'message.stop':
         return this.stopGroup(input);
       case 'message.retry':
@@ -853,6 +1124,7 @@ export class BotTeamService {
   }
 
   isTaskReady(task) {
+    if (!this.isCurrentRecord(task)) return { ready: false, blockers: [{ taskId: task.taskId, title: task.title, status: 'historical' }] };
     const blockers = [];
     for (const dependencyId of task.dependsOn || []) {
       const dependency = this.repo.getTask(dependencyId);
@@ -879,7 +1151,9 @@ export class BotTeamService {
 
   listTasks(groupId, options = {}) {
     const includeClosed = options.includeClosed === true;
-    let tasks = this.repo.tasksOf(groupId).map((task) => this.taskView(task));
+    let tasks = this.repo.tasksOf(groupId)
+      .filter((task) => options.includeHistorical === true || this.isCurrentRecord(task))
+      .map((task) => this.taskView(task));
     if (options.taskId) tasks = tasks.filter((task) => task.taskId === options.taskId);
     if (options.status) tasks = tasks.filter((task) => task.status === options.status);
     if (!includeClosed && !options.status) {
@@ -901,6 +1175,7 @@ export class BotTeamService {
       if (taskId && dependencyId === taskId) throw new ServiceError('invalid-input', '任务不能依赖自身');
       const dependency = all.get(dependencyId);
       if (!dependency) throw new ServiceError('invalid-input', '依赖任务不存在：' + dependencyId);
+      this.assertCurrentRecord(dependency);
       if (dependency.status === 'cancelled') throw new ServiceError('invalid-input', '依赖任务已取消：' + dependency.title);
     }
     if (taskId && ids.length > 0) {
@@ -929,10 +1204,12 @@ export class BotTeamService {
 
   /** After a task is accepted, notify and mark dependents that became dispatchable. */
   async unblockDependents(task) {
+    if (!this.isCurrentRecord(task)) return [];
     const dependents = this.repo
       .tasksOf(task.groupId)
       .filter(
         (candidate) =>
+          this.isCurrentRecord(candidate) &&
           candidate.taskId !== task.taskId &&
           (candidate.dependsOn || []).includes(task.taskId) &&
           candidate.status !== 'accepted' &&
@@ -995,6 +1272,7 @@ export class BotTeamService {
     const task = {
       taskId: newId('task'),
       groupId,
+      conversationId: currentConversationId(this.repo, groupId),
       title,
       description,
       acceptance,
@@ -1042,6 +1320,8 @@ export class BotTeamService {
   async dispatchTask(input) {
     const task = this.repo.getTask(String(input.taskId || ''));
     if (!task) throw new ServiceError('not-found', '任务不存在');
+    this.assertCurrentRecord(task);
+    this.assertExpectedConversation(task.groupId, input.expectedConversationId);
     if (task.status !== 'pending') throw new ServiceError('invalid-input', '只有待派发的任务可以派发（当前：' + task.status + '）');
     const readiness = this.isTaskReady(task);
     if (!readiness.ready) {
@@ -1063,6 +1343,8 @@ export class BotTeamService {
   async reviewTask(input) {
     const task = this.repo.getTask(String(input.taskId || ''));
     if (!task) throw new ServiceError('not-found', '任务不存在');
+    this.assertCurrentRecord(task);
+    this.assertExpectedConversation(task.groupId, input.expectedConversationId);
     if (task.status !== 'delivered') throw new ServiceError('invalid-input', '只有已交付的任务可以评审（当前：' + task.status + '）');
     const reviewerMembershipId = String(input.reviewerMembershipId || task.reviewerMembershipId || '');
     const reviewer = this.repo.getMember(reviewerMembershipId);
@@ -1091,6 +1373,8 @@ export class BotTeamService {
   async acceptTask(input) {
     const task = this.repo.getTask(String(input.taskId || ''));
     if (!task) throw new ServiceError('not-found', '任务不存在');
+    this.assertCurrentRecord(task);
+    this.assertExpectedConversation(task.groupId, input.expectedConversationId);
     if (task.status !== 'delivered' && task.status !== 'changes_requested') {
       throw new ServiceError('invalid-input', '当前状态不能验收（' + task.status + '）');
     }
@@ -1107,6 +1391,8 @@ export class BotTeamService {
   async updateTask(input) {
     const task = this.repo.getTask(String(input.taskId || ''));
     if (!task) throw new ServiceError('not-found', '任务不存在');
+    this.assertCurrentRecord(task);
+    this.assertExpectedConversation(task.groupId, input.expectedConversationId);
     if (task.status === 'accepted' || task.status === 'cancelled') {
       throw new ServiceError('invalid-input', '已验收/已取消的任务不能编辑');
     }
@@ -1141,6 +1427,8 @@ export class BotTeamService {
   async requestTaskChanges(input) {
     const task = this.repo.getTask(String(input.taskId || ''));
     if (!task) throw new ServiceError('not-found', '任务不存在');
+    this.assertCurrentRecord(task);
+    this.assertExpectedConversation(task.groupId, input.expectedConversationId);
     if (task.status !== 'delivered') throw new ServiceError('invalid-input', '只有已交付的任务可以要求修改（当前：' + task.status + '）');
     task.status = 'changes_requested';
     task.changesRequestedAt = now();
@@ -1152,6 +1440,8 @@ export class BotTeamService {
   async reviseTask(input) {
     const task = this.repo.getTask(String(input.taskId || ''));
     if (!task) throw new ServiceError('not-found', '任务不存在');
+    this.assertCurrentRecord(task);
+    this.assertExpectedConversation(task.groupId, input.expectedConversationId);
     if (task.status !== 'changes_requested') throw new ServiceError('invalid-input', '只有被要求修改的任务可以重新交付（当前：' + task.status + '）');
     const readiness = this.isTaskReady(task);
     if (!readiness.ready) {
@@ -1173,11 +1463,14 @@ export class BotTeamService {
   async cancelTask(input) {
     const task = this.repo.getTask(String(input.taskId || ''));
     if (!task) throw new ServiceError('not-found', '任务不存在');
+    this.assertCurrentRecord(task);
+    this.assertExpectedConversation(task.groupId, input.expectedConversationId);
     if (task.status === 'accepted') throw new ServiceError('invalid-input', '已验收的任务不能取消');
     const dependents = this.repo
       .tasksOf(task.groupId)
       .filter(
         (candidate) =>
+          this.isCurrentRecord(candidate) &&
           candidate.taskId !== task.taskId &&
           (candidate.dependsOn || []).includes(task.taskId) &&
           candidate.status !== 'accepted' &&
@@ -1213,7 +1506,7 @@ export class BotTeamService {
       const taskId = job && job.meta ? job.meta.taskId : undefined;
       if (!taskId) return;
       const task = this.repo.getTask(taskId);
-      if (!task) return;
+      if (!task || !this.isCurrentRecord(task) || (job.conversationId && job.conversationId !== currentConversationId(this.repo, task.groupId))) return;
       if (job.kind === 'task' || job.kind === 'task_revision') {
         if (status === 'done' && message) {
           task.status = 'delivered';
@@ -1232,6 +1525,7 @@ export class BotTeamService {
         task.revision = (task.revision || 0) + 1;
       }
       await this.repo.putTask(task);
+      if (!this.isCurrentRecord(task)) return;
       this.emitTask(task);
       if (task.status === 'accepted') await this.unblockDependents(task);
     } catch (hookError) {
@@ -1248,7 +1542,8 @@ export class BotTeamService {
     const reviewerMembershipId = String(input.reviewerMembershipId || '');
     const instructions = optionalText(input.instructions, 2000);
     try {
-      return this.engine.requestReview({ groupId, targetMessageId, reviewerMembershipId, instructions });
+      this.assertExpectedConversation(groupId, input.expectedConversationId);
+      return this.engine.requestReview({ groupId, targetMessageId, reviewerMembershipId, instructions, expectedConversationId: input.expectedConversationId });
     } catch (error) {
       if (error && error.code) throw new ServiceError(error.code, String(error.message));
       throw error;
@@ -1262,6 +1557,7 @@ export class BotTeamService {
       return this.engine.requestRevision({
         groupId: String(input.groupId || ''),
         reviewMessageId: String(input.reviewMessageId || ''),
+        expectedConversationId: input.expectedConversationId,
       });
     } catch (error) {
       if (error && error.code) throw new ServiceError(error.code, String(error.message));
@@ -1287,6 +1583,7 @@ export class BotTeamService {
         membershipIds,
         rounds,
         summarize: input.summarize === true,
+        expectedConversationId: input.expectedConversationId,
       });
     } catch (error) {
       if (error && error.code) throw new ServiceError(error.code, String(error.message));
@@ -1343,6 +1640,9 @@ export class BotTeamService {
   }
 
   assertWorkspaceStable(groupId) {
+    if (this.conversationChanges?.has(groupId)) {
+      throw new ServiceError('conversation-busy', '正在新建会话，请稍后重试', this.conversationState(groupId));
+    }
     if (this.workspaceChanges?.has(groupId)) {
       throw new ServiceError('busy', '正在切换项目目录，请稍后重试');
     }
@@ -1442,7 +1742,7 @@ export class BotTeamService {
     };
     await this.repo.putGroup(group);
     this.logger?.info?.(`bot-team: created group ${group.groupId} "${title}"`);
-    return group;
+    return this.repo.getGroup(group.groupId);
   }
 
   async updateGroup(input) {
@@ -1580,7 +1880,7 @@ export class BotTeamService {
       };
       if (!this.repo.members.has(member.membershipId)) await this.repo.putMember(member);
     }
-    return direct;
+    return this.repo.getGroup(direct.groupId);
   }
 
   async openDirect(input) {
@@ -1813,9 +2113,9 @@ export class BotTeamService {
       createdAt: now(),
       updatedAt: now(),
     };
-    await this.repo.putMember(member);
-    this.bus.emit(group.groupId, { type: 'member.added', member });
-    return member;
+    const saved = await this.repo.putMember(member);
+    this.bus.emit(group.groupId, { type: 'member.added', member: saved });
+    return saved;
   }
 
   async removeMember(input) {
@@ -1835,16 +2135,20 @@ export class BotTeamService {
     if (!member) throw new ServiceError('not-found', '成员不存在');
     if (input.enabled !== undefined) member.enabled = input.enabled !== false;
     if (Number.isInteger(input.order)) member.order = input.order;
-    await this.repo.putMember(member);
-    this.bus.emit(member.groupId, { type: 'member.updated', member });
-    return member;
+    const saved = await this.repo.putMember(member);
+    this.bus.emit(member.groupId, { type: 'member.updated', member: saved });
+    return saved;
   }
 
   async postMessage(input) {
     const groupId = String(input.groupId || '');
     const group = this.repo.getGroup(groupId);
     if (!group) throw new ServiceError('not-found', '群不存在');
-    const text = asString(input.text, this.config.maxMessageChars).trim();
+    const text = String(input.text ?? '').trim();
+    if (text.length > this.config.maxMessageChars) throw new ServiceError('invalid-input', '消息超过长度上限');
+    if (text === '/new') throw new ServiceError('command-required', '请使用新建会话指令入口');
+    if (/^[/]new\s/.test(text)) throw new ServiceError('invalid-command', '请单独发送 /new');
+    this.assertExpectedConversation(groupId, input.expectedConversationId);
     const attachments = this.normalizeMessageAttachments(input.attachments);
     if (!text && attachments.length === 0) throw new ServiceError('invalid-input', '消息不能为空');
     const groupMembers = this.repo.membersOf(groupId);
@@ -1861,7 +2165,50 @@ export class BotTeamService {
       mentions = parseMentionsFromText(this.repo, groupId, text);
     }
     const replyTo = typeof input.replyTo === 'string' && input.replyTo ? input.replyTo : null;
-    return this.engine.postHumanMessage({ groupId, text, mentions, replyTo, attachments });
+    return this.engine.postHumanMessage({ groupId, text, mentions, replyTo, attachments, expectedConversationId: input.expectedConversationId ?? currentConversationId(this.repo, groupId) });
+  }
+
+  async deleteMessage(input) {
+    const groupId = String(input.groupId || '');
+    const messageId = String(input.messageId || '');
+    const group = this.repo.getGroup(groupId);
+    const message = this.repo.getMessage(messageId);
+    if (!group || !message || message.groupId !== groupId) {
+      throw new ServiceError('not-found', '消息不存在或不属于本聊天');
+    }
+    if (['system', 'approval'].includes(message.kind) || !['human', 'bot'].includes(message.author?.type)) {
+      throw new ServiceError('invalid-input', '只能删除普通聊天消息');
+    }
+    if (message.status === 'pending' || message.status === 'streaming') {
+      throw new ServiceError('busy', '消息正在生成，请结束后再删除');
+    }
+    if (!['done', 'error', 'stopped'].includes(message.status ?? 'done')) {
+      throw new ServiceError('invalid-input', '消息状态不支持删除');
+    }
+    // A native goal may have a done reply while waiting for its next turn, and
+    // a stopped job may still be finishing durable writes. Status alone is not
+    // enough: its current placeholder must survive until that work releases it.
+    // Queued/preparing turns still need their trigger and review inputs when
+    // constructing the prompt, so keep those records until the job settles.
+    const jobs = [
+      ...(this.engine.running?.values() ?? []),
+      ...(this.engine.activeBySession?.values() ?? []),
+      ...(this.engine.pendingWork ?? []),
+      ...(this.engine.queue ?? []),
+    ];
+    if (jobs.some((job) =>
+      [job.placeholderId, job.triggerMessageId, job.reviewTargetId, job.reviewMessageId].includes(messageId) ||
+      (job.kind === 'revision' && this.repo.getMessage(job.reviewMessageId)?.meta?.reviewOf === messageId))) {
+      throw new ServiceError('busy', '消息仍被执行中的任务使用，请结束后再删除');
+    }
+    if (!await this.repo.deleteMessageStrict(messageId)) {
+      throw new ServiceError('not-found', '消息不存在或不属于本聊天');
+    }
+    this.bus.emit(groupId, { type: 'message.deleted', groupId, messageId });
+    // Keep the existing group update signal; message.deleted consumers refresh
+    // bootstrap for the preview. Deletion must not count as new group activity.
+    this.bus.emit(groupId, { type: 'group.updated', group });
+    return { groupId, messageId, deleted: true };
   }
 
   async stopGroup(input) {
@@ -2702,6 +3049,16 @@ export class BotTeamService {
     }
     try {
       this.toolDispose?.();
+    } catch {
+      /* noop */
+    }
+    try {
+      await this.interactions?.dispose();
+    } catch {
+      /* noop */
+    }
+    try {
+      await this.visibility?.dispose();
     } catch {
       /* noop */
     }

@@ -71,7 +71,7 @@ test('the composer exposes a DSH-style grouped + command menu and keeps direct-c
   const fileInput = walk(tree).find((node) => node.type === 'input' && node.props.type === 'file');
   assert.ok(fileInput, 'hidden file input exists');
   assert.equal(fileInput.props.multiple, true);
-  assert.match(text(tree), /\/ 选择 Skill/);
+  assert.match(text(tree), /\/ 选择指令或 Skill/);
   assert.match(text(tree), /@ 提及/);
 
   plus.props.onClick();
@@ -131,7 +131,7 @@ test('typing / fetches and opens the user-invocable skill picker', async () => {
   await new Promise((resolve) => setTimeout(resolve, 10));
   tree = client.render(client.Composer, props);
   const rendered = text(tree);
-  assert.match(rendered, /选择 Skill/);
+  assert.match(rendered, /选择指令或 Skill/);
   assert.match(rendered, /office/);
   assert.doesNotMatch(rendered, /Manual only/);
   assert.ok(calls.some((url) => url.includes('/api/bot-team.skills?groupId=g1')));

@@ -45,12 +45,15 @@ function fixture(options = {}) {
     if (state.failure) throw state.failure;
     const events = state.events.slice();
     return {
-      source: state.source, header: { id: state.headerId ?? id }, cursor: events.length - 1,
+      source: state.source, header: { id: state.headerId ?? id, ...options.header }, cursor: Object.hasOwn(state, 'cursor') ? state.cursor : events.length - 1,
       get events() { if (state.eventsError) throw state.eventsError; return events; },
       [Symbol.dispose]() { state.disposed += 1; },
     };
   } };
-  const ctx = { sessionQuery: query };
+  const ctx = { sessionQuery: query,
+    get agents() { throw new Error('Execution queries must not restore an Agent'); },
+    get sessions() { throw new Error('Execution queries must not open a Session'); },
+  };
   return { state, repo, ctx, query, read: (params = {}) => readMessageExecution({ ctx, repo, groupId: 'group-1', messageId: 'message-1', ...params }) };
 }
 
@@ -77,8 +80,9 @@ function workflow() {
     { type: 'reasoning', text: 'PRIVATE_REASONING' }, { type: 'encrypted-reasoning', data: 'PRIVATE_ENCRYPTED' },
     { type: 'text', text: 'PRIVATE_HIDDEN', hidden: true }, { type: 'text', text: 'PRIVATE_INTERNAL', internal: true },
     { type: 'text', text: 'Checking the files.', metadata: { secret: 'PRIVATE_TEXT_META' } },
+    { type: 'image', attachment: { attachmentId: 'sha256:image', mediaType: 'image/png', width: 640, height: 480 } },
     { type: 'tool-call', id: 'root-1', name: 'functions.run_code', arguments: 'PRIVATE_DUPLICATED_CALL' },
-  ] } }, { surfaceOp: 'append' });
+  ] } }, { surfaceOp: 'append', sourceEventSeqs: [12, 13], providerMetadata: { requestId: 'request-2' } });
   result.arguments = JSON.stringify({ code: 'const value = await tools.read({file_path: "file.js"}); return value;', description: 'Read source', padding: 'x'.repeat(12000) });
   result.add('tool/call', { turn: 2, step: 1, callId: 'root-1', name: 'functions.run_code', arguments: result.arguments });
   result.add('tool/ptc-dispatch-start', { rootCallId: 'root-1', parentCallId: 'root-1', subCallId: 'sub-1', name: 'read', arguments: { file_path: 'file.js' } });
@@ -103,7 +107,7 @@ function workflow() {
   return result;
 }
 
-test('projects real SDK top-level tools, nested PTC, approval, retry and compaction events without private records', async () => {
+test('preserves complete raw SDK envelopes, message blocks, attempts, and compaction within exact turn bounds', async () => {
   const run = workflow();
   const f = fixture({ events: run.events, message: { status: 'error', error: 'Tests failed' } });
   const controller = new AbortController();
@@ -118,9 +122,12 @@ test('projects real SDK top-level tools, nested PTC, approval, retry and compact
   assert.equal(result.hasMore, false);
   assert.equal(f.state.disposed, 1);
   assert.deepEqual(f.state.calls, [{ id: 'historical-session', settings: { signal: controller.signal, projectionMode: 'none' } }]);
-  assert.equal(JSON.stringify(result).includes('PRIVATE_'), false);
-  assert.deepEqual(result.events.find((event) => event.type === 'assistant/attempt').data, { turn: 2, step: 1 });
-  assert.deepEqual(result.events.find((event) => event.type === 'assistant/message').data.message.content, [{ type: 'text', text: 'Checking the files.' }]);
+  assert.deepEqual(result.events, run.events.slice(run.start.seq, run.end.seq + 1));
+  assert.deepEqual(result.session, { id: 'historical-session', native: true });
+  assert.equal(JSON.stringify(result).includes('PRIVATE_PREVIOUS_TURN'), false);
+  assert.equal(JSON.stringify(result).includes('PRIVATE_NEXT_TURN'), false);
+  assert.deepEqual(result.events.find((event) => event.type === 'assistant/attempt').data.stream, [{ text: 'PRIVATE_ATTEMPT' }]);
+  assert.deepEqual(result.events.find((event) => event.type === 'assistant/message').data.message.content.map((block) => block.type), ['reasoning', 'encrypted-reasoning', 'text', 'text', 'text', 'image', 'tool-call']);
   assert.equal(result.events.find((event) => event.type === 'tool/call').data.arguments, run.arguments);
   const dispatch = result.events.find((event) => event.type === 'tool/ptc-dispatch' && event.data.subCallId === 'sub-2');
   assert.equal(dispatch.data.content[0].text, run.output);
@@ -137,7 +144,29 @@ test('projects real SDK top-level tools, nested PTC, approval, retry and compact
   assert.doesNotThrow(() => JSON.stringify(result));
 });
 
-test('pagination scans past filtered records and gives the same result live and cold', async () => {
+test('reports native and historical subagent origins without restoring agents', async () => {
+  for (const origin of [undefined, 'user', 'subagent']) {
+    const f = fixture({ header: origin === undefined ? {} : { origin } });
+    const result = await f.read();
+    assert.deepEqual(result.session, { id: 'historical-session', ...(origin === undefined ? {} : { origin }), native: origin !== 'subagent' });
+    assert.equal(f.state.disposed, 1);
+  }
+  const legacy = await fixture({ message: { meta: null } }).read();
+  assert.equal(legacy.session, undefined, 'an unobserved fallback is never claimed to be native');
+});
+
+test('preserves opaque future event envelopes and source relations as detached raw JSON', async () => {
+  const run = simpleLog({ closed: false });
+  const extra = run.add('extension/event', { nested: { value: ['raw'] } }, { ignorable: true, sourceEventSeqs: [1, 3], source: { rootCallId: 'root', parentCallId: 'parent' } });
+  const result = await fixture({ events: run.events }).read();
+  assert.deepEqual(result.events.at(-1), extra);
+  result.events.at(-1).sourceEventSeqs.push(9);
+  result.events.at(-1).data.nested.value.push('changed');
+  assert.deepEqual(extra.sourceEventSeqs, [1, 3]);
+  assert.deepEqual(extra.data.nested.value, ['raw']);
+});
+
+test('pagination returns every raw record and gives the same result live and cold', async () => {
   const run = workflow();
   const f = fixture({ events: run.events });
   const all = await f.read({ limit: 300 });
@@ -157,7 +186,7 @@ test('pagination scans past filtered records and gives the same result live and 
     }
   }
   const first = await f.read({ limit: 1 });
-  assert.equal(first.nextSeq, run.start.seq + 1, 'inbox splice after first visible boundary is consumed');
+  assert.equal(first.nextSeq, run.start.seq, 'the next raw event remains available on the next page');
   const empty = await f.read({ afterSeq: run.end.seq });
   assert.deepEqual(empty.events, []);
   assert.equal(empty.nextSeq, run.end.seq);
@@ -304,7 +333,9 @@ test('a foreign turn coordinate fences a broken log even without its next turn/s
 
 test('preparing is only an active not-yet-recorded turn; completed absent logs are unavailable', async () => {
   const f = fixture({ events: [], message: { status: 'pending' } });
-  assert.equal((await f.read()).availability, 'preparing');
+  const preparing = await f.read();
+  assert.equal(preparing.availability, 'preparing');
+  assert.deepEqual(preparing.session, { id: 'historical-session', native: true });
   f.state.message.status = 'error';
   assert.equal((await f.read()).availability, 'unavailable');
   f.state.message.status = 'streaming';
@@ -395,7 +426,7 @@ test('propagates cancellation before acquisition, from SDK, and after a lease is
   assert.equal(acquired.state.disposed, 1);
 });
 
-test('live growth resumes after filtered tails and preserves a previously captured page', async () => {
+test('live growth resumes after raw request and attempt tails without mutating a captured page', async () => {
   const run = simpleLog({ closed: false });
   run.add('request/header', { authorization: 'PRIVATE_HEADER' });
   run.add('assistant/attempt', { turn: 2, step: 1, stream: ['PRIVATE_STREAM'] });
@@ -501,7 +532,7 @@ test('failed observations also report current terminal message metadata', async 
   assert.equal(result.reason, 'session-log-missing');
 });
 
-test('missing approval/tool payloads and only filtered tails still advance the cursor', async () => {
+test('missing approval/tool payloads and raw system/request tails retain data and advance the cursor', async () => {
   const run = simpleLog({ closed: false });
   run.add('tool/result', {});
   run.add('approval/decided', null);
@@ -511,9 +542,19 @@ test('missing approval/tool payloads and only filtered tails still advance the c
   const f = fixture({ events: run.events });
   const result = await f.read({ afterSeq: start });
   assert.equal(result.availability, 'available');
-  assert.deepEqual(result.events, []);
+  assert.deepEqual(result.events, run.events.slice(start + 1));
   assert.equal(result.nextSeq, run.events.at(-1).seq);
   assert.equal(result.hasMore, false);
+});
+
+test('missing observation cursors and sparse events fail closed', async () => {
+  const missing = fixture();
+  missing.state.cursor = undefined;
+  assert.equal((await missing.read()).reason, 'session-log-corrupt');
+  assert.equal(missing.state.disposed, 1);
+  const sparse = fixture({ events: new Array(1) });
+  assert.equal((await sparse.read()).reason, 'session-log-corrupt');
+  assert.equal(sparse.state.disposed, 1);
 });
 
 test('out-of-order snapshots fail closed instead of silently reordering corrupted logs', async () => {

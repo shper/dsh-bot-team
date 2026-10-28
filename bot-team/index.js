@@ -11,7 +11,7 @@ import { resolveConfig } from './host/util.js';
 // Package is published as dsh-bot-team; the Cordis plugin id stays bot-team,
 // matching the built-in pattern (dsh-tool-bash → name "tool-bash").
 export const name = 'bot-team';
-export const inject = ['agents', 'storageDomain', 'connection', 'tools', 'agentPresets'];
+export const inject = ['agents', 'storageDomain', 'connection', 'tools', 'agentPresets', 'sessionQuery', 'workspaceController'];
 
 export function apply(ctx, rawConfig = {}) {
   const config = resolveConfig(rawConfig && typeof rawConfig === 'object' ? rawConfig : {});
