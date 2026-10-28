@@ -2434,7 +2434,7 @@ window.__ModuleLoader__.load({
         justifyContent: 'center',
       },
       avatarPicker: { flex: 1, minWidth: 0 },
-      botAvatarRow: { display: 'grid', gridTemplateColumns: 'max-content minmax(0, 1fr)', alignItems: 'center', columnGap: 10, rowGap: 8, marginBottom: 12 },
+      botAvatarRow: { display: 'grid', gridTemplateColumns: 'max-content minmax(0, 1fr)', alignItems: 'center', columnGap: 14, rowGap: 8, marginBottom: 12 },
       botAvatarControls: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 },
       botAvatarOptions: { display: 'flex', flexWrap: 'wrap', gap: 6, minWidth: 0 },
       avatarActions: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 8 },
@@ -10179,29 +10179,28 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         h(
           'div',
           { style: S.botAvatarRow, role: 'group', 'aria-label': '头像' },
-          h('span', { style: { ...S.label, marginBottom: 0 } }, '头像'),
+          h(
+            'div',
+            {
+              style: { ...S.avatarPreview, width: 72, height: 72, gridRow: '1 / span 2' },
+              title: avatar.startsWith('data:')
+                ? '已上传自定义图片（自动裁成 256×256 方形）。'
+                : avatar.startsWith('art:')
+                  ? '当前是插画头像；可随机换机器人或重置为按名称生成。'
+                  : avatar.startsWith('preset:')
+                    ? '当前是随机生成的机器人头像；可再次随机或重置为按名称生成。'
+                    : '默认按名称生成机器人头像；点「随机生成」换一个配色/表情。',
+            },
+            h(Avatar, {
+              bot: { avatar, name: name.trim() || 'A', color: (bot && bot.color) || '#2f7ed8' },
+              name: name.trim() || 'A',
+              color: (bot && bot.color) || '#2f7ed8',
+              size: 72,
+            }),
+          ),
           h(
             'div',
             { style: S.botAvatarControls },
-            h(
-              'div',
-              {
-                style: { ...S.avatarPreview, width: 36, height: 36 },
-                title: avatar.startsWith('data:')
-                  ? '已上传自定义图片（自动裁成 256×256 方形）。'
-                  : avatar.startsWith('art:')
-                    ? '当前是插画头像；可随机换机器人或重置为按名称生成。'
-                    : avatar.startsWith('preset:')
-                      ? '当前是随机生成的机器人头像；可再次随机或重置为按名称生成。'
-                      : '默认按名称生成机器人头像；点「随机生成」换一个配色/表情。',
-              },
-              h(Avatar, {
-                bot: { avatar, name: name.trim() || 'A', color: (bot && bot.color) || '#2f7ed8' },
-                name: name.trim() || 'A',
-                color: (bot && bot.color) || '#2f7ed8',
-                size: 36,
-              }),
-            ),
             h('button', { type: 'button', style: S.smallBtn, onClick: randomizeAvatar }, '随机生成'),
             h(
               'button',
@@ -10212,7 +10211,6 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               ? h('button', { type: 'button', style: S.smallBtn, onClick: () => setAvatar('') }, '重置')
               : null,
           ),
-          h('span', { style: { ...S.label, marginBottom: 0 } }, '预置头像'),
           h(
             'div',
             { style: S.botAvatarOptions, role: 'group', 'aria-label': '预置头像' },
