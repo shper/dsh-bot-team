@@ -4082,25 +4082,26 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
 .bt-library-create { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 36px; white-space: nowrap; }
 .bt-library-create svg { width: 16px; height: 16px; }
 .bt-library-list { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
-.bt-library-card { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.55fr) auto; align-items: center; gap: 14px; min-width: 0; padding: 14px 16px; border: 1px solid var(--bt-border-strong); border-radius: 14px; background: var(--bt-surface); box-shadow: 0 2px 4px rgba(0,0,0,.025); transition: border-color .16s ease, box-shadow .16s ease; }
+.bt-library-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 14px; min-width: 0; padding: 14px 16px; border: 1px solid var(--bt-border-strong); border-radius: 14px; background: var(--bt-surface); box-shadow: 0 2px 4px rgba(0,0,0,.025); transition: border-color .16s ease, box-shadow .16s ease; }
 .bt-library-card:hover, .bt-library-card:focus-within { border-color: var(--bt-accent-border); box-shadow: 0 3px 12px rgba(0,0,0,.05); }
 .bt-library-card-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .bt-library-identity { flex: 1; min-width: 0; }
-.bt-library-name { margin: 0; font-size: 14px; font-weight: 650; line-height: 1.4; color: var(--bt-text-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bt-library-provider { max-width: 100%; font-size: 11px; line-height: 1.5; color: var(--bt-text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bt-library-heading { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+.bt-library-name { flex: 0 1 auto; max-width: 40%; margin: 0; font-size: 14px; font-weight: 650; line-height: 1.4; color: var(--bt-text-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bt-library-runtime { flex: 0 1 auto; min-width: 0; font-size: 11px; line-height: 1.5; color: var(--bt-text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bt-library-actions { display: flex; align-items: center; flex: none; gap: 5px; }
 .bt-library-action { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 34px; height: 34px; padding: 0 10px; border: 1px solid var(--bt-border-strong); border-radius: 8px; background: var(--bt-surface); color: var(--bt-text-2); cursor: pointer; font: inherit; font-size: 12px; white-space: nowrap; }
 .bt-library-action svg { width: 16px; height: 16px; flex: none; }
 .bt-library-action:hover:not(:disabled) { background: var(--bt-hover); border-color: var(--bt-accent-border); color: var(--bt-text-strong); }
 .bt-library-delete { padding: 0; border-color: transparent; background: transparent; color: var(--bt-text-3); }
 .bt-library-delete:hover:not(:disabled), .bt-library-delete:focus-visible { color: var(--bt-danger-text); border-color: var(--bt-danger-border); background: var(--bt-danger-bg); }
-.bt-library-details { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); align-items: center; gap: 12px; min-width: 0; margin: 0; }
+.bt-library-details { min-width: 0; margin: 7px 0 0; }
 .bt-library-detail { min-width: 0; }
 .bt-library-detail dt { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-.bt-library-detail dd { margin: 0; min-width: 0; min-height: 26px; display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
-.bt-library-detail .bt-library-runtime { flex-direction: column; align-items: flex-start; gap: 4px; }
-.bt-library-model { display: inline-block; max-width: 100%; box-sizing: border-box; padding: 4px 8px; border-radius: 6px; background: var(--bt-bg-subtle); border: 1px solid var(--bt-border); color: var(--bt-text-2); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bt-library-group { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; box-sizing: border-box; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--bt-accent-border); background: var(--bt-accent-soft); color: var(--bt-accent); font-size: 11px; line-height: 1.5; }
+.bt-library-detail dd { margin: 0; min-width: 0; min-height: 26px; display: flex; align-items: center; gap: 5px; }
+.bt-library-group { display: inline-flex; align-items: center; flex: 0 1 auto; gap: 5px; min-width: 0; max-width: 150px; box-sizing: border-box; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--bt-accent-border); background: var(--bt-accent-soft); color: var(--bt-accent); font-size: 11px; line-height: 1.5; }
+.bt-library-group-more { flex: none; cursor: help; }
+.bt-library-group-more:focus-visible { outline: 2px solid var(--bt-accent); outline-offset: 2px; }
 .bt-library-group svg { width: 13px; height: 13px; flex: none; }
 .bt-library-group span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bt-library-ungrouped { padding: 4px 0; color: var(--bt-text-3); font-size: 11px; line-height: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -4118,18 +4119,13 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
   .bt-bot-library .bt-modal-title { font-size: 17px !important; }
   .bt-bot-library .bt-modal-body { padding: 16px !important; }
   .bt-bot-library .bt-modal-footer { padding: 14px 16px !important; gap: 12px !important; }
-  .bt-library-card { padding: 14px; }
-  .bt-library-card-head { gap: 9px; }
-  .bt-library-actions { gap: 2px; }
+  .bt-library-card { padding: 14px; gap: 10px; }
+  .bt-library-card-head { grid-column: 1 / -1; gap: 9px; }
+  .bt-library-heading { flex-direction: column; align-items: flex-start; gap: 2px; }
+  .bt-library-name, .bt-library-runtime { max-width: 100%; }
+  .bt-library-actions { grid-column: 2; gap: 2px; }
   .bt-library-action { padding: 0 7px; }
   .bt-library-delete { padding: 0; }
-  .bt-library-details { gap: 10px; }
-}
-@media (max-width: 640px) {
-  .bt-library-card { grid-template-columns: minmax(0, 1fr) auto; gap: 12px; }
-  .bt-library-card-head { grid-column: 1; grid-row: 1; }
-  .bt-library-actions { grid-column: 2; grid-row: 1; }
-  .bt-library-details { grid-column: 1 / -1; grid-row: 2; }
 }
 @media (max-width: 380px) {
   .bt-bot-library .bt-modal-icon { display: none; }
@@ -9654,30 +9650,34 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               ),
               h('ul', { className: 'bt-library-list', 'aria-label': '全部 Bot' }, bots.map((bot) => {
                 const inGroups = groupChatsOf(bot.botId);
+                const visibleGroups = inGroups.slice(0, 3);
+                const groupTitles = inGroups.map((group) => group.title).join(isEnglishUi() ? ', ' : '、');
+                const runtimeLabel = `${bot.provider || '—'} / ${bot.model || '—'}`;
                 const deleting = busyId === bot.botId;
                 return h('li', { key: bot.botId, className: 'bt-library-card', 'aria-busy': deleting },
                   h('div', { className: 'bt-library-card-head' },
                     h(Avatar, { bot, size: 44 }),
                     h('div', { className: 'bt-library-identity' },
-                      h('h3', { className: 'bt-library-name', title: bot.name, raw: true }, bot.name),
-                    ),
-                  ),
-                  h('dl', { className: 'bt-library-details' },
-                    h('div', { className: 'bt-library-detail' },
-                      h('dt', null, '模型'),
-                      h('dd', { className: 'bt-library-runtime' },
-                        h('div', { className: 'bt-library-provider', title: bot.provider, raw: true }, bot.provider),
-                        h('code', { className: 'bt-library-model', title: bot.model, raw: true }, bot.model || '—'),
+                      h('div', { className: 'bt-library-heading' },
+                        h('h3', { className: 'bt-library-name', title: bot.name, raw: true }, bot.name),
+                        h('span', { className: 'bt-library-runtime', title: runtimeLabel, raw: true }, runtimeLabel),
                       ),
-                    ),
-                    h('div', { className: 'bt-library-detail' },
-                      h('dt', null, '所属群聊'),
-                      h('dd', null, inGroups.length
-                        ? inGroups.map((group) => h('span', { key: group.groupId, className: 'bt-library-group', title: group.title, rawTitle: true },
-                            h(WelcomeIcon, { name: 'group' }),
-                            h('span', { raw: true }, group.title),
-                          ))
-                        : h('span', { className: 'bt-library-ungrouped' }, '未加入群聊'),
+                      h('dl', { className: 'bt-library-details' },
+                        h('div', { className: 'bt-library-detail' },
+                          h('dt', null, '所属群聊'),
+                          h('dd', null, inGroups.length
+                            ? visibleGroups.map((group) => h('span', { key: group.groupId, className: 'bt-library-group', title: group.title, rawTitle: true },
+                                h(WelcomeIcon, { name: 'group' }),
+                                h('span', { raw: true }, group.title),
+                              ))
+                            : h('span', { className: 'bt-library-ungrouped' }, '未加入群聊'),
+                            inGroups.length > visibleGroups.length ? h('span', {
+                              className: 'bt-library-group bt-library-group-more',
+                              title: groupTitles, raw: true, tabIndex: 0,
+                              'aria-label': `${uiT('所属群聊')}: ${groupTitles}`,
+                            }, '…') : null,
+                          ),
+                        ),
                       ),
                     ),
                   ),
