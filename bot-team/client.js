@@ -1221,6 +1221,16 @@ window.__ModuleLoader__.load({
       "Bot 管理": "Bot management",
       "Bot 管理（全局）": "Bot management (global)",
       "Bot 库": "Bot library",
+      "统一管理 Bot，在单聊与群聊中随时协作。": "Manage your Bots for direct chats and group collaboration.",
+      "全部 Bot": "All Bots",
+      "共 {count} 个 Bot": "{count} Bots in total",
+      "所属群聊": "Groups",
+      "未加入群聊": "No groups yet",
+      "单聊与各群聊的会话和记忆相互独立。": "Each direct chat and group has its own conversation and memory.",
+      "还没有 Bot": "No Bots yet",
+      "创建你的第一个 Bot，开始单聊或邀请它加入群聊。": "Create your first Bot to start a direct chat or invite it to a group.",
+      "创建第一个 Bot": "Create your first Bot",
+      "删除 Bot：{name}": "Delete Bot: {name}",
       "Bot 库里的 Bot 都已在群里。先关闭此窗口，用「新建 Bot」创建一个。": "All Bots in the library are already in this group. Close this window and use “New Bot” to create one.",
       "Bot 是全局可复用的 Agent：每个 Bot 自动拥有一个单聊，也可以加入多个群，每个群内有独立会话与记忆。这里管理全局 Bot 库。": "Bots are globally reusable agents: each Bot automatically gets a direct chat and can join multiple groups, with an independent conversation and memory in each group. Manage the global Bot library here.",
       "Bot Team 设置": "Bot Team settings",
@@ -3798,37 +3808,14 @@ window.__ModuleLoader__.load({
       aboutName: { fontSize: 16, fontWeight: 600, color: 'var(--bt-text-strong)' },
       aboutTagline: { fontSize: 11.5, color: 'var(--bt-text-3)', marginTop: 3 },
       aboutCard: {
-        border: '1px solid var(--bt-border)',
-        borderRadius: 12,
+        border: '1px solid var(--bt-border-strong)',
+        borderRadius: 14,
         background: 'var(--bt-bg-subtle)',
-        padding: '12px 14px',
-        marginBottom: 10,
+        padding: '14px 16px',
+        marginBottom: 12,
       },
       aboutDescription: { fontSize: 12.5, lineHeight: 1.8, color: 'var(--bt-text-2)' },
       aboutFeatures: { display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 },
-      aboutRow: { display: 'flex', alignItems: 'center', gap: 16, padding: '9px 0' },
-      aboutLabel: { fontSize: 11.5, color: 'var(--bt-text-3)', flex: '0 0 64px' },
-      aboutValue: {
-        fontSize: 12.5,
-        color: 'var(--bt-text-strong)',
-        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-        wordBreak: 'break-all',
-        minWidth: 0,
-      },
-      aboutLink: { color: 'var(--bt-accent)', textDecoration: 'underline', textUnderlineOffset: 3 },
-      aboutNotes: {
-        display: 'grid',
-        gap: 6,
-        margin: '2px 0 0',
-        paddingLeft: 18,
-        listStyleType: 'disc',
-        fontSize: 11,
-        color: 'var(--bt-text-3)',
-        lineHeight: 1.7,
-        overflowWrap: 'anywhere',
-      },
-      aboutNoteLabel: { color: 'var(--bt-text-2)', fontWeight: 500, marginRight: 8 },
-      aboutPath: { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 'inherit' },
     });
 
     const WELCOME_CSS = `
@@ -4079,6 +4066,75 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
 .bt-modal-close:hover { background: var(--bt-hover) !important; color: var(--bt-text-2) !important; }
 .bt-persona-textarea::placeholder { color: var(--bt-text-3); }
 
+/* The global Bot library keeps identity, model and memberships easy to scan. */
+.bt-bot-library { box-sizing: border-box; }
+.bt-bot-library .bt-modal-header { align-items: center !important; padding: 24px !important; gap: 14px !important; }
+.bt-bot-library .bt-modal-icon { display: grid; place-items: center; flex: 0 0 46px; width: 46px; height: 46px; border: 1px solid var(--bt-accent-border); border-radius: 14px; color: var(--bt-accent); background: var(--bt-accent-soft); }
+.bt-bot-library .bt-modal-icon svg { width: 25px; height: 25px; }
+.bt-bot-library .bt-modal-title { font-size: 20px !important; letter-spacing: -.025em !important; }
+.bt-bot-library .bt-modal-subtitle { color: var(--bt-text-2) !important; font-size: 12px !important; margin-top: 6px !important; }
+.bt-bot-library .bt-modal-body { padding: 20px 24px 24px !important; background: var(--bt-bg-soft); }
+.bt-bot-library .bt-modal-footer { padding: 16px 24px !important; background: var(--bt-surface) !important; gap: 18px !important; }
+.bt-library-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 14px; }
+.bt-library-count { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--bt-text-2); font-size: 12px; font-weight: 600; }
+.bt-library-count span { display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 5px; box-sizing: border-box; border: 1px solid var(--bt-border-strong); border-radius: 7px; background: var(--bt-surface); color: var(--bt-text); font-size: 11px; font-variant-numeric: tabular-nums; }
+.bt-library-create { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 36px; white-space: nowrap; }
+.bt-library-create svg { width: 16px; height: 16px; }
+.bt-library-list { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
+.bt-library-card { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.55fr) auto; align-items: center; gap: 14px; min-width: 0; padding: 14px 16px; border: 1px solid var(--bt-border-strong); border-radius: 14px; background: var(--bt-surface); box-shadow: 0 2px 4px rgba(0,0,0,.025); transition: border-color .16s ease, box-shadow .16s ease; }
+.bt-library-card:hover, .bt-library-card:focus-within { border-color: var(--bt-accent-border); box-shadow: 0 3px 12px rgba(0,0,0,.05); }
+.bt-library-card-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.bt-library-identity { flex: 1; min-width: 0; }
+.bt-library-name { margin: 0; font-size: 14px; font-weight: 650; line-height: 1.4; color: var(--bt-text-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bt-library-provider { margin-top: 3px; font-size: 11px; line-height: 1.5; color: var(--bt-text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bt-library-actions { display: flex; align-items: center; flex: none; gap: 5px; }
+.bt-library-action { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 34px; height: 34px; padding: 0 10px; border: 1px solid var(--bt-border-strong); border-radius: 8px; background: var(--bt-surface); color: var(--bt-text-2); cursor: pointer; font: inherit; font-size: 12px; white-space: nowrap; }
+.bt-library-action svg { width: 16px; height: 16px; flex: none; }
+.bt-library-action:hover:not(:disabled) { background: var(--bt-hover); border-color: var(--bt-accent-border); color: var(--bt-text-strong); }
+.bt-library-delete { padding: 0; border-color: transparent; background: transparent; color: var(--bt-text-3); }
+.bt-library-delete:hover:not(:disabled), .bt-library-delete:focus-visible { color: var(--bt-danger-text); border-color: var(--bt-danger-border); background: var(--bt-danger-bg); }
+.bt-library-details { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); align-items: center; gap: 12px; min-width: 0; margin: 0; }
+.bt-library-detail { min-width: 0; }
+.bt-library-detail dt { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.bt-library-detail dd { margin: 0; min-width: 0; min-height: 26px; display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
+.bt-library-model { display: inline-block; max-width: 100%; box-sizing: border-box; padding: 4px 8px; border-radius: 6px; background: var(--bt-bg-subtle); border: 1px solid var(--bt-border); color: var(--bt-text-2); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bt-library-group { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; box-sizing: border-box; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--bt-accent-border); background: var(--bt-accent-soft); color: var(--bt-accent); font-size: 11px; line-height: 1.5; }
+.bt-library-group svg { width: 13px; height: 13px; flex: none; }
+.bt-library-group span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bt-library-ungrouped { padding: 4px 0; color: var(--bt-text-3); font-size: 11px; line-height: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bt-library-note { display: flex; align-items: center; gap: 7px; flex: 1; color: var(--bt-text-3); font-size: 11px; line-height: 1.6; }
+.bt-library-note svg { width: 15px; height: 15px; flex: none; }
+.bt-library-close { flex: none; min-height: 34px; }
+.bt-library-empty { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 36px 22px; border: 1px dashed var(--bt-border-strong); border-radius: 14px; background: var(--bt-surface); }
+.bt-library-empty-icon { display: grid; place-items: center; width: 64px; height: 64px; margin-bottom: 18px; border-radius: 20px; background: var(--bt-accent-soft); color: var(--bt-accent); }
+.bt-library-empty-icon svg { width: 32px; height: 32px; }
+.bt-library-empty h3 { margin: 0; color: var(--bt-text-strong); font-size: 16px; font-weight: 600; }
+.bt-library-empty p { max-width: 300px; margin: 8px 0 22px; color: var(--bt-text-2); font-size: 12px; line-height: 1.7; }
+@media (max-width: 560px) {
+  .bt-bot-library .bt-modal-header { padding: 18px 16px !important; gap: 10px !important; }
+  .bt-bot-library .bt-modal-icon { flex-basis: 38px; width: 38px; height: 38px; border-radius: 11px; }
+  .bt-bot-library .bt-modal-title { font-size: 17px !important; }
+  .bt-bot-library .bt-modal-body { padding: 16px !important; }
+  .bt-bot-library .bt-modal-footer { padding: 14px 16px !important; gap: 12px !important; }
+  .bt-library-card { padding: 14px; }
+  .bt-library-card-head { gap: 9px; }
+  .bt-library-actions { gap: 2px; }
+  .bt-library-action { padding: 0 7px; }
+  .bt-library-delete { padding: 0; }
+  .bt-library-details { gap: 10px; }
+}
+@media (max-width: 640px) {
+  .bt-library-card { grid-template-columns: minmax(0, 1fr) auto; gap: 12px; }
+  .bt-library-card-head { grid-column: 1; grid-row: 1; }
+  .bt-library-actions { grid-column: 2; grid-row: 1; }
+  .bt-library-details { grid-column: 1 / -1; grid-row: 2; }
+}
+@media (max-width: 380px) {
+  .bt-bot-library .bt-modal-icon { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { .bt-bot-library { animation: none; } .bt-library-card { transition: none; } }
+
+
 /* Quiet, evenly sized sidebar actions; SVGs never participate in text baselines. */
 .bt-root .bt-sidebar-action:hover { background: var(--bt-hover) !important; color: var(--bt-text-strong) !important; filter: none; }
 .bt-root .bt-sidebar-action:active { background: var(--bt-accent-soft) !important; color: var(--bt-accent) !important; filter: none; }
@@ -4111,21 +4167,42 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
 .bt-root .bt-direct-caption { white-space: nowrap; }
 .bt-root .bt-sidebar-menu .bt-msg-menu-item { height: 30px; }
 
+/* About uses the same compact cards and value badges as the Bot library. */
+.bt-about-information { display: grid; gap: 12px; }
+.bt-about-info-card { min-width: 0; margin: 0; padding: 8px 16px; border: 1px solid var(--bt-border-strong); border-radius: 14px; background: var(--bt-surface); box-shadow: 0 2px 4px rgba(0,0,0,.025); }
+.bt-about-info-row { display: grid; grid-template-columns: 96px minmax(0, 1fr); align-items: center; gap: 14px; min-width: 0; padding: 5px 0; }
+.bt-about-info-label { margin: 0; color: var(--bt-text-3); font-size: 11.5px; line-height: 1.6; }
+.bt-about-info-value { display: flex; align-items: center; min-width: 0; min-height: 24px; margin: 0; color: var(--bt-text-2); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.bt-about-value-chip { display: inline-block; max-width: 100%; box-sizing: border-box; padding: 3px 8px; border: 1px solid var(--bt-border); border-radius: 6px; background: var(--bt-bg-subtle); color: var(--bt-text-2); font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+.bt-about-version { background: var(--bt-accent-soft); border-color: var(--bt-accent-border); color: var(--bt-accent); font-weight: 600; }
+.bt-about-link { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; color: var(--bt-accent); text-decoration: none; border-radius: 4px; }
+.bt-about-link span { min-width: 0; overflow-wrap: anywhere; }
+.bt-about-link svg { flex: none; width: 14px; height: 14px; margin: 3px; transform: rotate(-45deg); }
+.bt-about-link:hover { text-decoration: underline; text-underline-offset: 3px; }
+.bt-about-link:focus-visible { outline: 2px solid var(--bt-accent); outline-offset: 4px; }
+@media (max-width: 560px) {
+  .bt-about-info-card { padding: 8px 12px; }
+  .bt-about-info-row { grid-template-columns: 80px minmax(0, 1fr); gap: 10px; }
+}
+@media (max-width: 380px) {
+  .bt-about-info-row { grid-template-columns: minmax(0, 1fr); gap: 5px; padding: 8px 0; }
+}
+
 /* v0.7 settings dialog: quiet module nav, responsive one-column fallback. */
 .bt-root .bt-settings-nav-item:hover { background: var(--bt-hover) !important; color: var(--bt-text-strong) !important; filter: none; }
 .bt-root .bt-settings-nav-item:focus-visible { outline: 2px solid var(--bt-accent); outline-offset: 1px; }
 @media (max-width: 700px) {
-  .bt-root .bt-settings-shell { flex-direction: column; gap: 14px; min-height: 0; }
+  .bt-root .bt-settings-shell { flex-direction: column; gap: 14px !important; min-height: 0 !important; }
   .bt-root .bt-settings-nav {
-    width: auto;
-    flex: 0 0 auto;
-    flex-direction: row;
+    width: auto !important;
+    flex: 0 0 auto !important;
+    flex-direction: row !important;
     overflow-x: auto;
-    padding: 0 0 10px;
-    border-right: 0;
+    padding: 0 0 10px !important;
+    border-right: 0 !important;
     border-bottom: 1px solid var(--bt-border);
   }
-  .bt-root .bt-settings-nav-item { width: auto; flex: 0 0 auto; }
+  .bt-root .bt-settings-nav-item { width: auto !important; flex: 0 0 auto; }
 }
 
 /* v0.6 group feed */
@@ -5166,7 +5243,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       };
     }
 
-    function Modal({ title, subtitle, width, onClose, children, footer }) {
+    function Modal({ title, subtitle, width, className, icon, onClose, children, footer }) {
       const dialogRef = React.useRef(null);
       React.useEffect(() => containModalFocus(dialogRef.current), []);
       React.useEffect(() => {
@@ -5182,7 +5259,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         h(
           'div',
           {
-            className: 'bt-modal',
+            className: 'bt-modal' + (className ? ' ' + className : ''),
             ref: dialogRef,
             tabIndex: -1,
             style: width ? { ...S.modal, width } : S.modal,
@@ -5192,12 +5269,13 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           },
           h(
             'div',
-            { style: S.modalHeader },
+            { className: 'bt-modal-header', style: S.modalHeader },
+            icon ? h('div', { className: 'bt-modal-icon', 'aria-hidden': true }, icon) : null,
             h(
               'div',
-              { style: S.modalHeading },
-              h('div', { style: S.modalTitle }, title),
-              subtitle ? h('div', { style: S.modalSubtitle }, subtitle) : null,
+              { className: 'bt-modal-heading', style: S.modalHeading },
+              h('div', { className: 'bt-modal-title', style: S.modalTitle }, title),
+              subtitle ? h('div', { className: 'bt-modal-subtitle', style: S.modalSubtitle }, subtitle) : null,
             ),
             h(
               'button',
@@ -5205,8 +5283,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
               '×',
             ),
           ),
-          h('div', { style: S.modalBody }, children),
-          footer ? h('div', { style: S.modalFooter }, footer) : null,
+          h('div', { className: 'bt-modal-body', style: S.modalBody }, children),
+          footer ? h('div', { className: 'bt-modal-footer', style: S.modalFooter }, footer) : null,
         ),
       );
     }
@@ -5517,8 +5595,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       const packageName = typeof info.packageName === 'string' && info.packageName ? info.packageName : 'dsh-bot-team';
       const author = typeof info.author === 'string' && info.author ? info.author : 'shper';
       const metaRows = [
-        { label: '版本', value: version },
-        { label: '包名', value: packageName },
+        { label: '版本', value: version, kind: 'version' },
+        { label: '包名', value: packageName, kind: 'code' },
         { label: '开发者', value: author },
         { label: 'GitHub', value: ABOUT_GITHUB_URL, href: ABOUT_GITHUB_URL },
       ];
@@ -5554,38 +5632,33 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           h('div', { style: S.aboutDescription }, ABOUT_DESCRIPTION),
           h('div', { style: S.aboutFeatures }, ABOUT_FEATURES.map(label => h('span', { key: label, style: S.toolChip }, label))),
         ),
-        h(
-          'div',
-          { style: S.aboutCard },
-          metaRows.map((row, index) => h(
-            'div',
-            {
-              key: row.label,
-              style: {
-                ...S.aboutRow,
-                borderBottom: index < metaRows.length - 1 ? '1px solid var(--bt-border)' : 'none',
-              },
-            },
-            h('span', { style: S.aboutLabel }, row.label),
-            row.href
-              ? h('a', {
-                  href: row.href,
-                  target: '_blank',
-                  rel: 'noopener noreferrer',
-                  title: '在新标签页打开 GitHub 仓库',
-                  style: { ...S.aboutValue, ...S.aboutLink },
-                }, row.value)
-              : h('span', { style: S.aboutValue, title: row.value }, row.value),
+        h('div', { className: 'bt-about-information' },
+          h('dl', { className: 'bt-about-info-card' }, metaRows.map(row =>
+            h('div', { key: row.label, className: 'bt-about-info-row' },
+              h('dt', { className: 'bt-about-info-label' }, row.label),
+              h('dd', { className: 'bt-about-info-value' }, row.href
+                ? h('a', {
+                    className: 'bt-about-link',
+                    href: row.href,
+                    target: '_blank',
+                    rel: 'noopener noreferrer',
+                    title: '在新标签页打开 GitHub 仓库',
+                  }, h('span', { raw: true }, row.value), h(WelcomeIcon, { name: 'arrow' }))
+                : h(row.kind ? 'code' : 'span', {
+                    className: row.kind ? 'bt-about-value-chip' + (row.kind === 'version' ? ' bt-about-version' : '') : undefined,
+                    title: row.value, rawTitle: true, raw: true,
+                  }, row.value),
+              ),
+            ),
           )),
-        ),
-        h(
-          'ul',
-          { style: S.aboutNotes },
-          ABOUT_DATA_NOTES.map(note => h(
-            'li',
-            { key: note.label },
-            h('span', { style: S.aboutNoteLabel }, note.label),
-            note.path ? h('code', { style: S.aboutPath }, note.path) : h('span', null, note.text),
+          h('dl', { className: 'bt-about-info-card' }, ABOUT_DATA_NOTES.map(note =>
+            h('div', { key: note.label, className: 'bt-about-info-row' },
+              h('dt', { className: 'bt-about-info-label' }, note.label),
+              h('dd', { className: 'bt-about-info-value' }, note.path
+                ? h('code', { className: 'bt-about-value-chip', title: note.path, rawTitle: true, raw: true }, note.path)
+                : h('span', null, note.text),
+              ),
+            ),
           )),
         ),
       );
@@ -7437,6 +7510,10 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         execution: [
           h('path', { key: 'p', d: 'M5 4v12M9 5h6M9 10h6M9 15h6' }),
           h('circle', { key: 'c', cx: 5, cy: 10, r: 2 }),
+        ],
+        delete: [
+          h('path', { key: 'p1', d: 'M4 6h12M8 6V4h4v2M5.5 6l.8 10h7.4l.8-10' }),
+          h('path', { key: 'p2', d: 'M8.5 9v4M11.5 9v4' }),
         ],
         retry: [
           h('path', { key: 'p1', d: 'M15.5 8.5A5.5 5.5 0 1 0 15 10.5' }),
@@ -9537,54 +9614,85 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           setBusyId('');
         }
       };
+      const createButton = h('button', {
+        type: 'button', className: 'bt-library-create', style: S.primaryBtn, onClick: onCreate,
+      }, h(WelcomeIcon, { name: 'plus' }), bots.length ? '新建 Bot' : '创建第一个 Bot');
       return h(
         Modal,
         {
           title: 'Bot 管理（全局）',
+          subtitle: '统一管理 Bot，在单聊与群聊中随时协作。',
+          className: 'bt-bot-library',
+          icon: h(WelcomeIcon, { name: 'bot' }),
+          width: 720,
           onClose,
           footer: [
-            h('button', { key: 'new', style: S.primaryBtn, onClick: onCreate }, '+ 新建 Bot'),
-            h('button', { key: 'close', style: S.ghostBtn, onClick: onClose }, '关闭'),
+            h('div', { key: 'note', className: 'bt-library-note' },
+              h(WelcomeIcon, { name: 'info' }),
+              h('span', null, '单聊与各群聊的会话和记忆相互独立。'),
+            ),
+            h('button', { key: 'close', className: 'bt-library-close', style: S.ghostBtn, onClick: onClose }, '关闭'),
           ],
         },
-        error ? h('div', { style: { ...S.errorBanner, borderRadius: 8, marginBottom: 10 } }, error) : null,
-        h(
-          'div',
-          { style: { fontSize: 11, color: 'var(--bt-text-3)', marginBottom: 8, lineHeight: 1.6 } },
-          'Bot 是全局可复用的 Agent：每个 Bot 自动拥有一个单聊，也可以加入多个群，每个群内有独立会话与记忆。这里管理全局 Bot 库。',
-        ),
+        error ? h('div', { role: 'alert', style: { ...S.errorBanner, borderRadius: 10, marginBottom: 14 } }, error) : null,
         bots.length === 0
-          ? h('div', { style: { fontSize: 12, color: 'var(--bt-text-3)' } }, '还没有 Bot，点「+ 新建 Bot」创建一个。')
-          : bots.map((bot) => {
-              const inGroups = groupChatsOf(bot.botId);
-              return h(
-                'div',
-                { key: bot.botId, style: { borderTop: '1px solid var(--bt-border)', padding: '8px 0' } },
-                h(
-                  'div',
-                  { style: { display: 'flex', alignItems: 'center', gap: 6 } },
-                  h(Avatar, { bot, size: 24 }),
-                  h('span', { style: { fontSize: 13, fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, bot.name),
+          ? h('div', { className: 'bt-library-empty' },
+              h('div', { className: 'bt-library-empty-icon' }, h(WelcomeIcon, { name: 'bot' })),
+              h('h3', null, '还没有 Bot'),
+              h('p', null, '创建你的第一个 Bot，开始单聊或邀请它加入群聊。'),
+              createButton,
+            )
+          : h(React.Fragment, null,
+              h('div', { className: 'bt-library-toolbar' },
+                h('h3', { className: 'bt-library-count' },
+                  '全部 Bot',
+                  h('span', { 'aria-label': uiT('共 {count} 个 Bot', { count: bots.length }) }, bots.length),
                 ),
-                h(
-                  'div',
-                  { style: { fontSize: 11, color: 'var(--bt-text-3)', marginTop: 2 } },
-                  bot.provider + '/' + bot.model + (inGroups.length
-                    ? uiT(' · 群：') + inGroups.map((group) => group.title).join(isEnglishUi() ? ', ' : '、')
-                    : uiT(' · 未加入任何群聊')),
-                ),
-                h(
-                  'div',
-                  { style: S.memberActions },
-                  h('button', { style: S.smallBtn, onClick: () => onEdit(bot) }, '编辑'),
-                  h(
-                    'button',
-                    { style: { ...S.smallBtn, color: 'var(--bt-danger-text)' }, disabled: busyId === bot.botId, onClick: () => void remove(bot) },
-                    busyId === bot.botId ? '删除中…' : '删除',
+                createButton,
+              ),
+              h('ul', { className: 'bt-library-list', 'aria-label': '全部 Bot' }, bots.map((bot) => {
+                const inGroups = groupChatsOf(bot.botId);
+                const deleting = busyId === bot.botId;
+                return h('li', { key: bot.botId, className: 'bt-library-card', 'aria-busy': deleting },
+                  h('div', { className: 'bt-library-card-head' },
+                    h(Avatar, { bot, size: 44 }),
+                    h('div', { className: 'bt-library-identity' },
+                      h('h3', { className: 'bt-library-name', title: bot.name, raw: true }, bot.name),
+                      h('div', { className: 'bt-library-provider', title: bot.provider, raw: true }, bot.provider),
+                    ),
                   ),
-                ),
-              );
-            }),
+                  h('dl', { className: 'bt-library-details' },
+                    h('div', { className: 'bt-library-detail' },
+                      h('dt', null, '模型'),
+                      h('dd', null, h('code', { className: 'bt-library-model', title: bot.model, raw: true }, bot.model || '—')),
+                    ),
+                    h('div', { className: 'bt-library-detail' },
+                      h('dt', null, '所属群聊'),
+                      h('dd', null, inGroups.length
+                        ? inGroups.map((group) => h('span', { key: group.groupId, className: 'bt-library-group', title: group.title, rawTitle: true },
+                            h(WelcomeIcon, { name: 'group' }),
+                            h('span', { raw: true }, group.title),
+                          ))
+                        : h('span', { className: 'bt-library-ungrouped' }, '未加入群聊'),
+                      ),
+                    ),
+                  ),
+                  h('div', { className: 'bt-library-actions' },
+                    h('button', {
+                      type: 'button', className: 'bt-library-action',
+                      'aria-label': uiT('编辑 Bot：{name}', { name: bot.name }),
+                      onClick: () => onEdit(bot),
+                    }, h(MessageActionIcon, { name: 'edit' }), '编辑'),
+                    h('button', {
+                      type: 'button', className: 'bt-library-action bt-library-delete',
+                      title: deleting ? uiT('删除中…') : uiT('删除 Bot：{name}', { name: bot.name }),
+                      'aria-label': deleting ? uiT('删除中…') : uiT('删除 Bot：{name}', { name: bot.name }),
+                      disabled: deleting, onClick: () => void remove(bot),
+                    }, deleting ? '…' : h(MessageActionIcon, { name: 'delete' })),
+                  ),
+                );
+              })),
+            ),
       );
     }
     function BotLibraryDialog(props) {
