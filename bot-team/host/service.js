@@ -1995,6 +1995,7 @@ export class BotTeamService {
     const provider = requireText(input.provider, 'provider', 80);
     const model = requireText(input.model, 'model', 160);
     const avatar = normalizeAvatar(input.avatar);
+    const signature = optionalText(input.signature, 120);
     const reasoningEffort = optionalText(input.reasoningEffort, 80);
     const maxTokensRaw = Number(input.maxTokens);
     const bot = {
@@ -2006,6 +2007,7 @@ export class BotTeamService {
       // Retained in the record schema for compatibility; every bot is full-capability.
       capability: 'work',
       ...(avatar ? { avatar } : {}),
+      ...(signature ? { signature } : {}),
       ...(reasoningEffort ? { reasoningEffort } : {}),
       ...(Number.isInteger(maxTokensRaw) && maxTokensRaw > 0 ? { maxTokens: Math.min(maxTokensRaw, 200000) } : {}),
       createdAt: now(),
@@ -2037,6 +2039,11 @@ export class BotTeamService {
       const avatar = normalizeAvatar(input.avatar);
       if (avatar) bot.avatar = avatar;
       else delete bot.avatar;
+    }
+    if (input.signature !== undefined) {
+      const signature = optionalText(input.signature, 120);
+      if (signature) bot.signature = signature;
+      else delete bot.signature;
     }
     if (input.reasoningEffort !== undefined) {
       const effort = optionalText(input.reasoningEffort, 80);

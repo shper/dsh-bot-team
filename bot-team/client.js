@@ -1401,6 +1401,9 @@ window.__ModuleLoader__.load({
       "先在右侧成员面板添加 Bot，再 @ 它们": "Add Bots in the members panel on the right, then @ mention them",
       "先在右侧成员面板添加一个 Bot，再用 @ 提及它开始对话。": "Add a Bot in the members panel on the right, then @ mention it to start a conversation.",
       "显示名": "Display name",
+      "签名 / Title": "Signature / Title",
+      "选填，显示在聊天消息的名字后面，最多 120 字。": "Optional; shown after the name in chat messages. Up to 120 characters.",
+      "例如：领航员 / Navigator 🧭": "e.g. Navigator 🧭",
       "消息": "Message",
       "消息操作": "Message actions",
       "消息设置": "Message settings",
@@ -3434,6 +3437,7 @@ window.__ModuleLoader__.load({
         color: 'var(--bt-text-3)',
       },
       msgAuthor: { fontWeight: 600, color: 'var(--bt-text-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+      msgSignature: { color: 'var(--bt-text-3)', fontWeight: 400, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
       msgBubbleLine: (mine) => ({
         position: 'relative',
         display: 'flex',
@@ -8663,6 +8667,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       const botId = message.author && message.author.botId;
       const color = mine ? '#3370ff' : colorOfBot(bots, botId);
       const authorBot = botId ? (bots || []).find((candidate) => candidate.botId === botId) : null;
+      const signature = typeof authorBot?.signature === 'string' ? authorBot.signature.trim() : '';
       const messageAuthorName = message.author && message.author.name;
       const name = mine
         ? (profile && profile.name) || uiT('我')
@@ -8739,7 +8744,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
                 'div',
                 { style: S.msgHead },
                 h('span', { style: { width: 6, height: 6, borderRadius: '50%', background: color, flex: '0 0 auto' } }),
-                h('span', { style: S.msgAuthor, raw: true }, name),
+                h('span', { style: signature ? { ...S.msgAuthor, flexShrink: 0, maxWidth: '50%' } : S.msgAuthor, raw: true }, name),
+                signature ? h('span', { className: 'bt-msg-signature', style: S.msgSignature, title: signature, raw: true }, signature) : null,
                 streaming ? h('span', { style: S.typingLabel }, '正在输入') : null,
               )
             : null,
@@ -10900,6 +10906,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       const defaultGroup = groups.find((group) => group.id === defaultProvider) || groups[0];
       const defaultModel = bot ? bot.model : defaultGroup && defaultGroup.models[0] && defaultGroup.models[0].id;
       const [name, setName] = React.useState(bot ? bot.name : '');
+      const [signature, setSignature] = React.useState(bot ? bot.signature || '' : '');
       const [avatar, setAvatar] = React.useState(bot ? bot.avatar || '' : '');
       const avatarFileRef = React.useRef(null);
       const [provider, setProvider] = React.useState(defaultProvider || '');
@@ -11030,7 +11037,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         setBusy(true);
         setError('');
         try {
-          const payload = { name: name.trim(), avatar, provider, model, reasoningEffort };
+          const payload = { name: name.trim(), signature: signature.trim(), avatar, provider, model, reasoningEffort };
           let botId = editing ? bot.botId : '';
           if (editing) {
             await api.action('bot.update', { botId: bot.botId, ...payload });
@@ -11101,6 +11108,23 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             onChange: (event) => setName(event.target.value),
             placeholder: '例如：架构师 Alice',
             autoFocus: !editing,
+          }),
+        ),
+        h(
+          Field,
+          {
+            label: '签名 / Title',
+            horizontal: true,
+            hint: '选填，显示在聊天消息的名字后面，最多 120 字。',
+            style: { marginBottom: 16, gridTemplateColumns: 'max-content minmax(0, 1fr)', columnGap: 8 },
+          },
+          h('input', {
+            style: S.input,
+            value: signature,
+            maxLength: 120,
+            'aria-label': '签名 / Title',
+            onChange: (event) => setSignature(event.target.value),
+            placeholder: '例如：领航员 / Navigator 🧭',
           }),
         ),
         h('input', {
