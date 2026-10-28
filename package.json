@@ -18,7 +18,8 @@
     "locale/*.json",
     "icon.svg",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "dsh": {
     "bundle": {
@@ -53,8 +54,7 @@
   "homepage": "https://github.com/shper/dsh-bot-team#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/shper/dsh-bot-team.git",
-    "directory": "bot-team"
+    "url": "git+https://github.com/shper/dsh-bot-team.git"
   },
   "bugs": {
     "url": "https://github.com/shper/dsh-bot-team/issues"

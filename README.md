@@ -2,9 +2,9 @@
 
 > 把 DeepSeek Harness 变成一间「Bot 公司」：每个 Bot 都是真实的 Agent，有独立会话、模型、人格和全套工具。你可以像用 IM 一样单聊、拉群、`@` 派活、评审、讨论、建任务。
 
-`版本 1.2.1` · `MIT` · `DSH 0.2.1-rc.x` · `npm dsh-bot-team`
+`版本 1.2.2` · `MIT` · `DSH 0.2.1-rc.x` · `npm dsh-bot-team`
 
-![Bot Team 首次使用欢迎页：创建 Bot、创建群聊与快速上手（深色）](<docs/design/implemented-home-dark.png>)
+![Bot Team 首次使用欢迎页：创建 Bot、创建群聊与快速上手（深色）](<https://raw.githubusercontent.com/shper/dsh-bot-team/main/docs/assets/home-dark.png>)
 
 *当前客户端的真实 React 浏览器截图，使用隔离的模拟 API 数据。*
 
@@ -44,18 +44,18 @@ Bot Team 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
 
 ### 协作
 
-以下讨论与辩论扩展是**尚未发布的工作区改动**。加载本地目录中的新代码，需要在插件管理中 **disable → enable** 重新加载 Host，再刷新现有页面。完整流程与接口见[讨论与辩论](<docs/讨论与辩论.md>)。
+以下讨论与辩论扩展是**尚未发布的工作区改动**。加载本地目录中的新代码，需要在插件管理中 **disable → enable** 重新加载 Host，再刷新现有页面。完整流程与接口见[讨论与辩论](<https://github.com/shper/dsh-bot-team/blob/main/docs/%E8%AE%A8%E8%AE%BA%E4%B8%8E%E8%BE%A9%E8%AE%BA.md>)。
 
 - **评审**：让另一个 Bot 评审一条消息，返回「通过 / 需修改」结论徽标，可一键「让作者修改」；
 - **多成员讨论**：结构化讨论至少 2 人，界面提供快速 2 轮、标准 3 轮、深入 5 轮及自定义 2–20 轮，按观点、质询、收敛推进，穿插小结并可选最终总结；经典讨论支持 1–20 轮，旧工具调用默认 2 轮；
 - **1v1 辩论**：正反方各 1 人，可另选独立裁判；双方开篇、交替先手的交叉问答、总结陈词，再由裁判裁决。无裁判不生成胜负；
 - **过程控制**：查看阶段与发言者，暂停、继续、重试失败步骤、提前收束、停止，或补充材料与同群历史消息引用；
 - **任务管理（模型工具/API）**：创建任务并设置描述、验收标准、指派与评审者；派发 → 交付 → 评审 → 验收；支持优先级、DAG 依赖、环检测、验收后自动解锁、批量派发、队列与中断。群聊右侧的任务面板和「新建任务」入口已移除，任务能力仍可通过模型工具与 HTTP action 使用；
-- **审批**：Bot 需要越界或升权时，群时间线出现审批卡片，点「去审批」到该 Bot 的会话里允许一次 / 拒绝，结果同步回群。
+- **审批**：Bot 需要越界或升权时，聊天区域显示待处理审批卡片，可直接在 Bot Team 中允许一次或拒绝。
 
 ### 模型工具
 
-当前工作区在任意普通会话里提供 10 个群聊工具（Bot 成员自身被 deny 以防递归）：
+当前工作区在普通会话里提供 10 个群聊工具；Bot 成员禁用写入编排工具以防递归，仍可读取群与任务列表：
 
 ```
 bot_team_list          bot_team_create_group        bot_team_send         bot_team_review
@@ -70,29 +70,31 @@ bot_team_task_create   bot_team_task_list           bot_team_task_update
 ### 桌面版
 
 1. 左侧栏 **插件 / Plugins** → **添加插件**；
-2. 填 `dsh-bot-team@1.2.1`（也可以填本地目录绝对路径或 Git 地址）；
+2. 填 `dsh-bot-team@1.2.2`（也可以填本地目录绝对路径或 Git 地址）；
 3. 安装完成后启用；如果之前启用过，对该 bundle **disable → enable**（或完整重启 DSH）；
 4. 刷新页面，左侧栏出现 **Bot Team** 图标。
 
 ### CLI
 
 ```sh
-dsh plugin --profile <profile> add dsh-bot-team@1.2.1
+dsh plugin --profile <profile> add dsh-bot-team@1.2.2
 ```
 
 安装后同样要重新加载 Host 模块（disable→enable 或重启）。
 
-> `1.2.1` 是当前源码版本；npm 上的公开发行版需按 [发布指南](docs/发布指南.md) 执行 `npm publish`。在发布前安装本机源码，请用本地目录路径。
+> `1.2.2` 是当前源码版本；npm 上的公开发行版需按 [发布指南](https://github.com/shper/dsh-bot-team/blob/main/docs/%E5%8F%91%E5%B8%83%E6%8C%87%E5%8D%97.md) 执行 `npm publish`。在发布前安装本机源码，请用本地目录路径。
 
 ### 从源码
 
 ```sh
 git clone https://github.com/shper/dsh-bot-team.git
+cd dsh-bot-team
+npm install
 ```
 
-在插件页把 `/path/to/dsh-bot-team/bot-team` 作为本地目录添加；或让 Agent 执行 `plugin_manager` 的 `install_bundle`，`target` 填这个绝对路径。改完代码需要 disable→enable 或重启，才会加载新的 Host 模块。
+在插件页把 `/path/to/dsh-bot-team` 作为本地目录添加；或让 Agent 执行 `plugin_manager` 的 `install_bundle`，`target` 填这个绝对路径。改完代码需要 disable→enable 或重启，才会加载新的 Host 模块。
 
-> v1.1 起新增 `fontkit` 运行时依赖（PDF 字体子集）；从源码 link 安装时先在 `bot-team/` 执行 `npm install`。
+> 仓库根目录就是插件目录。从源码安装时先运行 `npm install`，安装 PDF 字体子集化所需的 `fontkit` 依赖。
 
 ### 兼容性
 
@@ -113,7 +115,7 @@ git clone https://github.com/shper/dsh-bot-team.git
 <details>
 <summary>浅色欢迎页（当前实现）</summary>
 
-![Bot Team 首次使用欢迎页（浅色）](<docs/design/implemented-home-light.png>)
+![Bot Team 首次使用欢迎页（浅色）](<https://raw.githubusercontent.com/shper/dsh-bot-team/main/docs/assets/home-light.png>)
 
 同样来自当前客户端的真实 React 浏览器渲染，API 使用隔离的模拟数据。
 
@@ -131,7 +133,7 @@ git clone https://github.com/shper/dsh-bot-team.git
 | 页面 | 单文件 `client.js` 通过 `window.__ModuleLoader__.load` 注册到 `main` 与 `sidebar.panellist` 槽位 |
 | 通道 | `/api/bot-team.*`（bootstrap / messages / events(SSE) / action / file / health），全部在登录态栅栏内 |
 
-> 升级 DSH 后按 [升级检查清单](docs/升级检查清单.md) 逐项验证。
+> 升级 DSH 后按 [升级检查清单](https://github.com/shper/dsh-bot-team/blob/main/docs/%E5%8D%87%E7%BA%A7%E6%A3%80%E6%9F%A5%E6%B8%85%E5%8D%95.md) 逐项验证。
 
 ## 配置
 
@@ -150,7 +152,7 @@ git clone https://github.com/shper/dsh-bot-team.git
 
 Bot 回复不再按小时限制轮数，旧配置中的小时轮数上限会被忽略。每群每日 token 预算仍由 `dailyTokenBudget` 控制，按 Host 本地时间零点重置；并行上限、单 Bot 串行及讨论轮数等调度规则保持不变。
 
-完整字段、HTTP action 与工具参数见 [bot-team/README.md](bot-team/README.md)。
+完整字段、HTTP action 与工具参数见 [插件配置与接口](https://github.com/shper/dsh-bot-team/blob/main/docs/%E9%85%8D%E7%BD%AE%E4%B8%8E%E6%8E%A5%E5%8F%A3.md)。
 
 ## 数据与隐私
 
@@ -168,27 +170,36 @@ Bot 回复不再按小时限制轮数，旧配置中的小时轮数上限会被�
 ## 仓库结构
 
 ```
-bot-team/     npm 包 dsh-bot-team：Host 半 index.js + host/*.js，Client 半 client.js
-docs/         使用指南、逐版本变更记录、验收报告、发布指南、截图
-research/     DSH runtime / persistence / UI 的调研笔记
-tools/        开发辅助（asar 读取）
+host/              服务、存储、Agent 与协作逻辑
+locale/            中英文本
+test/              回归测试与测试辅助
+docs/              使用、接口、发布与升级文档
+  assets/          文档使用的截图
+index.js           Host 入口
+client.js          Web 客户端
+cordis.patch.yml   插件与 Bot 工具预设
+package.json       包元数据、依赖与验证命令
+README.md          项目入口与开发说明
+CHANGELOG.md       各版本修改记录
+LICENSE            MIT 许可证
 ```
 
-> 仓库根目录不是 npm 包：这里没有根 `package.json`，插件清单位于 `bot-team/package.json`。`npm run check` / `npm test` / `npm pack` 请在 `bot-team/` 下执行。
+仓库根目录同时是 npm 包根目录；开发、测试与打包命令均在这里运行。安装已有源码时直接选择包含 `package.json` 的仓库目录。
 
 ## 开发
 
 宿主侧是普通 ESM，不 import 任何 `@deepseek-ai/*` 包；客户端是单文件 `client.js`，React 来自平台模块表。PDF 导出用 `fontkit` 读取并子集化系统 CJK 字体（唯一运行时依赖）；其余测试不依赖第三方包、不调用真实模型、不访问个人数据。
 
+在仓库根目录运行：
+
 ```sh
-cd bot-team
 npm install          # 安装唯一运行时依赖 fontkit（PDF 字体子集）
 npm run check        # node --check：index.js / client.js / host/*.js
 npm test             # 隔离回归测试；部分 PDF 用例按系统字体条件运行或跳过
 npm pack --dry-run   # 查看真正会被发布的文件
 ```
 
-发布前自检，以及 npm / Git / 插件市场索引三条发布路线见 [docs/发布指南.md](docs/发布指南.md)。
+发布前自检，以及 npm / Git / 插件市场索引三条发布路线见 [https://github.com/shper/dsh-bot-team/blob/main/docs/%E5%8F%91%E5%B8%83%E6%8C%87%E5%8D%97.md](docs/发布指南.md)。
 
 ## 已知限制
 
@@ -203,16 +214,17 @@ npm pack --dry-run   # 查看真正会被发布的文件
 
 ## 文档
 
-- [完整功能、HTTP 通道与配置](bot-team/README.md)
-- [使用指南](docs/使用指南.md)
-- [讨论与辩论：流程、工具、API 与恢复边界](<docs/讨论与辩论.md>)（未发布工作区改动）
-- [发布指南](docs/发布指南.md)
-- [升级检查清单](docs/升级检查清单.md)
-- [最新变更记录：v1.2.1 会话历史与用量修复](<docs/v1.2.1-会话历史与用量修复-变更记录.md>)
-- [v1.2 首次使用引导](<docs/v1.2-首次使用引导-变更记录.md>)
-- [v1.1 中英双语与导出 PDF](<docs/v1.1-i18n与PDF-变更记录.md>)
-- 当前版本 `1.2.1`；`1.0.0` 是首个 npm 公开发行版，`docs/` 的 v0.5–v0.8.1 是发布前的 0.x 内部迭代记录。
-- 历史验证报告中的 `.bot-team/`、`.bot-team-spike/`、`tmp/` 证据文件已在发布前清理，报告保留为历史记录。
+- [版本变更记录](CHANGELOG.md)
+- [完整功能、HTTP 通道与配置](https://github.com/shper/dsh-bot-team/blob/main/docs/%E9%85%8D%E7%BD%AE%E4%B8%8E%E6%8E%A5%E5%8F%A3.md)
+- [使用指南](https://github.com/shper/dsh-bot-team/blob/main/docs/%E4%BD%BF%E7%94%A8%E6%8C%87%E5%8D%97.md)
+- [讨论与辩论：流程、工具、API 与恢复边界](<https://github.com/shper/dsh-bot-team/blob/main/docs/%E8%AE%A8%E8%AE%BA%E4%B8%8E%E8%BE%A9%E8%AE%BA.md>)（未发布工作区改动）
+- [发布指南](https://github.com/shper/dsh-bot-team/blob/main/docs/%E5%8F%91%E5%B8%83%E6%8C%87%E5%8D%97.md)
+- [升级检查清单](https://github.com/shper/dsh-bot-team/blob/main/docs/%E5%8D%87%E7%BA%A7%E6%A3%80%E6%9F%A5%E6%B8%85%E5%8D%95.md)
+- [消息执行过程](https://github.com/shper/dsh-bot-team/blob/main/docs/%E6%B6%88%E6%81%AF%E6%89%A7%E8%A1%8C%E8%BF%87%E7%A8%8B.md)
+- [后台会话与完整日志](https://github.com/shper/dsh-bot-team/blob/main/docs/%E5%8E%9F%E7%94%9F%E4%BC%9A%E8%AF%9D%E4%B8%8E%E5%AE%8C%E6%95%B4%E6%97%A5%E5%BF%97.md)
+- [新建会话：数据模型与接口](https://github.com/shper/dsh-bot-team/blob/main/docs/%E6%96%B0%E5%BB%BA%E4%BC%9A%E8%AF%9D.md)
+
+当前源码版本为 `1.2.2`；各版本修改见 [CHANGELOG](CHANGELOG.md)，详细提交与历史验收记录可通过 Git 历史查阅。临时预览、调研副本和一次性工具不纳入维护目录。
 
 ## License
 
@@ -222,15 +234,15 @@ MIT © [shper](https://github.com/shper)
 
 **Bot Team** is a DeepSeek Harness plugin for long-lived agent colleagues. Every bot is a real DSH agent with its own persistent session, model, `BOT.md` persona and full toolset (files, search, web, commands inside a `workspace-write` sandbox). Each bot gets a direct chat; groups support `@mention` dispatch, parallel streaming replies, peer review and multi-round discussions. Task tools and HTTP APIs support priorities, dependencies, review/acceptance and a dispatch queue; the group sidebar task panel and its creation entry have been removed. Data lives in the `bot_team` storage domain and `$DSH_HOME/dsh-bot-team/`; group conversations never pollute session logs.
 
-The unreleased workspace adds structured discussions, 1v1 debates with an optional independent judge, and pause/resume/retry/finish/stop/context controls. Existing discuss tool calls still default to classic two-round discussions. Reload the local plugin Host with disable → enable, then refresh the page; see the [discussion and debate guide](<docs/讨论与辩论.md>).
+The unreleased workspace adds structured discussions, 1v1 debates with an optional independent judge, and pause/resume/retry/finish/stop/context controls. Existing discuss tool calls still default to classic two-round discussions. Reload the local plugin Host with disable → enable, then refresh the page; see the [discussion and debate guide](<https://github.com/shper/dsh-bot-team/blob/main/docs/%E8%AE%A8%E8%AE%BA%E4%B8%8E%E8%BE%A9%E8%AE%BA.md>).
 
 Version **1.2.1** fixes execution history loading and live token totals. **Open full session** now opens a separate read-only history page with an explicit return button; returning preserves the original execution entry, chat draft and scroll position. Member and sidebar session entries use the same history reader, including saved sessions from earlier replies. The hourly reply limit has been removed; daily token budgets remain in effect.
 
 ```sh
-# Desktop: Plugins → Add plugin → dsh-bot-team@1.2.1, then reload
-dsh plugin --profile <profile> add dsh-bot-team@1.2.1
+# Desktop: Plugins → Add plugin → dsh-bot-team@1.2.2, then reload
+dsh plugin --profile <profile> add dsh-bot-team@1.2.2
 ```
 
-`1.2.1` is the current source version; these npm installation examples apply once that version is published. Use a local directory to install the source before publication.
+`1.2.2` is the current source version; these npm installation examples apply once that version is published. Use a local directory to install the source before publication.
 
 Requires DSH `0.2.1-rc.x`. The UI follows DSH's zh/en language setting, and group timelines export to Markdown, HTML, or a paginated PDF with selectable text. MIT licensed.
