@@ -60,7 +60,7 @@ test('new and edit forms submit signatures, retain them on reopen, and allow cle
     return Response.json({ ok: true, result: { botId: 'bot-1' }, text: '' });
   } });
   const base = { modelCatalog, onClose() {}, onSaved: value => saved.push(value) };
-  const input = tree => walk(tree).find(node => node.type === 'input' && node.props['aria-label'] === '签名 / Title');
+  const input = tree => walk(tree).find(node => node.type === 'input' && node.props['aria-label'] === '签名');
   const submit = (tree, label) => {
     const button = walk(tree).find(node => node.type === 'button' && text(node) === label);
     assert.equal(button.props.disabled, false);

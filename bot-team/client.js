@@ -1401,7 +1401,7 @@ window.__ModuleLoader__.load({
       "先在右侧成员面板添加 Bot，再 @ 它们": "Add Bots in the members panel on the right, then @ mention them",
       "先在右侧成员面板添加一个 Bot，再用 @ 提及它开始对话。": "Add a Bot in the members panel on the right, then @ mention it to start a conversation.",
       "显示名": "Display name",
-      "签名 / Title": "Signature / Title",
+      "签名": "Signature",
       "选填，显示在聊天消息的名字后面，最多 120 字。": "Optional; shown after the name in chat messages. Up to 120 characters.",
       "例如：领航员 / Navigator 🧭": "e.g. Navigator 🧭",
       "消息": "Message",
@@ -11099,7 +11099,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
             required: true,
             horizontal: true,
             hint: '群里 @ 时使用；Bot 之间也用它互相称呼。',
-            style: { marginBottom: 16, gridTemplateColumns: 'max-content minmax(0, 1fr)', columnGap: 8 },
+            style: { marginBottom: 16 },
           },
           h('input', {
             style: S.input,
@@ -11113,16 +11113,16 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
         h(
           Field,
           {
-            label: '签名 / Title',
+            label: '签名',
             horizontal: true,
             hint: '选填，显示在聊天消息的名字后面，最多 120 字。',
-            style: { marginBottom: 16, gridTemplateColumns: 'max-content minmax(0, 1fr)', columnGap: 8 },
+            style: { marginBottom: 16 },
           },
           h('input', {
             style: S.input,
             value: signature,
             maxLength: 120,
-            'aria-label': '签名 / Title',
+            'aria-label': '签名',
             onChange: (event) => setSignature(event.target.value),
             placeholder: '例如：领航员 / Navigator 🧭',
           }),
