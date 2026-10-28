@@ -3512,8 +3512,8 @@ window.__ModuleLoader__.load({
         display: 'inline-flex',
         alignItems: 'center',
         justifyContent: 'center',
-        width: 28,
-        height: 28,
+        width: 32,
+        height: 32,
         padding: 0,
         border: 0,
         borderRadius: 8,
@@ -3522,6 +3522,7 @@ window.__ModuleLoader__.load({
         cursor: 'pointer',
         flex: '0 0 auto',
       },
+      sidebarToggleIcon: { display: 'block', flex: '0 0 18px', width: 18, height: 18 },
       railHeader: {
         display: 'flex',
         flexDirection: 'column',
@@ -3646,13 +3647,13 @@ window.__ModuleLoader__.load({
         lineHeight: '15px',
         flex: '0 0 auto',
       },
-      sectionActions: { display: 'flex', alignItems: 'center', gap: 1, flex: '0 0 auto' },
+      sectionActions: { display: 'flex', alignItems: 'center', gap: 4, flex: '0 0 auto' },
       sectionAction: {
         display: 'inline-flex',
         alignItems: 'center',
         justifyContent: 'center',
-        width: 22,
-        height: 22,
+        width: 28,
+        height: 28,
         padding: 0,
         border: 0,
         borderRadius: 6,
@@ -5591,7 +5592,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       );
 
       const info = pluginInfo && typeof pluginInfo === 'object' ? pluginInfo : {};
-      const version = typeof info.version === 'string' && info.version ? info.version : '1.2.1';
+      const version = typeof info.version === 'string' && info.version ? info.version : '1.2.2';
       const packageName = typeof info.packageName === 'string' && info.packageName ? info.packageName : 'dsh-bot-team';
       const author = typeof info.author === 'string' && info.author ? info.author : 'shper';
       const metaRows = [
@@ -5875,8 +5876,8 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
       return h(
         'svg',
         {
-          width: 13,
-          height: 13,
+          width: 16,
+          height: 16,
           viewBox: '0 0 16 16',
           fill: 'none',
           stroke: 'currentColor',
@@ -6637,7 +6638,7 @@ body[data-ds-dark-theme] .bt-root ::-webkit-scrollbar-thumb:hover { background: 
           'aria-controls': 'bt-group-sidebar',
           onClick: () => mobileNavigation ? onShowWelcome?.() : dispatch({ type: 'toggleSidebar' }),
         },
-        h('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true, focusable: false, style: S.sidebarActionIcon },
+        h('svg', { width: 18, height: 18, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true, focusable: false, style: S.sidebarToggleIcon },
           h('rect', { x: 3, y: 4, width: 18, height: 16, rx: 3 }),
           h('path', { d: 'M9 4v16' }),
           collapsed

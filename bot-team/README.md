@@ -1,6 +1,8 @@
-# Bot Team 1.2.1
+# Bot Team 1.2.2
 
 在 DSH Web GUI 里做多 Agent 群聊与单聊：每个 Bot 自动拥有一个单聊窗口；创建群/话题 → 从全局 Bot 库拉入多个 Bot → 在群里 @ 某个 Bot 派活、多 @ 并行回复、查看流式输出。群聊可以放进自定义分组、拖动排序，单聊 / 群聊 / 每个分组都能展开或收起。
+
+**1.2.2 更新**：侧栏收起/展开图标调整为 18px，新建 Bot、群聊与分组图标调整为 16px；同步扩大点击区域并优化按钮间距。详见 [v1.2.2 侧栏图标调整](<../docs/v1.2.2-侧栏图标调整-变更记录.md>)。
 
 **1.2.1 更新**：修复执行记录读取和右侧 Token 用量刷新；「打开完整会话」改为独立只读历史页面，可返回原执行面板并保留聊天草稿、滚动位置和按钮；成员与侧栏的会话入口也使用完整历史页面。移除每小时回复轮数上限，每日 Token 预算继续生效。详见 [v1.2.1 会话历史与用量修复变更记录](<../docs/v1.2.1-会话历史与用量修复-变更记录.md>)。
 
@@ -88,7 +90,7 @@
 **关于**：
 
 - 插件说明和功能特性（单聊自动创建、群聊分组与拖拽排序、展开/收起、BOT.md 人格、任务与评审）。
-- **版本号 / 包名 / 开发者** 来自插件 `package.json`，由 Host bootstrap 的 `plugin` 字段下发；当前为 `1.2.1` / `dsh-bot-team` / `shper`。
+- **版本号 / 包名 / 开发者** 来自插件 `package.json`，由 Host bootstrap 的 `plugin` 字段下发；当前为 `1.2.2` / `dsh-bot-team` / `shper`。
 - 数据与人格文件位置：`$DSH_HOME/storages/dsh-bot-team`、`$DSH_HOME/dsh-bot-team/bots/<botId>/BOT.md`；单聊 / 群聊工作目录在 `$DSH_HOME/dsh-bot-team/direct/<botId>/` 与 `$DSH_HOME/dsh-bot-team/groups/<groupId>/`。
 
 ![设置 · 消息设置](<../docs/assets/v0.7-settings-light.png>)
@@ -135,15 +137,15 @@ HTTP 通道（全部在 `/api` 登录态栅栏内）：
 
 这是一个标准 DSH bundle：`package.json` 的 `dsh.bundle.patch` 指向 `cordis.patch.yml`，`dsh.client` + `exports["./client"]` 提供 Web 端界面，`exports["./locale/*.json"]` / `exports["./icon"]` 提供插件管理页的标题、描述与图标。npm 包名：`dsh-bot-team`。
 
-**桌面版（当前 GUI）**：左侧栏 **插件 / Plugins** 页 → 添加插件，填 `dsh-bot-team@1.2.1`（或本地绝对路径、Git 地址）；装好后对 `bot-team` 行 disable → enable，或完整重启 DSH；浏览器刷新页面。
+**桌面版（当前 GUI）**：左侧栏 **插件 / Plugins** 页 → 添加插件，填 `dsh-bot-team@1.2.2`（或本地绝对路径、Git 地址）；装好后对 `bot-team` 行 disable → enable，或完整重启 DSH；浏览器刷新页面。
 
 **CLI / 其他 profile**：
 
 ```sh
-dsh plugin --profile <profile> add dsh-bot-team@1.2.1
+dsh plugin --profile <profile> add dsh-bot-team@1.2.2
 ```
 
-> `1.2.1` 是当前源码版本；npm 安装示例适用于该版本发布后。发布前请用本地目录安装当前源码，发布流程见 [发布指南](<../docs/发布指南.md>)。
+> `1.2.2` 是当前源码版本；npm 安装示例适用于该版本发布后。发布前请用本地目录安装当前源码，发布流程见 [发布指南](<../docs/发布指南.md>)。
 
 该命令安装包，并把新 bundle 追加到 profile 的 `dsh.profile.bundles`。升级用 remove → add；桌面版插件页在提供 **Update** 时可直接更新，否则也是移除后重装。装完必须重新加载 Host 模块：只刷新页面不会加载新的 Host 代码。
 

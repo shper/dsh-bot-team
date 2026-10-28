@@ -132,9 +132,9 @@ test('the real service boots, registers its routes/tools, and drives direct chat
     assert.equal(boot.folders.length, 0);
     assert.equal(boot.groups.filter((group) => group.kind === 'direct').length, 1);
     assert.equal(boot.plugin.packageName, 'dsh-bot-team');
-    assert.equal(boot.plugin.version, '1.2.1');
+    assert.equal(boot.plugin.version, '1.2.2');
     assert.equal(boot.plugin.author, 'shper');
-    assert.equal(service.healthPayload().pluginVersion, '1.2.1');
+    assert.equal(service.healthPayload().pluginVersion, '1.2.2');
 
     const folder = await service.dispatch('folder.create', { title: '工作' });
     const group = await service.dispatch('group.create', { title: '集成群', folderId: folder.folderId });
